@@ -1,39 +1,19 @@
-//! Hand-written WIC (Windows Imaging Component) bindings: only the subset of
-//! `windowscodecs.dll` and `ole32.dll` the backend calls, declared by hand as
-//! for the DirectWrite bindings: Gooey takes no package dependencies
-//! (CLAUDE.md §12) and the tree type-checks from any host.
-//!
-//! WIC is COM. Each vtable below lists every slot of its interface in the order
-//! of `wincodec.h` and `objidl.h`, because a method is found by its slot index
-//! alone. Slots the backend never calls are typed `Slot`. The comptime block at
-//! the end pins the slot of every method the backend calls and the size of
-//! every vtable, so a missing or extra slot fails to compile.
-//!
-//! Released COM vtables never change, so the declarations stay correct once
-//! they match the headers. Naming follows the SDK so each declaration can be
-//! checked against Microsoft's documentation by name.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
 pub const HRESULT = i32;
 
 pub const S_OK: HRESULT = 0;
-/// `CoInitializeEx`: COM was already initialized on this thread, same model.
 pub const S_FALSE: HRESULT = 1;
-/// `CoInitializeEx`: COM was already initialized on this thread as an STA.
 pub const RPC_E_CHANGED_MODE: HRESULT = @bitCast(@as(u32, 0x8001_0106));
 pub const E_OUTOFMEMORY: HRESULT = @bitCast(@as(u32, 0x8007_000E));
-/// No installed decoder recognizes the data.
 pub const WINCODEC_ERR_COMPONENTNOTFOUND: HRESULT = @bitCast(@as(u32, 0x8898_2F50));
 pub const WINCODEC_ERR_UNKNOWNIMAGEFORMAT: HRESULT = @bitCast(@as(u32, 0x8898_2F07));
 
-/// `SUCCEEDED`: every non-negative `HRESULT` reports success.
 pub fn succeeded(result: HRESULT) bool {
     return result >= 0;
 }
 
-/// A vtable slot the backend never calls. It only holds its place.
 pub const Slot = *const anyopaque;
 
 pub const GUID = extern struct {
@@ -50,8 +30,6 @@ pub const WICRect = extern struct {
     Height: i32,
 };
 
-/// `CLSID_WICImagingFactory1`: available since Windows 7, and every interface
-/// the backend uses is on it.
 pub const CLSID_WICImagingFactory: GUID = .{
     .data1 = 0xCACA_F262,
     .data2 = 0x9370,
@@ -66,8 +44,6 @@ pub const IID_IWICImagingFactory: GUID = .{
     .data4 = .{ 0x9C, 0x77, 0x54, 0xD7, 0xA9, 0x35, 0xFF, 0x70 },
 };
 
-/// Four bytes per pixel in R, G, B, A order, with straight (not premultiplied)
-/// alpha: the layout `ImageData.format == .rgba` promises.
 pub const GUID_WICPixelFormat32bppRGBA: GUID = .{
     .data1 = 0xF5C7_AD2D,
     .data2 = 0x6A8D,
@@ -92,9 +68,9 @@ pub const IWICImagingFactory = extern struct {
         CreateDecoderFromFilename: Slot,
         CreateDecoderFromStream: *const fn (
             *IWICImagingFactory,
-            *IWICStream, // An IWICStream is an IStream.
-            ?*const GUID, // pguidVendor
-            u32, // WICDecodeOptions
+            *IWICStream,
+            ?*const GUID,
+            u32,
             *?*IWICBitmapDecoder,
         ) callconv(.winapi) HRESULT,
         CreateDecoderFromFileHandle: Slot,
@@ -140,10 +116,8 @@ pub const IWICStream = extern struct {
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*IWICStream) callconv(.winapi) u32,
-        // ISequentialStream.
         Read: Slot,
         Write: Slot,
-        // IStream.
         Seek: Slot,
         SetSize: Slot,
         CopyTo: Slot,
@@ -153,16 +127,12 @@ pub const IWICStream = extern struct {
         UnlockRegion: Slot,
         Stat: Slot,
         Clone: Slot,
-        // IWICStream.
         InitializeFromIStream: Slot,
         InitializeFromFilename: Slot,
-        /// The header types the buffer as writable because the stream supports
-        /// `Write`. Decoders only read and seek, and the backend never writes,
-        /// so the buffer is declared `const` here.
         InitializeFromMemory: *const fn (
             *IWICStream,
             [*]const u8,
-            u32, // cbBufferSize
+            u32,
         ) callconv(.winapi) HRESULT,
         InitializeFromIStreamRegion: Slot,
     };
@@ -191,7 +161,7 @@ pub const IWICBitmapDecoder = extern struct {
         GetFrameCount: Slot,
         GetFrame: *const fn (
             *IWICBitmapDecoder,
-            u32, // index
+            u32,
             *?*IWICBitmapFrameDecode,
         ) callconv(.winapi) HRESULT,
     };
@@ -201,9 +171,6 @@ pub const IWICBitmapDecoder = extern struct {
     }
 };
 
-/// The base of every bitmap interface. Only passed between calls, so it stays
-/// opaque; `IWICBitmapFrameDecode.source` and `IWICFormatConverter` cover the
-/// methods the backend calls.
 pub const IWICBitmapSource = opaque {};
 
 pub const IWICBitmapFrameDecode = extern struct {
@@ -213,13 +180,11 @@ pub const IWICBitmapFrameDecode = extern struct {
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*IWICBitmapFrameDecode) callconv(.winapi) u32,
-        // IWICBitmapSource.
         GetSize: *const fn (*IWICBitmapFrameDecode, *u32, *u32) callconv(.winapi) HRESULT,
         GetPixelFormat: Slot,
         GetResolution: Slot,
         CopyPalette: Slot,
         CopyPixels: Slot,
-        // IWICBitmapFrameDecode.
         GetMetadataQueryReader: Slot,
         GetColorContexts: Slot,
         GetThumbnail: Slot,
@@ -229,8 +194,6 @@ pub const IWICBitmapFrameDecode = extern struct {
         _ = self.vtable.Release(self);
     }
 
-    /// COM single inheritance: a derived interface pointer is also a pointer
-    /// to each of its bases.
     pub fn source(self: *IWICBitmapFrameDecode) *IWICBitmapSource {
         return @ptrCast(self);
     }
@@ -243,27 +206,25 @@ pub const IWICFormatConverter = extern struct {
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*IWICFormatConverter) callconv(.winapi) u32,
-        // IWICBitmapSource.
         GetSize: Slot,
         GetPixelFormat: Slot,
         GetResolution: Slot,
         CopyPalette: Slot,
         CopyPixels: *const fn (
             *IWICFormatConverter,
-            ?*const WICRect, // null copies the whole bitmap
-            u32, // cbStride
-            u32, // cbBufferSize
+            ?*const WICRect,
+            u32,
+            u32,
             [*]u8,
         ) callconv(.winapi) HRESULT,
-        // IWICFormatConverter.
         Initialize: *const fn (
             *IWICFormatConverter,
             *IWICBitmapSource,
-            *const GUID, // dstFormat
-            u32, // WICBitmapDitherType
-            ?*anyopaque, // pIPalette
-            f64, // alphaThresholdPercent
-            u32, // WICBitmapPaletteType
+            *const GUID,
+            u32,
+            ?*anyopaque,
+            f64,
+            u32,
         ) callconv(.winapi) HRESULT,
         CanConvert: Slot,
     };
@@ -297,7 +258,6 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(GUID) == 16);

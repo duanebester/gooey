@@ -2,7 +2,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "packed.glsl"
 
-// The SVG pipeline: two-colour sprites (fill in red, stroke in green).
 layout(location = 0) out vec2 out_tex_coord;
 layout(location = 1) out vec4 out_fill_color;
 layout(location = 2) out vec4 out_stroke_color;

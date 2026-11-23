@@ -1,10 +1,3 @@
-//! The VOPR's model of the splitter example: the sidebar's width and the top
-//! pane's share, which must follow every drag and key exactly. It catches
-//! what the model-free invariants cannot: a capture that leaks to another
-//! button, a move delivered after its gesture ended, a cancel that does not
-//! restore, or a key that reaches the wrong splitter. Written from the
-//! contract's pointer-capture rules, not from the router.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const splitter = @import("splitter_example");
@@ -23,7 +16,6 @@ const Action = vopr.Action;
 const Event = vopr_events.Event;
 const Point = vopr_events.Point;
 
-/// Actions one drain can hold, as the queue's capacity.
 const pending_count_max: u32 = splitter.App.limits.events.queue_count_max;
 
 const panes_id = ElementId.root.child(.{ .name = "panes" });
@@ -37,32 +29,24 @@ pub const SplitterModel = struct {
     sidebar_width_start: f32,
     top_share_start: f32,
     capture: ?Capture,
-    /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
     pending: [pending_count_max]Action,
     pending_count: u32,
     counts: Stats,
 
-    /// The kinds splitter's swarm draws weights for, in this order. No
-    /// text: the app has no text input.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .scroll, .wait_ns, .tick_main, .present, .drag, .resize, .cancel,
     };
 
-    /// The splitters' keys, Tab, and Escape, with keys they ignore.
     pub const key_choices: []const input.KeyCode = &.{
         .tab, .escape, .left, .right, .up, .down, .home, .end, .space, .a,
     };
 
     pub const Stats = struct {
-        /// Captures begun by each button.
         captures: [3]u32,
-        /// Left captures on a splitter that moved its value.
         drags_moved: u32,
         cancels: u32,
-        /// Presses that a capture already on left uncaptured.
         presses_during_capture: u32,
-        /// Keys a focused splitter took.
         keys_taken: u32,
 
         const zero: Stats = .{
@@ -118,7 +102,6 @@ pub const SplitterModel = struct {
         return pending_count_max - self.pending_count;
     }
 
-    /// Record an input action for the next drain; its text is not read.
     pub fn queue(self: *SplitterModel, action: Action) void {
         assert(self.pending_count < pending_count_max);
         assert(action != .tick_main);
@@ -150,8 +133,6 @@ pub const SplitterModel = struct {
         });
     }
 
-    /// Where the generator aims: the sidebar splitter, and a third of the
-    /// time the top one.
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         const sidebar = vopr_frame.findHit(frame, sidebar_splitter_id) orelse return null;
@@ -187,7 +168,6 @@ pub const SplitterModel = struct {
     fn cancel(self: *SplitterModel, frame: *const records.Frame) void {
         const capture = self.capture.?;
         self.counts.cancels += 1;
-        // A cancel restores the press's value; its point is not read.
         self.deliver(frame, .cancel, capture.start);
         self.capture = null;
     }
@@ -219,7 +199,6 @@ pub const SplitterModel = struct {
 
     fn deliver(self: *SplitterModel, frame: *const records.Frame, phase: Phase, point: Point) void {
         const capture = self.capture.?;
-        // Only the left button moves a splitter.
         if (capture.button != .left) return;
         if (capture.id == sidebar_splitter_id) {
             switch (phase) {
@@ -274,8 +253,6 @@ pub const SplitterModel = struct {
         }
     }
 
-    /// Whether the focused splitter took `chord`, as `State.sidebarKey` and
-    /// `State.topKey` do.
     fn splitterKey(self: *SplitterModel, chord: Action.Chord) bool {
         const shift = chord.modifiers.shift;
         if (self.focus == sidebar_splitter_id) {

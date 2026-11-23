@@ -1,10 +1,3 @@
-//! The Windows bridge's own copy of the accessibility tree. UI Automation is
-//! pull-based: clients query providers between frames, after the frame that
-//! built `Tree` has ended and the strings it borrowed may be gone, so each
-//! synced frame copies everything a provider can be asked about into storage
-//! the bridge owns and providers read only this snapshot. It is pure data
-//! with no Win32 calls, so it is tested directly.
-
 const std = @import("std");
 const types = @import("types.zig");
 const tree_mod = @import("tree.zig");
@@ -17,7 +10,6 @@ const Element = tree_mod.Element;
 const Fingerprint = tree_mod.Fingerprint;
 const Tree = tree_mod.Tree;
 
-/// Sentinel for an absent parent, child, sibling, or focus index.
 pub const index_none: u16 = 0xFFFF;
 
 pub const name_bytes_max: u16 = 256;
@@ -25,10 +17,8 @@ pub const value_bytes_max: u16 = 512;
 pub const description_bytes_max: u16 = 256;
 pub const text_bytes_element_max: u32 = name_bytes_max + value_bytes_max + description_bytes_max;
 
-/// Property changes recorded per frame before the queue reports overflow.
 pub const change_count_max: u16 = 128;
 
-/// A string in the snapshot's text storage.
 pub const Text = struct {
     offset: u32,
     len: u16,
@@ -36,7 +26,6 @@ pub const Text = struct {
 
 pub const Entry = struct {
     fingerprint: Fingerprint,
-    /// Logical pixels, relative to the window's client area.
     bounds: layout.BoundingBox,
     value_now: f32,
     value_min: f32,
@@ -44,7 +33,6 @@ pub const Entry = struct {
     name: Text,
     value: Text,
     description: Text,
-    /// Hashes of the full source strings, compared to detect changes.
     name_hash: u32,
     value_hash: u32,
     description_hash: u32,
@@ -53,16 +41,13 @@ pub const Entry = struct {
     last_child: u16,
     previous_sibling: u16,
     next_sibling: u16,
-    /// One-based; zero when the element is not in a set.
     pos_in_set: u16,
-    /// Zero when the element is not in a set.
     set_size: u16,
     state: types.State,
     role: types.Role,
     heading_level: types.HeadingLevel,
     live: types.Live,
     has_value_now: bool,
-    /// A separator's or slider's axis; null leaves UIA's `None`.
     orientation: ?types.Orientation,
 
     pub fn isExposed(self: *const Entry) bool {
@@ -95,12 +80,9 @@ pub const Change = struct {
     property: Property,
 };
 
-/// One frame's changes. Overflow is reported, not hidden: the bridge answers
-/// it by invalidating the whole tree, so clients re-read every property.
 pub const ChangeList = struct {
     changes: [change_count_max]Change = undefined,
     change_count: u16 = 0,
-    /// An element appeared that the previous snapshot did not have.
     structure_changed: bool = false,
     overflowed: bool = false,
 
@@ -135,9 +117,6 @@ pub const Snapshot = struct {
 
     const Self = @This();
 
-    /// Reserve the entry and text storage. Nothing is written beyond the
-    /// scalars and the map's buckets, so the reservations stay non-resident.
-    /// `element_count_max` is the tree's (`a11y.element_count_max`).
     pub fn initInPlace(self: *Self, element_count_max: u16) error{OutOfMemory}!void {
         assert(element_count_max > 0);
         self.entries = try reservation.reserve(Entry, element_count_max);
@@ -160,7 +139,6 @@ pub const Snapshot = struct {
         assert(self.text.len == text_bytes);
     }
 
-    /// Zero what any frame wrote and return the storage.
     pub fn deinit(self: *Self) void {
         assert(self.entry_count <= self.entry_count_high_water);
         assert(self.text_used <= self.text_used_high_water);
@@ -171,7 +149,6 @@ pub const Snapshot = struct {
         self.text = &.{};
     }
 
-    /// Replace the snapshot with `tree`, which must be a finished frame.
     pub fn rebuild(self: *Self, tree: *const Tree) void {
         const count = tree.count();
         assert(count <= self.entries.len);
@@ -187,8 +164,6 @@ pub const Snapshot = struct {
             self.writeEntry(index, element);
             self.link(index);
             if (element.fingerprint.isValid()) {
-                // `Tree` keeps fingerprints unique within a frame; a duplicate
-                // would alias two providers and loop sibling navigation.
                 assert(self.map.find(element.fingerprint) == null);
                 self.map.insert(element.fingerprint, index);
             }
@@ -232,9 +207,6 @@ pub const Snapshot = struct {
         target.orientation = element.orientation;
     }
 
-    /// Append `index` to its parent's children, or to the root's. `Tree`
-    /// links only children of a parent; top-level elements are linked here so
-    /// the root can navigate them too. Pre-order indices keep sibling order.
     fn link(self: *Self, index: u16) void {
         const linked = &self.entries[index];
         const parent = linked.parent;
@@ -264,8 +236,6 @@ pub const Snapshot = struct {
         return copied;
     }
 
-    /// Record what changed in `tree` relative to this snapshot, which must
-    /// still hold the previous frame. Call before `rebuild`.
     pub fn collectChanges(
         self: *const Self,
         tree: *const Tree,
@@ -305,8 +275,6 @@ pub const Snapshot = struct {
         return self.text[text.offset..][0..text.len];
     }
 
-    /// The last exposed element in pre-order whose bounds contain the point,
-    /// in logical client pixels: the deepest element of the topmost branch.
     pub fn hitTest(self: *const Self, x: f32, y: f32) ?u16 {
         assert(!std.math.isNan(x));
         assert(!std.math.isNan(y));
@@ -324,7 +292,7 @@ pub const Snapshot = struct {
 
 fn collectElementChanges(previous: *const Entry, element: *const Element, list: *ChangeList) void {
     assert(previous.fingerprint.eql(element.fingerprint));
-    assert(previous.role == element.role); // The fingerprint includes the role.
+    assert(previous.role == element.role);
     const fingerprint = element.fingerprint;
     const role = element.role;
     if (previous.name_hash != textHash(element.name)) {
@@ -355,14 +323,10 @@ fn collectElementChanges(previous: *const Entry, element: *const Element, list: 
     }
 }
 
-/// The longest prefix of `text` that fits in `bytes_max` and ends on a UTF-8
-/// code point boundary.
 pub fn utf8PrefixLength(text: []const u8, comptime bytes_max: u16) u16 {
     comptime assert(bytes_max > 0);
     if (text.len <= bytes_max) return @intCast(text.len);
     var len: u16 = bytes_max;
-    // A continuation byte at `len` means the cut splits a code point. A code
-    // point has at most three continuation bytes.
     var step: u8 = 0;
     while (step < 3 and len > 0 and text[len] & 0xC0 == 0x80) : (step += 1) {
         len -= 1;
@@ -377,9 +341,6 @@ fn textHash(text: ?[]const u8) u32 {
     return @truncate(std.hash.Wyhash.hash(0, bytes));
 }
 
-// Support is fixed per role, and the role is part of the fingerprint, so a
-// provider's interfaces never change during its lifetime as COM requires.
-
 pub fn supportsValue(role: types.Role) bool {
     return switch (role) {
         .textbox, .textarea, .searchbox, .combobox => true,
@@ -389,8 +350,6 @@ pub fn supportsValue(role: types.Role) bool {
 
 pub fn supportsRangeValue(role: types.Role) bool {
     return switch (role) {
-        // Gooey's only separators are splitters (`A11y.range`), whose position
-        // is a range, as WAI-ARIA's focusable window splitter defines.
         .slider, .progressbar, .scrollbar, .spinbutton, .separator => true,
         else => false,
     };
@@ -417,8 +376,6 @@ pub fn supportsSelectionItem(role: types.Role) bool {
     };
 }
 
-/// A radio button reports selection through `checked`; everything else
-/// through `selected`.
 pub fn isSelected(role: types.Role, state: types.State) bool {
     assert(supportsSelectionItem(role));
     if (role == .radio) return state.checked;
@@ -461,8 +418,6 @@ fn destroySnapshot(snapshot: *Snapshot) void {
 }
 
 test "rebuild links children and top-level siblings" {
-    // `Tree` links only children of a parent; top-level elements are linked
-    // in the snapshot so navigation works between them too.
     const tree = try createTree();
     defer destroyTree(tree);
     const snapshot = try createSnapshot();
@@ -495,10 +450,6 @@ test "rebuild links children and top-level siblings" {
 }
 
 test "same-role, same-name top-level siblings stay distinct and navigation ends" {
-    // Regression: two top-level "Delete" buttons shared a fingerprint, so the
-    // provider for the second resolved to the first and NextSibling from the
-    // second returned the second again, forever. Each fingerprint must find
-    // its own entry, and walking siblings from the root must end.
     const tree = try createTree();
     defer destroyTree(tree);
     const snapshot = try createSnapshot();
@@ -554,7 +505,7 @@ test "text is truncated at its cap on a code point boundary" {
     try testing.expectEqual(name_bytes_max, utf8PrefixLength(&over, name_bytes_max));
 
     var straddle: [name_bytes_max + 1]u8 = @splat('a');
-    straddle[name_bytes_max - 1] = 0xC3; // "é" is C3 A9.
+    straddle[name_bytes_max - 1] = 0xC3;
     straddle[name_bytes_max] = 0xA9;
     const len = utf8PrefixLength(&straddle, name_bytes_max);
     try testing.expectEqual(name_bytes_max - 1, len);
@@ -656,6 +607,5 @@ test "hitTest finds the deepest exposed element under the point" {
     try testing.expectEqual(@as(?u16, 1), snapshot.hitTest(20, 15));
     try testing.expectEqual(@as(?u16, 0), snapshot.hitTest(150, 80));
     try testing.expectEqual(@as(?u16, null), snapshot.hitTest(250, 80));
-    // The bottom-right corner is exclusive.
     try testing.expectEqual(@as(?u16, 0), snapshot.hitTest(60, 30));
 }

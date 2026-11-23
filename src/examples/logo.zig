@@ -7,8 +7,6 @@ const Cx = gooey.Cx;
 const assert = std.debug.assert;
 
 pub const State = struct {
-    /// The frame clock of the build being painted, in nanoseconds. Render
-    /// stamps it so the paint function, which has no `Cx`, sees the same time.
     frame_ns: u64 = 0,
 };
 
@@ -25,12 +23,9 @@ pub const main = App.main;
 pub const logo_path = "assets/gooey-logo-320.png";
 const logo_width: f32 = 160;
 const logo_height: f32 = 100;
-/// Speeds in logical pixels per second; unequal so the path covers the window.
 const speed_x: f64 = 130;
 const speed_y: f64 = 95;
 
-/// Multiplied with the logo's colours, one step per bounce. All stay close to
-/// white so the orange logo only warms or cools a little.
 const tints = [_]ui.Color{
     .rgb(1.0, 1.0, 1.0),
     .rgb(1.0, 0.80, 0.86),
@@ -41,7 +36,6 @@ const tints = [_]ui.Color{
 pub fn render(cx: *Cx) void {
     const s = cx.state(State);
     s.frame_ns = cx.now();
-    // The position follows the clock, so every frame renders.
     cx.requestRenderAfter(0);
     cx.render(ui.box(.{ .style = .{
         .width = .{ .grow = 1 },

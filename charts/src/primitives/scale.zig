@@ -60,7 +60,6 @@ pub const LinearScale = struct {
         return self.domain_min + t * domain_span;
     }
 
-    /// Writes ticks to `out`; returns the count.
     pub fn ticks(self: LinearScale, count: u32, out: *[MAX_TICKS]f32) u32 {
         std.debug.assert(count > 0 and count <= MAX_TICKS);
 
@@ -104,10 +103,6 @@ pub const LinearScale = struct {
     }
 };
 
-/// The label storage is sized by the framework ceiling, not a chart's
-/// `category_count_max`: a band scale is a by-value primitive shared by every
-/// bar chart and axis, and making it generic would spread the capacity through
-/// `Axis`, `Grid` and `Scale`. Bar charts build it on the stack per render.
 pub const BandScale = struct {
     labels: [category_count_ceiling][MAX_LABEL_LENGTH]u8 = undefined,
     label_lens: [category_count_ceiling]u8 = @splat(0),
@@ -164,7 +159,6 @@ pub const BandScale = struct {
         const n: f32 = @floatFromInt(self.label_count);
         const range_span = @abs(self.range_max - self.range_min);
 
-        // bandwidth = range / (n + (n-1)*inner + 2*outer); step adds inner.
         const denominator = n + (n - 1) * self.padding_inner + 2 * self.padding_outer;
 
         if (denominator <= 0) {
@@ -195,7 +189,6 @@ pub const BandScale = struct {
         return self.position(index) + self._bandwidth / 2.0;
     }
 
-    /// Hit testing; null when outside every band.
     pub fn indexAt(self: BandScale, pixel: f32) ?u32 {
         std.debug.assert(!std.math.isNan(pixel));
 
@@ -237,13 +230,13 @@ pub const Scale = union(enum) {
     pub fn scaleValue(self: Scale, value: f32) f32 {
         return switch (self) {
             .linear => |s| s.scale(value),
-            .band => unreachable, // Use scaleCategoryIndex for band scale
+            .band => unreachable,
         };
     }
 
     pub fn scaleCategoryIndex(self: Scale, index: u32) f32 {
         return switch (self) {
-            .linear => unreachable, // Use scaleValue for linear scale
+            .linear => unreachable,
             .band => |s| s.center(index),
         };
     }
@@ -260,10 +253,6 @@ pub const Scale = union(enum) {
     }
 };
 
-/// Project `series` to pixel points in `out`, first decimated with LTTB to
-/// `lod_points` when it has more points than that; returns the count. The
-/// scratch is sized by the chart's `point_count_max`, not the framework
-/// ceiling: at most `point_count_max` × 16 bytes of LTTB input and output.
 pub fn projectSeries(
     comptime point_count_max: u32,
     series: *const types.Series(point_count_max),

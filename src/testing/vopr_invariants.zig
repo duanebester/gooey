@@ -1,19 +1,3 @@
-//! Invariants the VOPR checks for every app, with no app model: they state
-//! what the core's emit and focus rules promise about any rendered frame.
-//! Emit writes the accessibility tree and the hit records from the same node
-//! (`emit.zig`: `emitA11y` from the laid-out bounds, `emitHit` from the same
-//! bounds clipped to the enclosing clips), so every node with an interactive
-//! role has a hit record with its id whose bounds lie within the node's, and
-//! every hit record with a click or key handler has a node with its id and an
-//! interactive role. A handled record with no node of its own passes the
-//! second rule when the nearest ancestor record with a node is interactive.
-//! Nodes in the drag layer have hits but no accessibility nodes, and there is
-//! no drag-layer flag in a record, so such a record is left out when the
-//! window's drag is active and its fragment is the last one. Focus must be
-//! live whenever the rendered frame is current: that is
-//! `router.validateFocus`'s postcondition on the frame it built, and a
-//! handler that moves focus after that build also requests a render.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const vopr_frame = @import("vopr_frame.zig");
@@ -28,22 +12,14 @@ const index_none = records.index_none;
 const findHit = vopr_frame.findHit;
 const findA11y = vopr_frame.findA11y;
 
-/// Roles a person operates: activated, toggled, edited, or chosen. A
-/// `listbox`, `menu`, or `tablist` groups operable children and a
-/// `scrollbar` or `slider` names a range; only `slider` is in, since a
-/// slider takes keys itself.
 const interactive_roles = [_]Role{
     .button,   .checkbox,  .radio,      .switch_,  .link,   .textbox,
     .textarea, .searchbox, .spinbutton, .combobox, .option, .menuitem,
     .tab,      .treeitem,  .slider,
 };
 
-/// Bounds may differ by this much from float rounding in a clip.
 const bounds_slop_px: f32 = 0.01;
 
-/// A separator with a range is a window splitter, which WAI-ARIA counts as
-/// a widget: a person focuses it and moves it with keys (splitter example).
-/// A separator without one is a static divider.
 fn interactive(node: *const records.A11yNode) bool {
     if (node.role == .separator) return node.range != null;
     return std.mem.indexOfScalar(Role, &interactive_roles, node.role) != null;
@@ -87,9 +63,6 @@ pub fn checkFrame(window: *const Window, frame: *const records.Frame) void {
     }
 }
 
-/// For a handled record with no node of its own: the node of its nearest
-/// ancestor record that has one, when that node is interactive, as a
-/// Select's trigger box is part of its combobox. Null otherwise.
 fn ownerNode(
     frame: *const records.Frame,
     record: *const records.HitRecord,
@@ -105,7 +78,6 @@ fn ownerNode(
     return null;
 }
 
-/// The fragment the drag preview is in, when a drag shows one: the last.
 fn dragFragment(window: *const Window, frame: *const records.Frame) ?u8 {
     if (window.drag.phase != .active) return null;
     var fragment_last: u8 = 0;
@@ -167,7 +139,6 @@ fn lineAt(bytes: []const u8, start: usize) []const u8 {
 fn within(inner: records.Rect, outer: records.Rect) bool {
     assert(inner.width >= 0);
     assert(outer.width >= 0);
-    // A record clipped to nothing (scrolled out of view) has no extent.
     if (inner.width == 0 or inner.height == 0) return true;
     if (inner.x < outer.x - bounds_slop_px) return false;
     if (inner.y < outer.y - bounds_slop_px) return false;

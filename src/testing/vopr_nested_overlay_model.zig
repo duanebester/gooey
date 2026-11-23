@@ -1,14 +1,3 @@
-//! The VOPR's model of the nested_overlay example. The app's state is the
-//! Select's and the dialog's, which the model-free invariants already
-//! exercise through focus and a11y records, so the model does not predict
-//! it. It checks the layer order the example exists for: fragments paint in
-//! kind order (popovers before modals) and, within a kind, in open order; a
-//! layer opened inside a layer's fragment comes after it; and a modal blocks
-//! the pointer to everything before it. When the dialog closes while focus
-//! was inside it and no pointer action moved focus, focus lands on a control
-//! of the first modal (`checkFocusReturned`). It also counts how far a seed
-//! went.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const nested_overlay = @import("nested_overlay_example");
@@ -25,28 +14,18 @@ const Action = vopr.Action;
 const option_count = nested_overlay.options.len;
 
 pub const NestedOverlayModel = struct {
-    /// The rendered frame `observe` last read.
     frame_number_seen: u64,
     menu_shown_last: bool,
     dialog_shown_last: bool,
-    /// At the start of every drain since the last build, focus was inside
-    /// the dialog of the frame on screen.
     focus_in_dialog: bool,
-    /// Pointer actions queued since the last build, which can move focus
-    /// anywhere. A drain with a frame in flight builds nothing, so the
-    /// build that closes the dialog can come drains after the input.
     pointer_action_count: u32,
     selected_last: ?usize,
     counts: Stats,
 
-    /// The kinds nested_overlay's swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .scroll, .wait_ns, .tick_main, .present, .drag, .resize, .cancel,
     };
 
-    /// The Select's keys and the keys that move focus and click: Tab into
-    /// the dialog and Return on Close is the path that closes the dialog
-    /// with focus inside it.
     pub const key_choices: []const gooey.input.KeyCode = &.{
         .tab, .@"return", .space, .escape, .up, .down, .home, .end, .a,
     };
@@ -55,16 +34,10 @@ pub const NestedOverlayModel = struct {
         frames: u32,
         menu_frames: u32,
         menu_opens: u32,
-        /// Frames whose menu sat above its trigger: the popover flipped.
         menu_flipped_frames: u32,
-        /// Frames whose menu reached past the window's right or bottom edge.
         menu_clipped_frames: u32,
         dialog_opens: u32,
-        /// Frames with the menu and the dialog both open: two layers opened
-        /// from one fragment.
         two_layer_frames: u32,
-        /// Dialog closes while focus was inside it, and of those, the ones
-        /// after which focus landed on a record of the first modal.
         closes_from_inside: u32,
         focus_returned: u32,
         choices: u32,
@@ -110,7 +83,6 @@ pub const NestedOverlayModel = struct {
         return self.counts;
     }
 
-    /// The model keeps no events, so only the queue bounds input.
     pub fn pendingRoom(_: *const NestedOverlayModel) u32 {
         return nested_overlay.App.limits.events.queue_count_max;
     }
@@ -139,11 +111,6 @@ pub const NestedOverlayModel = struct {
         self.observe(window);
     }
 
-    /// A build that closed the dialog while focus was inside it, with no
-    /// pointer action in the drain to move focus elsewhere, leaves focus on
-    /// a control of the first modal: the core's `validateFocus` moves a lost
-    /// focus to its successor in the frame it built, and the first modal is
-    /// the only layer still reachable.
     fn checkFocusReturned(self: *NestedOverlayModel, window: *Window) void {
         if (!self.focus_in_dialog) return;
         if (self.pointer_action_count > 0) return;
@@ -171,10 +138,6 @@ pub const NestedOverlayModel = struct {
         }
     }
 
-    /// Where the generator aims. With the dialog open, its panel, whose
-    /// edges sit next to the backdrop that closes it, and a third of the
-    /// time the Select's trigger beneath. Else the trigger, and a third of
-    /// the time the open menu or, while it is closed, "Open dialog".
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         const layers = layersOf(frame) orelse return null;
@@ -236,8 +199,6 @@ fn focusInDialog(frame: *const records.Frame, focus: records.ElementId) bool {
     return inside(frame, focused, dialog);
 }
 
-/// The records of the frame's layers: the first modal's, the dialog's (the
-/// second modal, inside the first), and the menu's.
 const Layers = struct { modal: u32, dialog: ?u32, menu: ?u32 };
 
 fn layersOf(frame: *const records.Frame) ?Layers {
@@ -328,8 +289,6 @@ fn checkTopmostAtCentre(window: *const Window, frame: *const records.Frame, targ
     });
 }
 
-/// The last record inside the first modal and outside the menu: the menu,
-/// a layer opened inside the modal, must come after all of them.
 fn panelLastIndex(frame: *const records.Frame, menu: u32) u32 {
     const modal = nodeIndex(frame, .dialog, 0) orelse return 0;
     var last: u32 = modal;

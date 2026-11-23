@@ -1,13 +1,3 @@
-//! Duck-typed `@hasDecl` checks for the subsystem shapes that have no single
-//! authoritative contract: SVG rasterizers and image decoders. This module
-//! does NOT cover the renderer the core draws through: `core/backend.zig`
-//! verifies that with complete function types rather than mere presence;
-//! adding a weaker duck-typed check beside it would form a second, drifting
-//! contract.
-//!
-//! Usage in a backend file:
-//!   comptime { interface_verify.verifyImageLoaderModule(@This()); }
-
 const std = @import("std");
 
 pub fn verifySvgRasterizerInterface(comptime T: type) void {

@@ -1,7 +1,3 @@
-//! Golden checks: replay each trace and compare with the checked-in text.
-//! Built with the synthetic text backend, so the goldens match on every
-//! host; recapture with `zig build goldens` after an intended change.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const trace = @import("trace.zig");
@@ -14,7 +10,6 @@ test {
 
 const TextBuffer = gooey.testing.record_dump.TextBuffer;
 
-/// Bytes reserved for one trace's dump. The todo trace is the largest.
 pub const golden_bytes_max: u32 = 2 * 1024 * 1024;
 
 const Capture = *const fn (std.mem.Allocator, std.Io, *TextBuffer) anyerror!void;

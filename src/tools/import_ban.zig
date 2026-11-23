@@ -1,12 +1,8 @@
-//! Fails when a deleted path is recreated or imported, and when library code
-//! under `components/` or `charts/` reaches `gooey.internals`.
-
 const std = @import("std");
 const Dir = std.Io.Dir;
 
 const assert = std.debug.assert;
 
-/// An entry ending in `/` bans the directory.
 pub const banned_paths = [_][]const u8{
     "src/app.zig",
     "src/cx.zig",
@@ -41,7 +37,6 @@ pub const banned_paths = [_][]const u8{
 
 const roots = [_][]const u8{ "src", "components", "charts" };
 
-/// Trees that may use only the public API (no `gooey.internals`).
 pub const sealed_roots = [_][]const u8{ "components/", "charts/" };
 
 const file_count_max: u32 = 4_096;
@@ -79,7 +74,6 @@ pub fn main(init: std.process.Init) !void {
                 error.FileTooBig => fileTooBig(path),
                 else => return err,
             };
-            // A read that fills the buffer may have been cut short.
             if (bytes.len == content.len) fileTooBig(path);
             violation_count += checkFile(path, bytes);
             if (violation_count >= violation_count_max) break;
@@ -139,8 +133,6 @@ fn checkFile(path: []const u8, bytes: []const u8) u32 {
     return count;
 }
 
-/// The repository-relative path an `@import` of a `.zig` file names, or null
-/// for a module import (`"std"`, `"gooey"`) or a path outside the repository.
 pub fn resolveImport(
     buffer: *[path_bytes_max]u8,
     importer: []const u8,
@@ -238,7 +230,6 @@ test "resolveImport follows relative paths from the importer" {
 }
 
 test "checkFile counts banned imports only" {
-    // Split so this file's own scan does not report the fixture.
     const source = "const theme = @import(\"theme.zig\");\n" ++
         "const cx = @" ++ "import(\"../cx.zig\");\n";
     try std.testing.expectEqual(@as(u32, 1), checkFile("src/core/element.zig", source));
@@ -246,7 +237,6 @@ test "checkFile counts banned imports only" {
 }
 
 test "library code may not reach gooey.internals" {
-    // Fixtures are split so this file's own scan stays clean.
     const reference = "const S = gooey" ++ ".internals.window.ScrollState;";
     const aliased = "const limits = g" ++ ".internals.limits;";
     const comment = "// Never use gooey" ++ ".internals here.";

@@ -1,8 +1,3 @@
-//! `zig build goldens`: rewrite every golden file from a fresh run, to
-//! review the diff like code after an intended change. The binary is built
-//! with the synthetic text backend, so a capture on any host produces the
-//! same bytes.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const core = @import("core.zig");
@@ -35,8 +30,6 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-/// Golden files live beside this source file; the build runs this program
-/// from the repository root.
 fn writeGolden(io: std.Io, file_name: []const u8, bytes: []const u8) !void {
     var path_buffer: [256]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buffer, "src/testing/goldens/{s}", .{file_name});

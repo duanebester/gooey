@@ -1,12 +1,8 @@
-//! Win32 implementation of the Vulkan presentation surface. The Win32
-//! declarations here keep the shared `linux/vulkan.zig` bindings untouched.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("../linux/vulkan.zig");
 const win32 = @import("win32.zig");
 
-/// `VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR`.
 const structure_type_win32_surface_create_info: vk.StructureType = 1_000_009_000;
 
 const Win32SurfaceCreateInfoKHR = extern struct {
@@ -24,8 +20,6 @@ extern fn vkCreateWin32SurfaceKHR(
     pSurface: *vk.Surface,
 ) callconv(.c) vk.Result;
 
-/// Borrowed Win32 handles. The platform owns the instance, the window owns
-/// the `HWND`; both outlive the renderer that holds this.
 pub const Win32Surface = struct {
     hinstance: win32.HINSTANCE,
     hwnd: win32.HWND,
@@ -36,7 +30,6 @@ pub const Win32Surface = struct {
         Win32SurfaceCreationFailed,
     };
 
-    /// Create the `VkSurfaceKHR` for presentation; the caller owns it.
     pub fn create(self: *const Win32Surface, instance: vk.Instance) CreateError!vk.Surface {
         assert(instance != null);
 
@@ -59,8 +52,6 @@ pub const Win32Surface = struct {
         return surface;
     }
 
-    /// The driver owns the swapchain images outright, so destruction needs no
-    /// synchronization.
     pub fn swapchainDestroyBegin(self: *const Win32Surface) void {
         assert(@intFromPtr(self.hwnd) != 0);
     }
@@ -72,7 +63,6 @@ pub const Win32Surface = struct {
 
 comptime {
     assert(@sizeOf(Win32Surface) == 2 * @sizeOf(usize));
-    // Measured against `vulkan_win32.h` on 64-bit targets.
     assert(@sizeOf(Win32SurfaceCreateInfoKHR) == 40);
     assert(@offsetOf(Win32SurfaceCreateInfoKHR, "hinstance") == 24);
     assert(@offsetOf(Win32SurfaceCreateInfoKHR, "hwnd") == 32);

@@ -9,18 +9,12 @@ pub const SavePromptOptions = interface_mod.SavePromptOptions;
 const response_uri_count_max: u32 = 1 << 20;
 const separator: u8 = 0;
 
-/// Host dialog-buffer bytes for `dialog_path_bytes_max`: a selection's
-/// paths, or a save request's folder and name with a terminator each.
 pub fn requestBytes(path_bytes_max: u32) u32 {
     std.debug.assert(path_bytes_max > 0);
     std.debug.assert(path_bytes_max < std.math.maxInt(u32) - 2);
     return path_bytes_max + 2;
 }
 
-/// One FileChooser request on a private session-bus connection. The core
-/// host polls the connection's fd beside the Wayland fd and calls `poll`
-/// per loop turn, so its window keeps running; strings live in the
-/// request's own buffers, so it holds no pointer into itself.
 pub const PortalRequest = struct {
     connection: dbus.Connection,
     token_buffer: [64]u8,
@@ -32,7 +26,6 @@ pub const PortalRequest = struct {
 
     pub const messages_per_poll_max: u32 = 64;
 
-    /// Bounded per call; a private connection carries few messages.
     pub const Options = union(enum) {
         open: *const PathPromptOptions,
         save: *const SavePromptOptions,
@@ -40,14 +33,11 @@ pub const PortalRequest = struct {
 
     pub const Status = union(enum) {
         open,
-        /// fd will not re-announce queued messages; call again soon.
         open_more,
         cancelled,
         selected: Selection,
     };
 
-    /// On success `end` or `close` must follow; `strings` is sized with
-    /// `requestBytes`.
     pub fn begin(self: *PortalRequest, options: Options, strings: []u8) !void {
         std.debug.assert(strings.len >= 2);
         switch (options) {
@@ -60,7 +50,6 @@ pub const PortalRequest = struct {
             .open => .{ "OpenFile", "Open" },
             .save => .{ "SaveFile", "Save" },
         };
-        // Portal requires a fixed title (the app's was dropped).
         var message = try dbus.Message.newMethodCall(
             dbus.PORTAL_BUS_NAME,
             dbus.PORTAL_OBJECT_PATH,
@@ -85,11 +74,9 @@ pub const PortalRequest = struct {
         std.debug.assert(self.handle_len > 0);
     }
 
-    /// Non-blocking read of what has arrived, decoding selected paths.
     pub fn poll(self: *PortalRequest, paths: []u8) !Status {
         std.debug.assert(paths.len > 0);
         std.debug.assert(self.handle_len > 0);
-        // Zero timeout reads only what is available.
         if (!self.connection.readWrite(0)) return error.Disconnected;
         var handled: u32 = 0;
         while (handled < messages_per_poll_max) : (handled += 1) {
@@ -102,7 +89,6 @@ pub const PortalRequest = struct {
         return .open_more;
     }
 
-    /// Unsubscribe and close; the request is undefined afterwards.
     pub fn end(self: *PortalRequest) void {
         std.debug.assert(self.match_len > 0);
         self.connection.removeMatch(self.matchRule());
@@ -110,7 +96,6 @@ pub const PortalRequest = struct {
         self.* = undefined;
     }
 
-    /// Ask the portal to close the open dialog, then `end`.
     pub fn close(self: *PortalRequest) void {
         std.debug.assert(self.handle_len > 0);
         defer self.end();
@@ -125,7 +110,6 @@ pub const PortalRequest = struct {
         self.connection.flush();
     }
 
-    /// Socket to poll beside other fds; null for a non-socket bus.
     pub fn fd(self: *PortalRequest) ?std.posix.fd_t {
         std.debug.assert(self.handle_len > 0);
         return self.connection.unixFd();
@@ -146,8 +130,6 @@ pub const PortalRequest = struct {
         return self.match_buffer[0..self.match_len :0];
     }
 
-    /// Subscribe to the Response before the call is sent, so the signal
-    /// cannot arrive unheard.
     fn subscribe(self: *PortalRequest) !void {
         self.connection = try dbus.Connection.connectSessionPrivate();
         errdefer self.connection.deinit();
@@ -161,8 +143,6 @@ pub const PortalRequest = struct {
     }
 };
 
-/// Response selection: `count` paths NUL-joined (the core's `events.Paths`
-/// layout); only the prefix that fit the caller's buffer was written.
 pub const Selection = struct {
     count: u32,
     bytes_len: u64,
@@ -218,8 +198,6 @@ fn isResponse(message: *dbus.Message, handle_path: [:0]const u8) bool {
     return message.isSignal(dbus.PORTAL_REQUEST_INTERFACE, "Response");
 }
 
-/// Null for a cancel; otherwise an iterator over the "uris" string array,
-/// valid while the message lives.
 fn responseUris(signal_msg: *dbus.Message) !?dbus.MessageIter {
     std.debug.assert(signal_msg.getType() == dbus.MESSAGE_TYPE_SIGNAL);
     std.debug.assert(signal_msg.isSignal(dbus.PORTAL_REQUEST_INTERFACE, "Response"));
@@ -228,8 +206,6 @@ fn responseUris(signal_msg: *dbus.Message) !?dbus.MessageIter {
     if (iter.getArgType() != dbus.TYPE_UINT32) return error.InvalidResponse;
     const response_code = iter.getUint32();
 
-    // Portal codes: 0 success, 1 user-cancelled, 2 other (GNOME sends 2
-    // for Escape); both 1 and 2 are a cancel, not an error.
     if (response_code == 1 or response_code == 2) return null;
     if (response_code != 0) return error.PortalError;
 
@@ -274,7 +250,6 @@ fn decodeUri(uri: []const u8, out: []u8) usize {
     const encoded_path = uri[prefix.len..];
     var write_idx: usize = 0;
     var read_idx: usize = 0;
-    // Each step consumes one byte or one three-byte escape.
     while (read_idx < encoded_path.len) {
         var byte = encoded_path[read_idx];
         var consumed: usize = 1;
@@ -307,7 +282,6 @@ fn joinUris(array: *dbus.MessageIter, out: []u8) !Selection {
         }
         const start: usize = @intCast(@min(bytes_len, out.len));
         const path_len = decodeUri(uri, out[start..]);
-        // An empty path, or one holding the separator, cannot be joined.
         if (path_len == 0) return error.InvalidResponse;
         const written = out[start..][0..@min(path_len, out.len - start)];
         if (std.mem.indexOfScalar(u8, written, separator) != null) return error.InvalidResponse;
@@ -320,12 +294,10 @@ fn joinUris(array: *dbus.MessageIter, out: []u8) !Selection {
 }
 
 fn generateToken(buf: *[64]u8) [:0]const u8 {
-    // std.posix.clock_gettime was removed in Zig 0.16; call libc directly.
     var ts: std.c.timespec = .{ .sec = 0, .nsec = 12345 };
     _ = std.c.clock_gettime(.REALTIME, &ts);
 
     const hash: u64 = @bitCast(ts.sec *% 1000000000 +% ts.nsec);
-    // "gooey_" plus at most 16 hex digits fit the 63 bytes.
     const len = std.fmt.bufPrint(buf[0..63], "gooey_{x}", .{hash}) catch unreachable;
     buf[len.len] = 0;
     return buf[0..len.len :0];
@@ -336,7 +308,7 @@ fn buildHandlePath(buf: *[256]u8, unique_name: []const u8, token: [:0]const u8) 
     var sender_len: usize = 0;
 
     for (unique_name) |c| {
-        if (c == ':') continue; // Skip leading colon
+        if (c == ':') continue;
         if (c == '.') {
             sender_buf[sender_len] = '_';
         } else {
@@ -394,8 +366,6 @@ fn appendDictEntryBool(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: b
     if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
 }
 
-/// Append a dict entry with byte array value: {key: variant<ay>}. The portal
-/// expects the bytes NUL-terminated, so `value` ends with its terminator.
 fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: []const u8) !void {
     std.debug.assert(value.len > 0);
     std.debug.assert(value[value.len - 1] == 0);
@@ -412,8 +382,6 @@ fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: 
     if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
 }
 
-/// Copy `text` into the front of `target` with a terminator; the core's
-/// request copy bounds every string, so it always fits.
 fn terminated(target: []u8, text: []const u8) [:0]const u8 {
     std.debug.assert(text.len < target.len);
     std.debug.assert(std.mem.indexOfScalar(u8, text, 0) == null);
@@ -440,7 +408,6 @@ test "URI to path conversion" {
     len = decodeUri("/direct/path/test.txt", &out);
     try std.testing.expectEqualStrings("/direct/path/test.txt", out[0..len]);
 
-    // A path longer than `out` reports its whole length and writes a prefix.
     var short: [4]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 19), decodeUri("file:///home/user/test.txt", &short));
     try std.testing.expectEqualStrings("/hom", &short);

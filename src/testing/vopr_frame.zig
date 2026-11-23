@@ -8,8 +8,6 @@ const records = internals.records;
 const Window = internals.window.Window;
 const ElementId = records.ElementId;
 
-/// The deepest record containing the point: the last in tree order among
-/// the records a modal leaves reachable.
 pub fn hitIndex(frame: *const records.Frame, x: f32, y: f32) ?u32 {
     assert(frame.hit_count <= frame.hits.len);
     assert(frame.modal_hit_start <= frame.hit_count);
@@ -22,13 +20,6 @@ pub fn hitIndex(frame: *const records.Frame, x: f32, y: f32) ?u32 {
     return null;
 }
 
-/// Whether a press at the point lands on a scroll box's scrollbar: a box on
-/// the path from the record the point hits up to the root, innermost first.
-/// A bar outside every record's clipped bounds (a box wider than a narrow
-/// window) takes no press, since the press hits nothing there. The bar's
-/// geometry is layout, read from the core's scroll state of each box.
-/// Called before `tickMain`, so it reads the frame that drain routes
-/// against (`drainFrame`), not the one rendered now.
 pub fn onScrollbar(window: *Window, x: f32, y: f32) bool {
     const frame = drainFrame(window);
     assert(frame.hit_count <= frame.hits.len);
@@ -48,11 +39,6 @@ pub fn onScrollbar(window: *Window, x: f32, y: f32) bool {
     return false;
 }
 
-/// The frame the next `tickMain` routes its drain against: the presented
-/// one waiting to flip, which `tickMain` makes rendered before it drains,
-/// else the rendered one. The scroll states are the last build's, so
-/// pairing them with a frame from before the flip puts a scrollbar where
-/// the drain will not find it.
 fn drainFrame(window: *Window) *const records.Frame {
     assert(window.phase == .idle);
     const flips = window.awaiting_flip and !window.frame_in_flight.load(.acquire);

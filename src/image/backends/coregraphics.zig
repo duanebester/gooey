@@ -10,7 +10,6 @@ comptime {
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
-    /// RGBA pixel data (owned by allocator)
     pixels: []u8,
     allocator: std.mem.Allocator,
 
@@ -96,8 +95,6 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
         return LoadError.DecodeFailed;
     defer cf.CGColorSpaceRelease(colorspace);
 
-    // Create bitmap context (RGBA, premultiplied alpha, native byte order)
-    // kCGImageAlphaPremultipliedLast = 1, use native byte order (no byte order flag)
     const kCGImageAlphaPremultipliedLast: u32 = 1;
     const bitmap_info: u32 = kCGImageAlphaPremultipliedLast;
 
@@ -112,7 +109,6 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
     ) orelse return LoadError.DecodeFailed;
     defer cf.CGContextRelease(context);
 
-    // Clear to transparent first: the default bitmap background is opaque.
     cf.CGContextClearRect(context, .{
         .x = 0,
         .y = 0,
@@ -137,7 +133,6 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
     };
 }
 
-/// Convert premultiplied alpha to straight alpha
 fn unpremultiplyAlpha(pixels: []u8, width: usize, height: usize) void {
     const pixel_count = width * height;
     var i: usize = 0;

@@ -3,8 +3,6 @@ const posix = std.posix;
 const Dir = std.Io.Dir;
 const Io = std.Io;
 
-// Standalone exe: cannot import platform/, so the time helpers are inline.
-
 fn milliTimestamp() i64 {
     var tv: std.c.timeval = undefined;
     const rc = std.c.gettimeofday(&tv, null);
@@ -21,7 +19,6 @@ fn sleep(ns: u64) void {
     while (true) {
         const rc = std.c.nanosleep(&ts, &ts);
         if (rc == 0) break;
-        // Interrupted by signal — remaining time written back to ts.
     }
 }
 
@@ -30,8 +27,6 @@ const debounce_ms = 100;
 const argument_count_max: usize = 128;
 const watch_root_count_max: usize = 8;
 
-// Bounding the tracked set prevents unbounded memory growth when pointed at
-// a large directory tree.
 const MAX_WATCHED_FILES: usize = 10_000;
 
 var should_quit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -107,8 +102,6 @@ fn parseArguments(args: []const []const u8) ?Arguments {
 
     const watch_paths = args[1..separator];
     const build_command_given = args[separator + 1 ..];
-    // `zig build hot` cannot see passthrough arguments at configure time, so it
-    // always forwards `zig build ...`. A bare `zig build` means `zig build run`.
     const build_command = if (isBareZigBuild(build_command_given))
         build_command_default[0..]
     else
@@ -172,7 +165,6 @@ const Watcher = struct {
     fn deinit(self: *Watcher) void {
         self.killChild();
 
-        // Free all owned path strings in the hashmap
         var it = self.file_times.keyIterator();
         while (it.next()) |key| {
             self.allocator.free(key.*);
@@ -194,7 +186,6 @@ const Watcher = struct {
             if (self.scanForChanges() catch false) {
                 const now = milliTimestamp();
 
-                // Debounce: editors often write a file several times.
                 if (now - self.last_change < debounce_ms) {
                     continue;
                 }
@@ -204,7 +195,6 @@ const Watcher = struct {
 
                 self.killChild();
 
-                // Let pending file writes land before the rebuild.
                 sleep(50 * std.time.ns_per_ms);
 
                 self.spawnChild();
@@ -267,13 +257,9 @@ const Watcher = struct {
                     changed = true;
                     std.debug.print("   📝 {s}\n", .{entry.path});
                 }
-                // Free the newly allocated path - hashmap already owns a copy of the key
                 self.allocator.free(full_path);
             } else {
-                // New file - transfer ownership of full_path to hashmap
-                // DO NOT free full_path here; the hashmap now owns it
                 self.file_times.put(full_path, mtime) catch {
-                    // On failure, we must free since hashmap didn't take ownership
                     self.allocator.free(full_path);
                 };
             }
@@ -283,8 +269,6 @@ const Watcher = struct {
     }
 
     fn spawnChild(self: *Watcher) void {
-        // pgid = 0 makes the child a process group leader, so the whole tree
-        // (including the app spawned by `zig build run`) can be killed.
         const child = std.process.spawn(self.io, .{
             .argv = self.build_cmd,
             .pgid = 0,
@@ -298,8 +282,6 @@ const Watcher = struct {
 
     fn killChild(self: *Watcher) void {
         if (self.child) |*child| {
-            // Negative pid targets the process group; with pgid = 0 at spawn
-            // the child's pid is the pgid, so zig and the app both die.
             const pid = child.id orelse {
                 self.child = null;
                 return;
@@ -307,7 +289,6 @@ const Watcher = struct {
 
             _ = posix.kill(-pid, posix.SIG.TERM) catch {};
 
-            // Grace period before the force kill.
             sleep(100 * std.time.ns_per_ms);
 
             _ = posix.kill(-pid, posix.SIG.KILL) catch {};

@@ -203,7 +203,7 @@ fn dumpElementTo(elem: Element, index: usize, tree: *const Tree, writer: anytype
     var current_parent = elem.parent;
     while (current_parent) |p_idx| {
         depth += 1;
-        if (depth > 20) break; // Safety limit
+        if (depth > 20) break;
         if (p_idx >= tree.element_count) break;
         current_parent = tree.elements[p_idx].parent;
     }
@@ -341,7 +341,6 @@ pub fn countByRole(tree: *const Tree, role: Role) usize {
     return count;
 }
 
-/// First match.
 pub fn findByName(tree: *const Tree, name: []const u8) ?*const Element {
     for (tree.elements[0..tree.element_count]) |*elem| {
         if (elem.name) |elem_name| {
@@ -378,7 +377,6 @@ pub fn assertInvariants(tree: *const Tree) void {
     }
 }
 
-/// A tree at the tests' capacity, on the heap like a window's.
 fn createTestTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
     errdefer std.testing.allocator.destroy(tree);

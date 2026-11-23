@@ -1,17 +1,3 @@
-//! VOPR: deterministic simulation testing of the core, after TigerBeetle's.
-//! One generator, driven by `std.testing.Smith`, turns bytes into actions
-//! against a headless app on the goldens' `CoreDriver`, and each app
-//! (`Workload`) has a reference model. Every action keeps the core inside its
-//! declared budget (`limits.events`) and away from wall-clock paths, so any
-//! panic or failed assertion is a finding: a core bug, or a harness bug to
-//! fix here. The harness checks the queue, the rendered frame number, and
-//! the render side after every action, the model-free invariants of
-//! `vopr_invariants.zig` on every new rendered frame, and every
-//! `Swarm.rebuild_period` actions that a current frame rebuilt with no input
-//! and no clock advance draws the same dump (`checkStableRebuild`); the seed
-//! CLI also runs two instances on the same bytes and requires identical
-//! frame dumps after every action (determinism).
-
 const std = @import("std");
 const gooey = @import("gooey");
 const todo = @import("todo_example");
@@ -45,61 +31,32 @@ const tick = internals.tick;
 const records = internals.records;
 const Window = internals.window.Window;
 
-/// Steps one `zig build vopr` run takes before its quiescence loop: enough
-/// for a seed that fills todo's list to then work it while full.
 pub const step_count_cli: u32 = 12_000;
-/// Steps between fresh `Swarm` draws, so one seed can fill the list in one
-/// epoch and filter, check, and delete over it in the next.
 const swarm_epoch_step_count: u32 = 3_000;
-/// Most steps one fuzz input may ask for, so one input is bounded work.
 const step_count_fuzz_max: u32 = 256;
-/// Most Smith choices one action makes, a text action's: its kind, its
-/// length, and one per unit. Each choice reads one `u64`.
 const choice_count_action_max: u32 = 2 + text_unit_count_max;
-/// Smith bytes the CLI reserves per step, so its PRNG input never runs dry.
 const bytes_per_action_max: u32 = choice_count_action_max * @sizeOf(u64);
-/// Smith bytes one `Swarm` draw reads.
 const bytes_swarm: u32 = Swarm.choice_count_max * @sizeOf(u64);
-/// Smith bytes the CLI reserves for a run: every epoch's swarm and step.
 const bytes_cli: u32 = bytes_swarm * (1 + @divFloor(step_count_cli, swarm_epoch_step_count)) +
     step_count_cli * bytes_per_action_max;
-/// Rounds of `tickMain` plus `presentBuilt` a run gets to settle at its end.
-/// A scroll box that lost content can take a frame per viewport to settle:
-/// a full list is about ten viewports of todo's, so 32 leaves headroom.
 const quiescence_round_max: u32 = 32;
-/// Units (from `text_alphabet`) in one text or composition action.
 const text_unit_count_max: u32 = 8;
-/// Bytes in one text or composition action from `text_alphabet`: its
-/// longest unit is 2 bytes. A model's own alphabet sets its own bound
-/// (`Vopr.text_bytes_action_max_model`).
 const text_bytes_action_max: u32 = text_unit_count_max * 2;
-/// Events one pointer action queues: a move, a press, and a release. A
-/// gesture step queues at most two: a move and a press or release.
 const pointer_event_count_max: u32 = 3;
-/// Events a click queues first when it releases a held gesture's button: a
-/// held move and the release.
 const release_event_count: u32 = 2;
 const button_count = std.enums.values(input.MouseButton).len;
-/// Held moves in one run of a gesture before it releases or plans more.
 const drag_move_count_max: u32 = 8;
-/// Scale factor of every simulated window, as the goldens use.
 const scale_factor: f32 = 2;
-/// The NullRenderer's dump capacity, which a stable rebuild copies.
 const dump_bytes_max: u32 = gooey.testing.test_backend.null_renderer_dump_bytes_max;
 
-/// Small, so typed text repeats and collides; "é" is two UTF-8 bytes, so
-/// text and draft limits can cut inside a codepoint.
 pub const text_alphabet = [_][]const u8{ "a", "b", "Z", "1", " ", "é" };
 
-/// Keys a todo can act on. `.i` is absent, so Cmd/Ctrl+Shift+I, the
-/// debugger toggle (which reads the real clock), can never be generated.
 const key_choices = [_]input.KeyCode{
     .@"return", .tab,   .delete, .forward_delete, .escape, .space,
     .left,      .right, .up,     .down,           .home,   .end,
     .a,         .c,     .v,      .x,              .z,
 };
 
-/// `text_engine.uses_cmd` is pinned false, so Ctrl is the edit modifier.
 const modifier_choices = [_]input.Modifiers{
     .{},
     .{ .shift = true },
@@ -108,7 +65,6 @@ const modifier_choices = [_]input.Modifiers{
     .{ .alt = true },
 };
 
-/// Clock gaps: none, one 60 Hz frame, a caret blink, and a long idle.
 const gap_ns_choices = [_]u64{ 0, 16_666_667, 1_000_000_000, 10_000_000_000 };
 
 comptime {
@@ -117,8 +73,6 @@ comptime {
     assert(text_bytes_action_max <= internals.limits.EventLimits.nano.text_bytes_max);
 }
 
-/// The apps the VOPR drives, each with its reference model; `--app` names
-/// one, and todo is the default.
 pub const Workload = enum {
     todo,
     drag_drop,
@@ -138,14 +92,11 @@ pub const Workload = enum {
             .drag_drop => drag_drop.App,
             .virtual_list => virtual_list.App,
             .splitter => splitter.App,
-            // Ctrl on every host, as `text_engine.uses_cmd` is pinned.
             .actions => actions_model.App,
             .nested_overlay => nested_overlay.App,
             .text_area => text_area.App,
-            // A VOPR-only app: eight image paths, four on screen at a time.
             .images => images_model.App,
             .file_dialog => file_dialog_model.App,
-            // A VOPR-only app that spawns and cancels background jobs.
             .jobs, .jobs_main_thread => jobs_model.App,
         };
     }
@@ -167,9 +118,6 @@ pub const Workload = enum {
     }
 };
 
-/// `zig build vopr -- [--app NAME] [seed] [--verbose]`: run one seed against
-/// an app. With no seed, a random one is drawn and printed, so any run can be
-/// replayed.
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
@@ -219,7 +167,6 @@ fn runCli(
         summary.dump_hash,
         summary.stable_rebuild_count,
     });
-    // Todo's model keeps no stats, so its output stays one line.
     if (@sizeOf(Model.Stats) > 0) {
         std.debug.print("vopr: {s} seed {d} stats: {f}\n", .{ name, seed, result.stats });
     }
@@ -231,7 +178,6 @@ const CliOptions = struct {
     verbose: bool,
 };
 
-/// Null on an argument it does not understand.
 fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
     assert(args.len >= 1);
     var options: CliOptions = .{
@@ -262,29 +208,22 @@ fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
 
 pub const Summary = struct {
     step_count: u32,
-    /// Rounds the last `quiesce` ran before nothing was left to do.
     quiescence_round_count: u32,
     frame_number: u64,
     draw_count: u64,
     dump_hash: u64,
-    /// Rebuilds with no input that `checkStableRebuild` compared.
     stable_rebuild_count: u32,
 };
 
-/// What a run reports: the frames it drew, and the model's own counts.
 pub fn Result(comptime Model: type) type {
     return struct { summary: Summary, stats: Model.Stats };
 }
 
 pub const RunOptions = struct {
     step_count: u32,
-    /// Print each action before it runs, so a failing seed shows its steps.
     verbose: bool,
 };
 
-/// Drive two instances from the same bytes, both allocated at once, and
-/// require the same frames after every action. Any dependence on addresses,
-/// leftover global state, or the clock shows up as a differing dump hash.
 pub fn runPaired(
     comptime App: type,
     comptime Model: type,
@@ -346,82 +285,41 @@ fn checkSame(comptime V: type, first: *V, second: *V, step_index: u32) void {
 pub const Action = union(enum) {
     pointer: Pointer,
     key: Chord,
-    /// Committed text, never empty.
     text: []const u8,
-    /// IME preedit; empty ends the composition.
     compose: []const u8,
-    /// A wheel scroll at a point, in logical pixels.
     scroll: Scroll,
     wait_ns: u64,
     tick_main,
-    /// Generated only while a frame is in flight (`presentBuilt` asserts it).
     present,
-    /// One step of a held-button gesture: a press, a held move, or the
-    /// release. Steps of one gesture interleave with every other action,
-    /// so a drag stays open across ticks, presents, and clock gaps. After
-    /// the kinds todo has always drawn, so they keep their tag values.
     drag: Gesture,
-    /// The platform resized the window: a new logical size and scale, as
-    /// `window.resized`. After the kinds before it, so they keep their tag
-    /// values.
     resize: Resize,
-    /// The platform took the pointer gesture away (`pointer_cancelled`), or
-    /// the window lost focus (`focus_lost`). After the kinds before it, so
-    /// they keep their tag values; only models that list it draw it.
     cancel: Cancel,
-    /// The image decode worker's turn, played by the harness
-    /// (`images.Mode.stepped`): take the oldest request and push a decode
-    /// made up for it onto the completion ring. Generated only while a
-    /// request waits and the last decode has landed. After the kinds before
-    /// it, so they keep their tag values; only models that list it draw it.
     image: ImageDecode,
-    /// The platform answers an open file dialog through the event queue or
-    /// the completion ring, or arms the answer the next dialog returns at
-    /// once (`vopr_dialogs`). After the kinds before it, so they keep
-    /// their tag values; only models that list it draw it.
     dialog: vopr_dialogs.Answer,
-    /// One turn of a job slot's runner or interrupter, played by the
-    /// harness (`jobs.Mode.stepped`). Last, so the other kinds keep their
-    /// tag values; only models that list it draw it.
     job: JobStep,
 
-    /// A worker's turn for one slot: the runner takes its spawn (`start`),
-    /// the running job posts a result (`post`, refused once cancelled), or
-    /// its `run` returns (`end`), which for a cancelled job its interrupter
-    /// then ends as `.cancelled`.
     pub const JobStep = struct {
         slot: u32,
         kind: Kind,
-        /// `.post`: the result's value.
         value: u32,
-        /// `.post`: the row the app's `on_result` cancels, plus one; 0 for none.
         cancel_row: u32,
-        /// `.end`: how `run` returned.
         outcome: Outcome,
 
         pub const Kind = enum { start, post, end };
-        /// `.canceled` is a run that returned `error.Canceled` on its own,
-        /// with no cancel: it reports `.cancelled` all the same.
         pub const Outcome = enum { finished, failed, canceled };
     };
 
     pub const ImageDecode = struct {
-        /// The request's loader entry, which `takeStepped` must return.
         entry: u32,
-        /// Null for synthetic RGBA pixels of `width` × `height`.
         failure: ?ImageFailure,
         width: u32,
         height: u32,
     };
 
-    /// Operating errors a file read or a decoder returns. Never
-    /// `StagingExhausted`, a capacity-planning error that fails fast.
     pub const ImageFailure = enum { file_not_found, access_denied, end_of_stream, invalid_data };
 
     pub const Cancel = struct {
         kind: enum { pointer_cancelled, focus_lost, focus_lost_with_pointer },
-        /// A key `focus_lost` reports held, which the core releases as a
-        /// `key_up`; null for none. Ignored by `pointer_cancelled`.
         key_held: ?input.KeyCode,
     };
 
@@ -436,23 +334,15 @@ pub const Action = union(enum) {
         button: input.MouseButton,
         x: f32,
         y: f32,
-        /// A press of a button a `.pointer` press holds releases it first.
         releases_held: bool,
     };
 
-    /// A click (press and release), a move, or one half of a click: a
-    /// press that holds the button across other actions, or the release of
-    /// a held button. Holding lets buttons overlap in any order, as every
-    /// platform delivers them: left down, right down, left up, right up.
     pub const Pointer = struct {
         kind: enum { click, move, press, release },
         button: input.MouseButton,
         x: f32,
         y: f32,
         click_count: u32,
-        /// A click of a button that is held (by a gesture or a press)
-        /// releases it first, as no platform presses a button that is
-        /// already down.
         releases_held: bool,
     };
 
@@ -543,44 +433,20 @@ pub const ActionKind = std.meta.Tag(Action);
 
 const kind_count = std.enums.values(ActionKind).len;
 
-/// One seed's action mix, drawn from its first bytes (swarm testing, as in
-/// TigerBeetle's VOPR). A uniform mix keeps every seed near the initial state;
-/// a skewed one goes deep in one direction: a seed that mostly types and
-/// clicks the first records fills the list, one that rarely presents holds
-/// frames in flight, and one that mostly scrolls walks a long list.
 pub const Swarm = struct {
-    /// Relative weight of each action kind, by tag value; 0 disables it.
     kind_weights: [kind_count]u32,
-    /// The kinds the model lists (`Model.action_kinds`), for `format`.
     kinds: []const ActionKind,
     kind_weight_total: u32,
-    /// Percent of pointer and scroll actions aimed only at records that can
-    /// change state: a click or key handler, focus, or a scroll box.
     interactive_percent: u32,
-    /// Pointer and scroll targets are drawn uniformly from the first this
-    /// many candidates in tree order, or all of them when 0. A short prefix
-    /// keeps clicking the first controls: todo's draft and Add, so the list
-    /// fills.
     target_prefix_count: u32,
-    /// Percent of pointer actions that click rather than move.
     click_percent: u32,
-    /// Actions between stable-rebuild checks (`checkStableRebuild`).
     rebuild_period: u32,
-    /// Which mouse buttons pointer and gesture presses use.
     button_mix: ButtonMix,
-    /// Percent of pointer actions that press or release a held button
-    /// instead of clicking or moving.
     hold_percent: u32,
-    /// Percent of image decodes that fail. A failure stays for the
-    /// session, so a high rate soon fails every path and a low one keeps
-    /// them landing; 0 for a model that draws no decodes.
     image_failure_percent: u32,
 
-    /// Left only; mostly left (8 in 10), with right and middle; or each
-    /// button a third of the time.
     pub const ButtonMix = enum { left_only, mostly_left, even };
 
-    /// Most weight one action kind can draw.
     const kind_weight_max: u32 = 16;
     const interactive_percent_choices = [_]u32{ 0, 50, 90 };
     const target_prefix_count_choices = [_]u32{ 2, 3, 5, 8, 0 };
@@ -589,13 +455,8 @@ pub const Swarm = struct {
     const hold_percent_choices = [_]u32{ 0, 10, 30 };
     const image_failure_percent_choices = [_]u32{ 0, 2, 10, 40 };
     const button_mix_count = std.enums.values(ButtonMix).len;
-    /// Most Smith choices `generate` makes: two per kind a model lists, and
-    /// one per scalar it draws.
     const choice_count_max = 2 * kind_count + 7;
 
-    /// Weights for the kinds the model lists, in its order; the rest stay
-    /// off, so a model's seeds replay unchanged when another app's kind is
-    /// added.
     pub fn generate(smith: *Smith, comptime kinds: []const ActionKind) Swarm {
         comptime {
             assert(kinds.len <= kind_count);
@@ -607,8 +468,6 @@ pub const Swarm = struct {
         swarm.kinds = kinds;
         swarm.kind_weight_total = 0;
         inline for (kinds) |kind| {
-            // A quarter of kinds are off for the seed. `tickMain` and
-            // `presentBuilt` stay on, so frames always move eventually.
             const off = choose(smith, 4, "kind off") == 0;
             const weight = 1 + choose(smith, kind_weight_max, "kind weight");
             const required = kind == .tick_main or kind == .present;
@@ -631,8 +490,6 @@ pub const Swarm = struct {
         swarm.hold_percent = hold_percent_choices[
             choose(smith, hold_percent_choices.len, "hold percent")
         ];
-        // Only a model that draws decodes reads this choice, so the other
-        // apps' seeds replay unchanged.
         swarm.image_failure_percent = 0;
         if (comptime std.mem.indexOfScalar(ActionKind, kinds, .image) != null) {
             swarm.image_failure_percent = image_failure_percent_choices[
@@ -655,8 +512,6 @@ pub const Swarm = struct {
         unreachable;
     }
 
-    /// A button from the mix; always one choice, so the mix does not shift
-    /// the bytes that follow.
     fn chooseButton(self: *const Swarm, smith: *Smith) input.MouseButton {
         const roll = choose(smith, 100, "button");
         const left_percent: u32, const right_percent: u32 = switch (self.button_mix) {
@@ -685,40 +540,23 @@ pub const Swarm = struct {
     }
 };
 
-/// `Model` is the app's reference model (see `vopr_todo_model.zig`): it is
-/// told every input action, brackets every `tickMain`, and checks the app's
-/// state after every step.
 pub fn Vopr(comptime App: type, comptime Model: type) type {
     return struct {
         driver: Driver,
         model: Model,
-        /// The highest `rendered().frame_number` seen; it must never drop.
         frame_number_rendered: u64,
-        /// Rounds the last `quiesce` ran, for the CLI's summary.
         quiescence_round_count: u32,
-        /// Rolling hash of every frame dump the renderer was asked to draw.
         dump_hasher: std.hash.Wyhash,
-        /// Backing for the action being generated; the queue copies it.
         text_bytes: [text_bytes_action_max_model]u8,
-        /// The current epoch's action mix.
         swarm: Swarm,
-        /// Actions generated so far, which sets the epochs.
         action_count: u32,
-        /// The held-button gesture `.drag` steps continue, if any.
         gesture: GestureState,
-        /// The mouse buttons the harness holds down.
         held: Held,
-        /// The rendered frame `invariants.checkFrame` last checked.
         frame_number_checked: u64,
-        /// The dump of the rendered frame, copied before a stable rebuild.
         rebuild_dump: [dump_bytes_max]u8,
         stable_rebuild_count: u32,
-        /// The platform's file dialogs, bound when the model lists `.dialog`.
         dialogs: Dialogs,
-        /// Backing for the paths of the dialog answer being generated.
         answer_bytes: [App.limits.events.dialog_path_bytes_max]u8,
-        /// Completions pushed onto the ring since the last drain, which the
-        /// next drain moves into the queue. Their paths take no text bytes.
         ring_answer_count: u32,
 
         const Self = @This();
@@ -726,19 +564,14 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         const lists_dialog = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .dialog) != null;
         const lists_image = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .image) != null;
         const lists_job = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .job) != null;
-        /// Who runs the app's jobs: the harness steps the workers, unless
-        /// the model runs them on the main thread (`runQueued`).
         const job_runs: internals.jobs.Mode = if (@hasDecl(Model, "job_runs"))
             Model.job_runs
         else
             .stepped;
 
-        /// Paths one selection answer may hold, before the byte budget cuts it.
         const path_count_choices = [_]u32{ 1, 2, 3, App.limits.events.dialog_path_count_max };
 
         comptime {
-            // A model that draws decodes names the sides they may have, and
-            // a model that answers dialogs the path lengths they may have.
             if (lists_image) {
                 for (Model.image_sides) |side| {
                     assert(side > 0);
@@ -750,8 +583,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 for (Model.dialog_path_lengths) |length| assert(length > 0);
             }
             for (path_count_choices) |count| assert(count > 0);
-            // Only stepped jobs have turns to play, and the model names
-            // the result the harness posts and the rows it may cancel.
             if (lists_job) {
                 assert(job_runs == .stepped);
                 assert(@sizeOf(Model.JobResult) <= App.limits.events.job_result_bytes_max);
@@ -759,24 +590,16 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
         }
 
-        /// The keys the generator presses: the model's own list when it
-        /// declares one (`Model.key_choices`), so the other apps' seeds
-        /// replay unchanged.
         const keys: []const input.KeyCode = if (@hasDecl(Model, "key_choices"))
             Model.key_choices
         else
             &key_choices;
 
-        /// The units text and compositions are made of: the model's own
-        /// when it declares them (`Model.text_alphabet`), so the other apps'
-        /// seeds replay unchanged. A unit may be any length; each is one
-        /// choice, so the bytes a seed reads per action do not change.
         const alphabet: []const []const u8 = if (@hasDecl(Model, "text_alphabet"))
             Model.text_alphabet
         else
             &text_alphabet;
 
-        /// Bytes one text or composition action can hold.
         const text_bytes_action_max_model: u32 = blk: {
             var unit_len_max: u32 = 0;
             for (alphabet) |unit| unit_len_max = @max(unit_len_max, unit.len);
@@ -784,8 +607,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         };
 
         comptime {
-            // Never the debugger toggle, Cmd/Ctrl+Shift+I, which reads the
-            // real clock.
             for (keys) |key| assert(key != .i);
             for (alphabet) |unit| assert(std.unicode.utf8ValidateSlice(unit));
             assert(text_bytes_action_max_model <= App.limits.events.text_bytes_max);
@@ -795,9 +616,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
         }
 
-        /// A gesture in progress: its press point, its last point, how
-        /// many more moves it makes, and whether it then releases or plans
-        /// more moves with the button still held.
         const GestureState = struct {
             held: bool,
             button: input.MouseButton,
@@ -817,8 +635,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         };
         const Driver = core.CoreDriver(App);
 
-        /// Which buttons are down, so the harness never presses a button
-        /// that is down or releases one that is up.
         const Held = struct {
             down: [button_count]bool,
 
@@ -843,19 +659,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
         };
 
-        /// Initialize in place (the app must not move), draw the seed's
-        /// action mix from `smith`, then settle the first frame so pointer
-        /// actions have hit records to aim at.
         pub noinline fn initInPlace(
             self: *Self,
             gpa: std.mem.Allocator,
             io: std.Io,
             smith: *Smith,
         ) !void {
-            // Edit shortcuts use Ctrl and a wheel delta grows toward the end
-            // on every host, so a seed replays anywhere. Both are
-            // process-global: every instance in this process pins them the
-            // same way, before its first frame.
             internals.text_engine.uses_cmd = false;
             internals.window.wheel_delta_inverted = false;
             const trace = trace_mod.Trace{
@@ -865,9 +674,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .scale_factor = scale_factor,
                 .steps = &.{},
             };
-            // The harness plays the image decode worker, so no thread reads
-            // files, and the job workers unless the model runs jobs on the
-            // main thread (`Model.job_runs`).
             try self.driver.initInPlaceWorkers(gpa, io, &trace, .{
                 .image_decodes = .stepped,
                 .job_runs = job_runs,
@@ -887,8 +693,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.answer_bytes = @splat(0);
             self.ring_answer_count = 0;
             self.model.init();
-            // A model that stands in for a platform service (the text
-            // clipboard) binds it before the first frame.
             if (@hasDecl(Model, "attach")) self.model.attach(self.window());
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
@@ -951,9 +755,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             if (self.action_count % self.swarm.rebuild_period == 0) self.checkStableRebuild();
         }
 
-        /// The next action. Input that would overflow the queue's events or
-        /// text bytes before the next drain becomes a `tickMain`, and so does
-        /// a present with no frame in flight: both keep the run in budget.
         pub fn generate(self: *Self, smith: *Smith) Action {
             if (self.action_count > 0 and self.action_count % swarm_epoch_step_count == 0) {
                 self.swarm = .generate(smith, Model.action_kinds);
@@ -1001,8 +802,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .{ .cancel = generateCancel(smith) }
                 else
                     .tick_main,
-                // Only a model that lists these kinds draws them, and only
-                // it names their sizes and lengths.
                 .image => if (!lists_image) unreachable else if (self.imageRequestOldest()) |entry|
                     .{ .image = self.generateImage(smith, entry) }
                 else
@@ -1012,12 +811,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// A turn for the first slot from a seeded one that has a turn to
-        /// take: a pending or skipped spawn starts; a running job posts
-        /// (only while a result slot is free, as a worker would wait for a
-        /// drain) or ends; a cancelled one posts, refused, or ends. Always
-        /// the same choices, so the slots' phases do not shift the bytes
-        /// that follow. With no turn to take, a `tickMain`.
         fn generateJob(self: *Self, smith: *Smith) Action {
             const pool = &self.window().jobs;
             assert(pool.mode == .stepped);
@@ -1034,7 +827,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .kind = .start,
                 .value = value,
                 .cancel_row = if (cancels) row + 1 else 0,
-                // Finished twice as often as failed or cancelled by `run`.
                 .outcome = switch (outcome_index) {
                     0, 1 => .finished,
                     2 => .failed,
@@ -1056,9 +848,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return .tick_main;
         }
 
-        /// A worker's turn: the runner's `beginRun` or `endRun`, a post,
-        /// or, after a cancelled run returned, the interrupter's end. Each
-        /// returns what the slot's phase before it says it must.
         fn performJob(self: *Self, turn: *const Action.JobStep) void {
             const pool = &self.window().jobs;
             assert(pool.mode == .stepped);
@@ -1086,8 +875,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             assert(pool.phaseOf(turn.slot) != .pending);
         }
 
-        /// The entry of the oldest image request, when the stepped worker
-        /// may take it: one waits, and the last decode has landed.
         fn imageRequestOldest(self: *Self) ?u32 {
             const loader = &self.window().images;
             assert(loader.mode == .stepped);
@@ -1101,9 +888,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return entry;
         }
 
-        /// A failure at the swarm's rate, else pixels with sides from the
-        /// model's list. Always the same choices, so the outcome does not
-        /// shift the bytes that follow.
         fn generateImage(self: *const Self, smith: *Smith, entry: u32) Action.ImageDecode {
             const failure_count = std.enums.values(Action.ImageFailure).len;
             const fails = choose(smith, 100, "image fails") < self.swarm.image_failure_percent;
@@ -1121,7 +905,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// The worker's turn: take the request and push its made-up decode.
         fn performImage(self: *Self, decode: *const Action.ImageDecode) void {
             const win = self.window();
             const taken = win.images.takeStepped() orelse unreachable;
@@ -1147,10 +930,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             });
         }
 
-        /// An answer to an open dialog, or one armed for the next dialog to
-        /// return at once, always when none is open. One through the queue
-        /// or the ring that the queue cannot take before the next drain
-        /// becomes a `tickMain`.
         fn generateDialog(self: *Self, smith: *Smith) Action {
             const Answer = vopr_dialogs.Answer;
             const route_index = choose(smith, 3, "dialog route");
@@ -1165,7 +944,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             else
                 @fromBackingInt(@intCast(route_index));
             const target = if (route == .at_open) 0 else target_index % open_count;
-            // Selections twice as often as cancels or failures.
             const outcome: Answer.Outcome = switch (outcome_index) {
                 0, 1 => .selected,
                 2 => .cancelled,
@@ -1189,24 +967,17 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 answer.paths = self.answer_bytes[0..written.len];
                 answer.path_count = written.count;
             }
-            // A platform holds an answer the queue has no event slot for
-            // yet, as it holds input. Its paths take their request's own
-            // room (`EventQueue.dialog_paths`), never the text bytes.
             if (route != .at_open and !self.queueHasRoom(1, 0)) {
                 return .tick_main;
             }
             return .{ .dialog = answer };
         }
 
-        /// The platform answers: arm it, or close the dialog and queue its
-        /// completion on the route's path.
         fn performDialog(self: *Self, answer: *const vopr_dialogs.Answer) void {
             if (answer.route == .at_open) return self.dialogs.arm(answer);
             const win = self.window();
             const open = self.dialogs.close(answer.target);
             if (answer.outcome == .selected) {
-                // A backend that completes a dialog later checks the
-                // selection here before it queues it, as `openDialog` does.
                 tick.checkSelection(win, open.many, answer.path_count, answer.paths.len);
             }
             const completion = answer.completion(open.request_id);
@@ -1223,7 +994,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
         }
 
-        /// A gesture cancel or a focus loss, which may report one key held.
         fn generateCancel(smith: *Smith) Action.Cancel {
             const Kind = @FieldType(Action.Cancel, "kind");
             const kind_count_cancel = std.enums.values(Kind).len;
@@ -1234,9 +1004,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return .{ .kind = kind, .key_held = if (holds) key else null };
         }
 
-        /// A seeded window size and scale within the profile's framebuffer
-        /// (`limits.window`) and the app's minimums: the configured size, the
-        /// minimum, the largest the framebuffer takes, or any between.
         fn generateResize(smith: *Smith) Action.Resize {
             const scale_choices = [_]f32{ 1, 1.25, 1.5, 2 };
             const scale = scale_choices[choose(smith, scale_choices.len, "resize scale")];
@@ -1258,14 +1025,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// Run `tickMain` and present until nothing is requested, in flight,
-        /// or awaiting a flip, at a fixed clock so no deadline fires.
         pub fn quiesce(self: *Self) void {
             const win = self.window();
             var round: u32 = 0;
             while (round < quiescence_round_max) : (round += 1) {
                 if (win.frame_in_flight.load(.acquire)) self.present();
-                // A completion on the ring wakes the host as input does.
                 const busy = win.render_requested or win.awaiting_flip or ringPending(win);
                 if (!busy) break;
                 self.tickMain();
@@ -1290,26 +1054,13 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.checkStableRebuild();
         }
 
-        /// Stable rebuild. Exact rule: when the rendered frame is current
-        /// (nothing in flight or awaiting a flip, no render requested, and
-        /// the queue empty) and the build that made it asked for no timed
-        /// render (`Window.renderDeadlineNs` is null), a render requested
-        /// with no input and no clock advance must draw a dump identical,
-        /// byte for byte, to the rendered frame's. A view that changes with
-        /// the clock (an animation, a caret blink, a scroll settling, a
-        /// first build after a resize reading old bounds) must ask for a
-        /// timed render (`cx.requestRenderAfter`) or request a render
-        /// itself, so those frames are exactly the exempt ones.
         fn checkStableRebuild(self: *Self) void {
             const win = self.window();
             if (win.frame_in_flight.load(.acquire)) return;
             if (win.awaiting_flip or win.render_requested) return;
-            // Queued input and a completion on the ring are input.
             if (win.queue.count > 0) return;
             if (ringPending(win)) return;
             if (win.renderDeadlineNs() != null) return;
-            // The last draw is the rendered frame: it was presented, then
-            // flipped, and nothing was drawn since.
             const before = self.driver.renderer.frameDump();
             assert(before.len <= self.rebuild_dump.len);
             @memcpy(self.rebuild_dump[0..before.len], before);
@@ -1354,14 +1105,10 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.driver.deliver(event);
         }
 
-        /// Whether `event_count` more events and `text_bytes` more bytes of
-        /// text fit before the next drain, and the model can record one more
-        /// action: the queue folds moves and scrolls, the model does not.
         fn queueHasRoom(self: *Self, event_count: u32, text_bytes: u32) bool {
             assert(event_count > 0);
             const queue = &self.window().queue;
             assert(queue.text_len <= queue.text_bytes.len);
-            // Completions on the ring take their slots at the drain.
             const text_room: u64 = queue.text_bytes.len - queue.text_len;
             if (self.model.pendingRoom() == 0) return false;
             if (queue.room() < self.ring_answer_count) return false;
@@ -1375,17 +1122,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const opened_count_before = self.dialogs.opened_count;
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
             if (published) assert(win.frame_in_flight.load(.acquire));
-            // A drain takes the whole ring; only jobs it ran on the main
-            // thread push onto it again, for the next drain.
             if (job_runs != .main_thread) assert(!ringPending(win));
             self.ring_answer_count = 0;
             self.model.endDrain(win, published);
             self.checkDrained(published, opened_count_before);
         }
 
-        /// Every drain empties the queue, except one whose file dialog
-        /// returned its outcome from `open`, as a modal one does: the tick
-        /// queues that one completion for the next drain and builds nothing.
         fn checkDrained(self: *Self, published: bool, opened_count_before: u32) void {
             const win = self.window();
             const delivered = self.dialogs.delivered_at_open;
@@ -1406,9 +1148,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 "dialog returned no outcome from open", .{win.queue.count});
         }
 
-        /// The render side: pack and draw the frame in flight, then fold the
-        /// renderer's text dump (not raw packed buffers, which hold padding
-        /// and addresses) into the rolling hash.
         fn present(self: *Self) void {
             const win = self.window();
             const draw_count = self.driver.renderer.draw_count;
@@ -1421,7 +1160,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.dump_hasher.update(dump);
         }
 
-        /// Invariants between actions, beyond the core's own assertions.
         fn check(self: *Self) void {
             const win = self.window();
             assert(win.phase == .idle);
@@ -1440,7 +1178,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             invariants.checkFocusLive(win);
             self.model.check(&self.driver.app.state, self.action_count);
             if (win.frame_in_flight.load(.acquire)) {
-                // Published frames are flipped only after they are presented.
                 assert(win.awaiting_flip);
             } else {
                 if (win.render_phase != .idle) {
@@ -1484,9 +1221,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
         }
 
-        /// A move, a click, or with `Swarm.hold_percent` the press of a
-        /// button that is up or the release of one that is down. Releasing
-        /// a gesture's button ends the gesture.
         fn generatePointer(self: *Self, smith: *Smith) Action.Pointer {
             const Kind = @FieldType(Action.Pointer, "kind");
             const point = self.generatePoint(smith);
@@ -1515,22 +1249,16 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return pointer;
         }
 
-        /// A held button goes up; the gesture holding it, if any, ends.
         fn releaseHeld(self: *Self, button: input.MouseButton) void {
             self.held.release(button);
             if (self.gesture.held and self.gesture.button == button) self.gesture = .idle;
         }
 
-        /// The most events the next pointer or gesture action can queue: a
-        /// press may release a held button first.
         fn pointerEventCount(self: *const Self) u32 {
             if (self.held.any()) return pointer_event_count_max + release_event_count;
             return pointer_event_count_max;
         }
 
-        /// A press moves there first, as a platform reports the pointer
-        /// before its button; a held move is `mouse_dragged`, which the
-        /// queue folds only into another held move of the same button.
         fn deliverGesture(self: *Self, gesture: Action.Gesture) void {
             const position: input.MouseEvent = .{
                 .position = .{ .x = gesture.x, .y = gesture.y },
@@ -1558,10 +1286,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
         }
 
-        /// The next step of the held-button gesture: a press (mostly on a
-        /// draggable), then a run of up to `drag_move_count_max` moves,
-        /// then a release, or with a quarter's chance another run of moves
-        /// with the button still held, so a drag can stay open for long.
         fn generateGesture(self: *Self, smith: *Smith) Action {
             const gesture = &self.gesture;
             if (!gesture.held) return self.generateGesturePress(smith);
@@ -1621,8 +1345,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             } };
         }
 
-        /// A press point: on a draggable nine times in ten when the frame
-        /// has one, else anywhere `generatePoint` aims.
         fn generatePressPoint(self: *Self, smith: *Smith) Point {
             const frame = self.window().rendered();
             const hits = frame.hits[0..frame.hit_count];
@@ -1633,9 +1355,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return self.clampToWindow(pointIn(smith, hits[index].bounds));
         }
 
-        /// Where a held move goes: onto a drop target, outside every drop
-        /// target (above the first), back to the press point, within a few
-        /// pixels of it (either side of the click slop), or onto a draggable.
         fn generateDragPoint(self: *Self, smith: *Smith, start: Point) Point {
             const win = self.window();
             const frame = win.rendered();
@@ -1676,7 +1395,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// A rank in [0, candidate_count), uniform over the seed's prefix.
         fn targetRank(self: *const Self, smith: *Smith, candidate_count: u32) u32 {
             assert(candidate_count > 0);
             const prefix_count = self.swarm.target_prefix_count;
@@ -1689,7 +1407,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return rank;
         }
 
-        /// A wheel step: a pixel, a line, or a page, either way.
         fn generateScroll(self: *Self, smith: *Smith) Action.Scroll {
             const delta_choices = [_]f32{ -400, -40, -1, 1, 40, 400 };
             const point = self.generatePoint(smith);
@@ -1700,11 +1417,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// A point of a rendered hit record (its centre, an edge, or any
-        /// point inside), within the window; anywhere when there is none.
         fn generatePoint(self: *Self, smith: *Smith) Point {
-            // Only a model that declares a target reads this choice, so the
-            // other apps' seeds replay unchanged.
             if (comptime @hasDecl(Model, "biasTarget")) {
                 if (choose(smith, 2, "biased") == 0) {
                     if (Model.biasTarget(self.window())) |bias| {
@@ -1735,8 +1448,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// `unit_count_min` or more units of `alphabet`, written into
-        /// `text_bytes`; the slice lives until the next generated action.
         fn generateText(self: *Self, smith: *Smith, unit_count_min: u32) []const u8 {
             assert(unit_count_min <= 1);
             const unit_count = unit_count_min +
@@ -1756,9 +1467,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
     };
 }
 
-/// One axis of a seeded resize, in whole logical pixels: the configured
-/// extent, the minimum (at least 1), the largest whose physical size fits
-/// the framebuffer at `scale_factor`, or any extent between.
 fn resizeExtent(smith: *Smith, options: struct {
     configured: u32,
     minimum: u32,
@@ -1782,8 +1490,6 @@ fn resizeExtent(smith: *Smith, options: struct {
     return @floatFromInt(extent);
 }
 
-/// The platform event for `cancel`: a focus loss reports the gesture it
-/// cancelled, if any, and the one key held, if any.
 fn cancelEvent(cancel: Action.Cancel) input.InputEvent {
     if (cancel.kind == .pointer_cancelled) return .pointer_cancelled;
     var keys_held: input.HeldKeys = .empty;
@@ -1798,8 +1504,6 @@ fn cancelEvent(cancel: Action.Cancel) input.InputEvent {
     } };
 }
 
-/// A key event with no characters, as the goldens' traces send. Never the
-/// debugger toggle, whose overlay reads the real clock.
 fn keyEvent(chord: Action.Chord) input.KeyEvent {
     const event: input.KeyEvent = .{
         .key = chord.key,
@@ -1815,7 +1519,6 @@ fn keyEvent(chord: Action.Chord) input.KeyEvent {
 
 const Point = struct { x: f32, y: f32 };
 
-/// Whether a worker's completion waits on the ring for the next drain.
 fn ringPending(win: *Window) bool {
     const ring = &win.completions;
     const head = ring.head.load(.acquire);
@@ -1824,13 +1527,8 @@ fn ringPending(win: *Window) bool {
     return head != tail;
 }
 
-/// The turn a job slot in `phase` can take, or null for none: a slot
-/// without a job, or whose end waits for a drain, has none, and neither has
-/// a running job asked to post while every result slot is held.
 fn jobTurn(phase: internals.jobs.Phase, options: struct {
-    /// The seed asks for a post rather than an end.
     posts: bool,
-    /// A result slot is free.
     room: bool,
 }) ?Action.JobStep.Kind {
     switch (phase) {
@@ -1841,13 +1539,10 @@ fn jobTurn(phase: internals.jobs.Phase, options: struct {
             if (options.room) return .post;
             return null;
         },
-        // A cancelled job's post is refused before any wait, room or not.
         .interrupting => return if (options.posts) .post else .end,
     }
 }
 
-/// What the harness's `run` returned: `.canceled` is a run that returned
-/// `error.Canceled` on its own, which reports `.cancelled`.
 fn jobReturned(outcome: Action.JobStep.Outcome) anyerror!void {
     return switch (outcome) {
         .finished => {},
@@ -1865,7 +1560,6 @@ fn imageError(failure: Action.ImageFailure) anyerror {
     };
 }
 
-/// Synthetic RGBA pixels: any bytes do, so long as both instances agree.
 fn fillPixels(pixels: []u8, decode: *const Action.ImageDecode) void {
     assert(decode.failure == null);
     assert(pixels.len == @as(usize, decode.width) * decode.height * 4);
@@ -1874,15 +1568,11 @@ fn fillPixels(pixels: []u8, decode: *const Action.ImageDecode) void {
     }
 }
 
-/// Where a model asks pointer, wheel, and drag actions to aim half the time
-/// (`Model.biasTarget`): an area, and a third of those times an alternate
-/// one when it has one, such as a scroll box and its scrollbar's track.
 pub const Bias = struct {
     area: records.Rect,
     alternate: ?records.Rect,
 };
 
-/// Whether a click, key, or wheel on `record` can change state.
 fn isInteractive(record: *const records.HitRecord) bool {
     if (record.on_click != records.index_none) return true;
     if (record.on_key != records.index_none) return true;
@@ -1901,8 +1591,6 @@ fn countTargets(hits: []const records.HitRecord, interactive_only: bool) u32 {
 
 const RecordKind = enum { draggable, drop_target };
 
-/// A `.draggable` is a box a press starts a gesture on: a drag source, or
-/// a box that captures the pointer (`on_pointer_drag`), such as a splitter.
 fn isKind(record: *const records.HitRecord, kind: RecordKind) bool {
     if (!record.pointer) return false;
     return switch (kind) {
@@ -1920,7 +1608,6 @@ fn countKind(hits: []const records.HitRecord, kind: RecordKind) u32 {
     return count;
 }
 
-/// The index in `hits` of the `rank`th record of `kind`, counting from 0.
 fn nthKind(hits: []const records.HitRecord, kind: RecordKind, rank: u32) u32 {
     assert(rank < hits.len);
     var seen: u32 = 0;
@@ -1932,8 +1619,6 @@ fn nthKind(hits: []const records.HitRecord, kind: RecordKind, rank: u32) u32 {
     unreachable;
 }
 
-/// The smallest top edge of any drop target: above it, a point is outside
-/// all of them.
 fn dropTargetTop(hits: []const records.HitRecord) f32 {
     var top: f32 = std.math.floatMax(f32);
     for (hits) |*record| {
@@ -1943,7 +1628,6 @@ fn dropTargetTop(hits: []const records.HitRecord) f32 {
     return top;
 }
 
-/// The index in `hits` of the `rank`th target, counting from 0.
 fn nthTarget(hits: []const records.HitRecord, interactive_only: bool, rank: u32) u32 {
     assert(rank < hits.len);
     if (!interactive_only) return rank;
@@ -1956,8 +1640,6 @@ fn nthTarget(hits: []const records.HitRecord, interactive_only: bool, rank: u32)
     unreachable;
 }
 
-/// A point of `bounds`: its centre, a point on one of its four edges (the
-/// right and bottom edges are one past the box), or a point inside.
 fn pointIn(smith: *Smith, bounds: records.Rect) Point {
     assert(bounds.width >= 0);
     assert(bounds.height >= 0);
@@ -1978,17 +1660,12 @@ fn pointIn(smith: *Smith, bounds: records.Rect) Point {
     };
 }
 
-/// A fraction in [0, 1] in thousandths, so points land on exact edges too.
 fn fraction(smith: *Smith) f32 {
     const thousandths = choose(smith, 1001, "fraction");
     assert(thousandths <= 1000);
     return @as(f32, @floatFromInt(thousandths)) / 1000;
 }
 
-/// A choice in [0, count). Each choice reads one full `u64` and reduces it:
-/// `Smith` maps a value outside a ranged read's weights to the range's
-/// minimum, so with PRNG bytes as input a ranged read would almost always
-/// return 0. `site` names the choice, giving the fuzzer one id per site.
 fn choose(smith: *Smith, count: u64, comptime site: []const u8) u32 {
     assert(count > 0);
     assert(count <= std.math.maxInt(u32));
@@ -1998,8 +1675,6 @@ fn choose(smith: *Smith, count: u64, comptime site: []const u8) u32 {
     return choice;
 }
 
-/// The fuzz target for one app: a few hundred actions from the fuzzer's
-/// bytes, then quiescence.
 fn FuzzTarget(comptime workload: Workload) type {
     return struct {
         fn run(_: void, smith: *Smith) anyerror!void {
@@ -2017,8 +1692,6 @@ fn FuzzTarget(comptime workload: Workload) type {
     };
 }
 
-/// Outside fuzz mode `std.testing.fuzz` replays only the corpus, so seed it
-/// with PRNG inputs long enough for a few hundred actions each.
 fn fuzzCorpus(comptime workload: Workload) !void {
     const corpus_count = 4;
     const bytes = try std.testing.allocator.alloc(
@@ -2079,7 +1752,6 @@ test "fuzz: jobs_main_thread vopr" {
     try fuzzCorpus(.jobs_main_thread);
 }
 
-/// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.Model()) {
     const step_count = 300;
     const byte_count = bytes_swarm + step_count * bytes_per_action_max;
@@ -2105,24 +1777,16 @@ fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.M
 
 test "two instances fed the same bytes draw the same frames" {
     _ = try runPairedSeed(.todo, 1);
-    // Seed 4 starts nine drags in 300 steps; seed 1 starts one, so whether it
-    // drops depended on where layout happened to put the lists.
     const result = try runPairedSeed(.drag_drop, 4);
     try std.testing.expect(result.stats.drags_completed > 0);
     const list = try runPairedSeed(.virtual_list, 1);
     try std.testing.expect(list.stats.rows_seen > 0);
-    // Seed 1's resizes include a 1 px window where the panes overflow at
-    // their content floors, so its few presses miss the splitters; seed 6
-    // drags them 27 times.
     const panes = try runPairedSeed(.splitter, 6);
     try std.testing.expect(panes.stats.drags_moved > 0);
     const fired = try runPairedSeed(.actions, 1);
     var fire_count: u32 = 0;
     for (fired.stats.fired) |count| fire_count += count;
     try std.testing.expect(fire_count > 0);
-    // The Select's menu starts closed, so a seed shows it only once the
-    // swarm opens it; seed 1's swarm draws 19 frames and never does, while
-    // seed 4's opens it three times and the dialog once.
     const overlay = try runPairedSeed(.nested_overlay, 4);
     try std.testing.expect(overlay.stats.menu_frames > 0);
     const area = try runPairedSeed(.text_area, 1);
@@ -2130,18 +1794,11 @@ test "two instances fed the same bytes draw the same frames" {
     const images = try runPairedSeed(.images, 1);
     try std.testing.expect(images.stats.landed > 0);
     try std.testing.expect(images.stats.drawn > 0);
-    // file_dialog seed 9's clicks ask twice in one drain; seed 2's fill the
-    // dialog table and ask again.
     const dialogs = try runPairedSeed(.file_dialog, 9);
     try std.testing.expect(dialogs.stats.completions > 0);
     try std.testing.expect(dialogs.stats.refused_waiting > 0);
     const dialogs_full = try runPairedSeed(.file_dialog, 2);
     try std.testing.expect(dialogs_full.stats.refused_full > 0);
-    // jobs seed 7 cancels a running job, whose posts are then refused and
-    // whose undelivered result is dropped; seed 2's clicks fill the job
-    // table, are refused, and cancel a reused slot's stale id; seed 5's
-    // chain a successor from on_done into the slot its finished job freed
-    // while every other slot is busy.
     const interrupted = try runPairedSeed(.jobs, 7);
     try std.testing.expect(interrupted.stats.cancels_interrupting > 0);
     try std.testing.expect(interrupted.stats.posts_refused > 0);
@@ -2151,15 +1808,12 @@ test "two instances fed the same bytes draw the same frames" {
     try std.testing.expect(busy.stats.cancels_stale_reused > 0);
     const chained = try runPairedSeed(.jobs, 5);
     try std.testing.expect(chained.stats.chained_full > 0);
-    // jobs_main_thread seed 1 runs jobs beside others' results and defers
-    // those that do not fit, and chains into a full table from on_done.
     const main_thread = try runPairedSeed(.jobs_main_thread, 1);
     try std.testing.expect(main_thread.stats.runs_batched > 0);
     try std.testing.expect(main_thread.stats.runs_deferred > 0);
     try std.testing.expect(main_thread.stats.chained_full > 0);
 }
 
-/// The centre of the `rank`-th hit record with a click handler, in tree order.
 fn clickTarget(frame: *const records.Frame, rank: u32) Point {
     var seen: u32 = 0;
     for (frame.hits[0..frame.hit_count]) |*record| {
@@ -2170,15 +1824,10 @@ fn clickTarget(frame: *const records.Frame, rank: u32) Point {
         }
         seen += 1;
     }
-    unreachable; // The example draws its three buttons in every frame.
+    unreachable;
 }
 
 test "a List scrolled by a target rebuilds the same rows" {
-    // List predicts the offset layout resolves for a `.child` and an `.end`
-    // target to the bit: Jump built one row off at 1006x216 and 1.25x
-    // (virtual_list seed 284) and at 475x1732 and 1.25x (soak seed
-    // 6858813265271003337). Before the fix the first Jump failed "dumps
-    // differ".
     const V = Vopr(virtual_list.App, VirtualListModel);
     const vopr_instance = try std.testing.allocator.create(V);
     defer std.testing.allocator.destroy(vopr_instance);
@@ -2210,7 +1859,6 @@ test "a List scrolled by a target rebuilds the same rows" {
                 .click_count = 1,
                 .releases_held = false,
             } });
-            // Quiescence ends in the stable-rebuild check; it must not skip.
             vopr_instance.quiesce();
             try std.testing.expect(vopr_instance.stable_rebuild_count > rebuilds);
         }

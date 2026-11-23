@@ -1,10 +1,3 @@
-//! Background jobs without workers, the path the web and `-fsingle-threaded`
-//! builds take, checked natively: `addGoldens` in build.zig builds this file
-//! and its `gooey` single-threaded. A spawned job runs whole on the main
-//! thread after the drain that spawned it, its posts arrive in the next
-//! drain, and a cancel can reach it only before it runs, when `run` is
-//! skipped, or after, when what it posted is dropped.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const gooey = @import("gooey");
@@ -14,23 +7,19 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 comptime {
-    // Otherwise these checks would run the worker path.
     assert(builtin.single_threaded);
 }
 
-// One thread: plain counters are enough for the job to report through.
 var job_started_count: u32 = 0;
 var job_saw_cancel_count: u32 = 0;
 
 const Count = struct {
     pub const Input = struct { first: u32, count: u32 };
     pub const Result = struct { value: u32 };
-    /// `input.count` is at most the whole result pool.
     pub const posts_max: u32 = limits.events.job_result_count_max;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         job_started_count += 1;
-        // Nothing can cancel a job while it runs on the main thread.
         if (job.cancelled()) job_saw_cancel_count += 1;
         for (0..input.count) |index| {
             const value = input.first + @as(u32, @intCast(index));
@@ -39,8 +28,6 @@ const Count = struct {
     }
 };
 
-/// Posts its input's count of results, at most four: two of them fill
-/// `nano`'s eight result slots together.
 const Small = struct {
     pub const Input = struct { first: u32, count: u32 };
     pub const Result = struct { value: u32 };
@@ -119,8 +106,6 @@ const Harness = struct {
         self.app.tick(self.now);
     }
 
-    /// Spawn a job every check expects to start: it keeps within the
-    /// table, so a refusal is a failed check.
     fn spawn(self: *Harness, first: u32, count: u32) gooey.JobId {
         var effects = Effects.init(null, .root);
         effects.jobs = &self.app.window.jobs;
@@ -130,8 +115,6 @@ const Harness = struct {
         }) catch |err| std.debug.panic("jobs_main_thread_checks: spawn refused: {t}", .{err});
     }
 
-    /// A `Small` job; refused only if every job slot is busy, which these
-    /// checks never reach.
     fn spawnSmall(self: *Harness, first: u32, count: u32) gooey.JobId {
         var effects = Effects.init(null, .root);
         effects.jobs = &self.app.window.jobs;
@@ -212,14 +195,6 @@ test "a cancel after the job ran and before the drain drops what it posted" {
 }
 
 test "jobs one drain spawns that together post past the result slots run over two drains" {
-    // Two jobs of five posts each fit `nano`'s eight result slots alone,
-    // not together, and two clicks spawn both in one drain. Running both
-    // after that drain once panicked with "events pool 'job results'
-    // exhausted" (the VOPR's jobs_main_thread app, seed 1). Now a job
-    // starts only while its `posts_max` (eight for `Count`) slots are free:
-    // the first runs after the drain that spawned it, the second after the
-    // drain that delivers the first's posts, and every post arrives, in
-    // order.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
@@ -245,11 +220,6 @@ test "jobs one drain spawns that together post past the result slots run over tw
 }
 
 test "jobs whose posts_max fit the result slots together run in one drain" {
-    // Batching, at the boundary: two `Small` jobs (posts_max 4) fill
-    // `nano`'s eight result slots exactly, so both run after the drain that
-    // spawned them. Then a job one slot past what is free waits for the
-    // drain that delivers the posts before it. Every post arrives in spawn
-    // order.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
@@ -264,8 +234,6 @@ test "jobs whose posts_max fit the result slots together run in one drain" {
     try testing.expectEqual(@as(u32, 8), state.received_count);
     try testing.expectEqualSlices(u32, &.{ 10, 11, 12, 13, 20, 21, 22, 23 }, state.received[0..8]);
     try testing.expectEqual(@as(u32, 2), state.done_count);
-    // One past: a `Small` that posts one leaves seven slots, short of
-    // `Count`'s posts_max of eight, so `Count` waits a drain.
     harness.app.state = .{};
     _ = harness.spawnSmall(30, 1);
     _ = harness.spawn(40, 1);

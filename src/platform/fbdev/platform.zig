@@ -1,17 +1,3 @@
-//! Display-server-free platform for embedded Linux (`-Dlinux-backend=fbdev`):
-//! it owns the framebuffer device and every evdev input device, and its
-//! single window covers the whole panel, rendered on the CPU. There is no
-//! compositor, so the core host (`core_host.zig`) paces frames itself: it
-//! waits in `poll` on the input devices, has `dispatchInput` deliver what
-//! arrived, and presents at most once per `frame_period_ns_min`.
-//!
-//! Environment (read once at initialization): `GOOEY_FBDEV` framebuffer path
-//! (default `/dev/fb0`), `GOOEY_SCALE` device pixels per logical pixel, 1
-//! through 8 (default 1), and `GOOEY_EVDEV_GRAB=1` to take exclusive input
-//! access. The process needs read/write access to the framebuffer and read
-//! access to `/dev/input/event*`, usually through the `video` and `input`
-//! groups.
-
 const std = @import("std");
 const posix = std.posix;
 const window_registry = @import("../window_registry.zig");
@@ -26,19 +12,15 @@ const assert = std.debug.assert;
 const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 
-/// Shortest interval between presented frames: a 60 Hz ceiling, because
-/// without a compositor nothing else limits the redraw rate.
 pub const frame_period_ns_min: u64 = 16_666_667;
 
 pub const FbdevPlatform = struct {
-    /// Cleared only by `quit`; kept while `context/window.zig` compiles.
     running: bool = false,
     window_registry: WindowRegistry,
     framebuffer: framebuffer_mod.Framebuffer = .{},
     devices: evdev.DeviceSet = .{},
     translator: evdev.Translator,
     scale_factor: f64,
-    /// The one window. The panel has no room for a second.
     window: ?*FbdevWindow = null,
 
     const Self = @This();
@@ -98,13 +80,6 @@ pub const FbdevPlatform = struct {
         return window;
     }
 
-    // Deliver what each readable device queued, reading from each only as
-    // many raw events as `queue` has room for, at `evdev.Batch.capacity`
-    // events each; the rest wait in the kernel until a tick drains the
-    // queue. A device that reports an error or hangup, or fails to read, is
-    // closed and forgotten so the loop does not wake for it again. Walks
-    // from the last device because removal moves the last device into the
-    // removed slot.
     pub fn dispatchInput(
         self: *Self,
         pollfds: []const posix.pollfd,
@@ -141,8 +116,6 @@ pub const FbdevPlatform = struct {
         const window = self.openWindow() orelse return;
         const handled = window.handleInput(event);
         if (handled) return;
-        // Same escape hatches as the Wayland backend. With an exclusive
-        // input grab they are the only way out short of a remote shell.
         switch (event) {
             .key_down => |key| {
                 const quit_chord = (key.key == .q and key.modifiers.ctrl) or
@@ -171,14 +144,11 @@ pub const FbdevPlatform = struct {
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    // The core never makes these calls; they stay only while
-    // `context/window.zig` compiles.
     pub fn quit(self: *Self) void {
         self.running = false;
         assert(!self.running);
     }
 
-    /// Frames render on the main thread, so there is no lock.
     pub fn lockRenderThreads(self: *Self) void {
         assert(self.window_registry.count() <= 1);
     }
@@ -188,7 +158,6 @@ pub const FbdevPlatform = struct {
     }
 };
 
-/// Milliseconds on the same clock, for `Window.requestRenderAfter`.
 pub fn nowMilliseconds() i64 {
     const ms = @divFloor(nowNanoseconds(), std.time.ns_per_ms);
     assert(ms <= std.math.maxInt(i64));
@@ -196,8 +165,6 @@ pub fn nowMilliseconds() i64 {
 }
 
 pub fn nowNanoseconds() u64 {
-    // Same process-lifetime single-threaded `Io` the Wayland render path
-    // uses; the callers carry no `Io`.
     const io = std.Io.Threaded.global_single_threaded.io();
     const ns = std.Io.Timestamp.now(io, .awake).toNanoseconds();
     assert(ns >= 0);
@@ -223,8 +190,6 @@ fn scaleFromEnvironment() f64 {
 }
 
 comptime {
-    // A frame period of zero would let the loop spin; anything above one
-    // second would make input feel broken.
     assert(frame_period_ns_min > 0);
     assert(frame_period_ns_min < std.time.ns_per_s);
     assert(evdev.device_count_max <= std.math.maxInt(u8));

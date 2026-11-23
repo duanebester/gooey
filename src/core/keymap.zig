@@ -1,22 +1,3 @@
-//! Keymaps and actions.
-//!
-//! An action is a type such as `const Undo = struct {};`, named at runtime by
-//! its comptime-hashed id (`ui.action(Undo)`). `Config.keymap` binds key
-//! strings such as `"cmd-shift-z"` to actions, optionally only inside a key
-//! context (`.key_context = .named("Editor")`). The keymap is parsed at
-//! compile time into a static table, so a typo is a compile error and the
-//! table claims no storage.
-//!
-//! On a key press the router walks the focus path (the focused element and
-//! its ancestors; with nothing focused, the top-level records). The last
-//! binding whose keys match and whose context is on that path names the
-//! action, and the first element on the path, innermost first, that lists
-//! the action in `Box.actions` handles it. A handled key is consumed: it
-//! does not reach `on_key` or the IME.
-//!
-//! Work per key press: one pass over at most `keymap.len` bindings, each
-//! checking at most the path's `build.box_depth_max` records for its context.
-
 const std = @import("std");
 const element = @import("element.zig");
 const input = @import("../input/mod.zig");
@@ -25,26 +6,20 @@ const assert = std.debug.assert;
 
 pub const KeyContext = element.KeyContext;
 
-/// A keymap entry in `Config.keymap`: `keys` is parsed at compile time.
 pub const Binding = struct {
     keys: []const u8,
     action: u64,
-    /// Bound only while this context is on the focus path; null is global.
     key_context: ?KeyContext = null,
 };
 
-/// A parsed binding. `context` 0 means global.
 pub const Compiled = struct {
     keystroke: input.Keystroke,
     action: u64,
     context: u64,
 };
 
-/// Parse `bindings` at compile time; a key string that does not parse is a
-/// compile error naming it.
 pub fn compile(comptime bindings: []const Binding) []const Compiled {
     comptime {
-        // `Keystroke.parse` builds its key-name map, a comptime sort.
         @setEvalBranchQuota(20_000 * (bindings.len + 1));
         var table: [bindings.len]Compiled = undefined;
         for (bindings, 0..) |binding, index| {
@@ -67,9 +42,6 @@ pub fn compile(comptime bindings: []const Binding) []const Compiled {
     }
 }
 
-/// The action the last matching binding names, given a predicate telling
-/// whether a context hash is on the focus path. Later bindings override
-/// earlier ones.
 pub fn match(
     table: []const Compiled,
     key: *const input.KeyEvent,

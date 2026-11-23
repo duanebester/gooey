@@ -22,18 +22,13 @@ const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
 
-/// The window pushes input and configures into the core's queue and asks
-/// the host for a tick; the host's render thread draws, never the window.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
     context: *anyopaque,
-    /// Ask the host for a main-thread tick, after every push.
     schedule_tick: *const fn (context: *anyopaque) void,
 };
 
-/// Selecting the renderer at comptime keeps the unselected one out of the
-/// binary, so a CPU build neither links nor loads Vulkan.
 const use_cpu_renderer = switch (linux_backend.selected) {
     .wayland_vulkan => false,
     .wayland_cpu => true,
@@ -45,14 +40,11 @@ const NativeSurface = if (use_cpu_renderer)
 else
     vk_renderer.NativeSurface;
 
-/// The highest device scale the selected renderer draws at; the CPU raster
-/// bounds it to keep device coordinates well inside `f32`.
 pub const renderer_scale_max: f32 = if (use_cpu_renderer)
     @import("../cpu/renderer.zig").scale_factor_max
 else
     std.math.floatMax(f32);
 
-/// Callers carry no `Io`, so this uses the process-lifetime global.
 pub fn awakeTimeMs() i64 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const now_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
@@ -60,7 +52,6 @@ pub fn awakeTimeMs() i64 {
     return @intCast(now_ms);
 }
 
-// Static listeners - must persist for lifetime of Wayland objects
 const surface_listener = wayland.SurfaceListener{
     .enter = Window.surfaceEnter,
     .leave = Window.surfaceLeave,
@@ -96,15 +87,10 @@ pub const Window = struct {
     xdg_toplevel: ?*wayland.XdgToplevel = null,
     decoration: ?*wayland.ZxdgToplevelDecorationV1 = null,
     viewport: ?*wayland.WpViewport = null,
-    /// Bound only with a viewport. While bound, its `preferred_scale` sets
-    /// `scale_factor` and `wl_surface.preferred_buffer_scale` is ignored.
     fractional_scale: ?*wayland.WpFractionalScaleV1 = null,
 
-    // Window state. Both are *logical* pixels; multiply by `scale_factor` for
-    // the physical swapchain extent.
     width_px: u32 = 800,
     height_px: u32 = 600,
-    /// `width_px` and `height_px` as floats, which `context/window.zig` reads.
     size: Size = .{ .width = 800, .height = 600 },
     scale_factor: f64 = 1.0,
     configured: bool = false,
@@ -120,13 +106,10 @@ pub const Window = struct {
 
     renderer: Renderer,
 
-    // Title storage. `xdg_toplevel.set_title` takes a C string, so the buffer
-    // holds `title_bytes_max` payload bytes plus the terminating NUL.
     title_buf: [title_bytes_max + 1]u8 = undefined,
     title_len: usize = 0,
 
     marked_text: []const u8 = "",
-    /// `text.preedit_bytes_max` bytes, allocated with the window.
     marked_text_buffer: []u8 = &.{},
 
     ime_active: bool = false,
@@ -139,27 +122,18 @@ pub const Window = struct {
 
     user_data: ?*anyopaque = null,
 
-    /// Set once the core host binds the window; see `CoreBinding`.
     core: ?CoreBinding = null,
 
-    // Written only by the section of 0.3.1 calls below.
     dark_appearance: bool = false,
     needs_redraw: bool = false,
     render_deadline_ms: ?i64 = null,
 
-    /// Close callback: return false to prevent the close.
     pub const CloseCallback = *const fn (*Self) bool;
 
     const Self = @This();
 
-    /// Longest window title, in bytes, that `init` accepts: stored inline and
-    /// sent to the compositor as a C string, so the buffer is one byte wider
-    /// for the terminator.
     pub const title_bytes_max: usize = 255;
 
-    /// Create the window and map it. The Wayland objects are created in
-    /// dependency order and unwound in reverse by the errdefers here, so each
-    /// helper below leaves nothing behind when it fails.
     pub fn init(allocator: Allocator, plat: *LinuxPlatform, options: *const WindowOptions) !*Self {
         std.debug.assert(options.width > 0);
         std.debug.assert(options.height > 0);
@@ -180,8 +154,6 @@ pub const Window = struct {
         self.marked_text_buffer = try allocator.alloc(u8, options.limits.text.preedit_bytes_max);
         errdefer allocator.free(self.marked_text_buffer);
 
-        // Register before any Wayland object exists so that every later error
-        // path unwinds through one errdefer rather than a second exit branch.
         self.window_id = try plat.registerWindow(self);
         errdefer {
             plat.unregisterWindow(self.window_id);
@@ -201,8 +173,6 @@ pub const Window = struct {
 
         self.requestServerDecorations(plat);
 
-        // Commit to trigger the initial configure, and wait for it; this may
-        // update scale_factor.
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
@@ -219,9 +189,6 @@ pub const Window = struct {
 
         try self.mapWithRenderer(plat, options);
 
-        // `setActiveWindowId` derives the `*LinuxWindow` Wayland input
-        // dispatch needs, so publishing the id alone keeps both authorities
-        // in agreement.
         plat.setActiveWindowId(self.window_id);
 
         std.debug.assert(self.window_id.isValid());
@@ -229,9 +196,6 @@ pub const Window = struct {
         return self;
     }
 
-    /// Store the title as the C string `xdg_toplevel.set_title` takes. Over-long
-    /// is a programmer error, and the clamp is what keeps a release build in
-    /// bounds.
     fn storeTitle(self: *Self, title: []const u8) void {
         std.debug.assert(title.len <= title_bytes_max);
         const title_len = @min(title.len, title_bytes_max);
@@ -241,8 +205,6 @@ pub const Window = struct {
         std.debug.assert(self.title_buf[self.title_len] == 0);
     }
 
-    /// Create the `wl_surface` and listen for its scale. The last fallible step
-    /// creates the surface, so a failure leaves nothing to destroy.
     fn createSurface(self: *Self, plat: *LinuxPlatform) !void {
         std.debug.assert(self.wl_surface == null);
         const compositor = plat.getCompositor() orelse return error.NoCompositor;
@@ -254,7 +216,6 @@ pub const Window = struct {
         std.debug.assert(self.wl_surface != null);
     }
 
-    /// Undo `createSurface`. The fractional scale object goes before its surface.
     fn destroySurface(self: *Self) void {
         if (self.fractional_scale) |fractional_scale| {
             wayland.fractionalScaleDestroy(fractional_scale);
@@ -266,8 +227,6 @@ pub const Window = struct {
         std.debug.assert(self.wl_surface == null);
     }
 
-    /// Give the surface the xdg toplevel role, with its title, app id, and size
-    /// hints. A failure destroys whatever this created.
     fn createToplevel(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.xdg_surface == null);
@@ -306,8 +265,6 @@ pub const Window = struct {
         std.debug.assert(self.xdg_toplevel != null);
     }
 
-    /// Ask for server-side decorations when the compositor offers them. Best
-    /// effort: without them the window has no title bar.
     fn requestServerDecorations(self: *Self, plat: *LinuxPlatform) void {
         std.debug.assert(self.xdg_toplevel != null);
         std.debug.assert(self.decoration == null);
@@ -336,14 +293,10 @@ pub const Window = struct {
         }
     }
 
-    /// Map buffers to the logical size: through a viewport (wp_viewporter),
-    /// which lets the renderer draw at physical resolution, or else through
-    /// the integer buffer scale.
     fn createViewport(self: *Self, plat: *LinuxPlatform) void {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.viewport == null);
         const viewporter = plat.getViewporter() orelse {
-            // Fallback: buffer scale (may not work with Vulkan on all compositors)
             const scale_int: i32 = @intFromFloat(self.scale_factor);
             wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
             return;
@@ -354,9 +307,6 @@ pub const Window = struct {
         }
     }
 
-    /// Set the window geometry, create the renderer on the committed surface
-    /// state, and commit again, so pointer coordinates are logical once the
-    /// compositor has applied the viewport.
     fn mapWithRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
         std.debug.assert(self.xdg_surface != null);
         std.debug.assert(self.wl_surface != null);
@@ -376,22 +326,13 @@ pub const Window = struct {
 
         wayland.surfaceCommit(self.wl_surface.?);
 
-        // Pointer coordinates are not logical until the compositor has
-        // applied the viewport state.
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
-        // The core host starts from `scale_factor`, so a scale that arrived in
-        // that roundtrip must reach the renderer's buffers here.
         if (self.scale_factor != renderer_scale) {
             self.renderer.resize(self.rendererViewport(&options.limits.window).size_px);
         }
     }
 
-    /// Ask for the compositor's fractional scale (1.5 rather than the 2 that
-    /// `wl_output` and `preferred_buffer_scale` round it up to). It applies only
-    /// through a viewport, so without wp_viewporter the window keeps integer
-    /// scales. Bound before the first commit, so a compositor that already
-    /// knows the output can send the scale before the renderer is created.
     fn bindFractionalScale(self: *Self, plat: *LinuxPlatform) void {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.fractional_scale == null);
@@ -404,7 +345,6 @@ pub const Window = struct {
             std.log.warn("wp_fractional_scale_v1: no proxy; keeping integer scales", .{});
             return;
         };
-        // Fails only for a proxy that already has a listener, and this one is new.
         const added = wayland.fractionalScaleAddListener(
             fractional_scale,
             &fractional_scale_listener,
@@ -414,8 +354,6 @@ pub const Window = struct {
         self.fractional_scale = fractional_scale;
     }
 
-    /// Bind the renderer to the Wayland surface. Both renderers create their
-    /// frames at physical pixel resolution, fitted to the window budget.
     fn initRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.width_px > 0);
@@ -436,8 +374,6 @@ pub const Window = struct {
         }, &render_limits);
     }
 
-    /// The framebuffer for the window's logical size and scale, fitted to the
-    /// budget as the core host fits every frame's (`applyViewport`).
     fn rendererViewport(
         self: *const Self,
         window: *const limits_mod.WindowLimits,
@@ -455,19 +391,11 @@ pub const Window = struct {
     pub fn deinit(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
 
-        // Drop every platform-held reference before any Wayland object dies,
-        // so a queued event cannot be routed into a half-destroyed window.
-        // `.invalid` makes a second deinit a no-op here rather than tripping
-        // the registry's validity assertion.
         if (self.window_id.isValid()) {
             self.platform.unregisterWindow(self.window_id);
             self.window_id = .invalid;
         }
         if (self.platform.active_window == self) {
-            // Re-elect rather than clear: `active_window` is the routing target
-            // for every Wayland pointer, keyboard, and IME event, so a null here
-            // with other windows still open would strand input. Unregistration
-            // above already removed this window from the candidates.
             self.platform.reelectActiveWindow();
         }
         if (self.platform.touch_window == self) self.platform.touch_window = null;
@@ -490,19 +418,13 @@ pub const Window = struct {
         self.allocator.destroy(self);
     }
 
-    /// Close this window: the core host's close handler runs first and may
-    /// decline. Otherwise the window records `closed = true` and returns;
-    /// teardown waits for `deinit`, because `close()` is reachable from inside
-    /// this window's own input dispatch.
     pub fn close(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
 
-        // Idempotent: the compositor and a key chord can both reach a window,
-        // and running the handler twice would ask the application twice.
         if (self.closed) return;
 
         if (self.on_close) |callback| {
-            if (!callback(self)) return; // Declined by the application.
+            if (!callback(self)) return;
         }
 
         self.markClosed();
@@ -510,18 +432,12 @@ pub const Window = struct {
         std.debug.assert(self.isClosed());
     }
 
-    /// Record the close. Shared by the programmatic `close()` and the
-    /// compositor-initiated `xdg_toplevel.close`.
     fn markClosed(self: *Self) void {
         std.debug.assert(!self.closed);
         std.debug.assert(self.window_id.isValid());
 
         self.closed = true;
 
-        // A closed window stays registered until its owner reclaims it, but it
-        // is no longer a legal input target, so focus must move on now rather
-        // than at teardown. `reelectActiveWindow` skips closed windows, so it
-        // cannot re-elect this one.
         if (self.platform.active_window == self) self.platform.reelectActiveWindow();
 
         std.debug.assert(self.closed);
@@ -538,10 +454,6 @@ pub const Window = struct {
         self.platform.setCursorShape(shape);
     }
 
-    // Calls kept only while the legacy `context/window.zig` compiles; the
-    // core never makes them.
-    /// Advisory only: Wayland has no server-side appearance protocol; stored
-    /// so the value the application asked for stays observable.
     pub fn setAppearance(self: *Self, dark: bool) void {
         std.debug.assert(@intFromPtr(self) != 0);
         self.dark_appearance = dark;
@@ -577,10 +489,6 @@ pub const Window = struct {
         std.debug.assert(self.render_deadline_ms.? <= deadline_ms);
     }
 
-    /// Set the marked (composing) text for IME. The window keeps as much as
-    /// the text engines' preedit, `text.preedit_bytes_max`, which shows no
-    /// more. A longer composition is external input, so it is cut at a
-    /// codepoint boundary, never inside a UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
         const bytes_max = self.marked_text_buffer.len;
         std.debug.assert(bytes_max > 0);
@@ -637,9 +545,6 @@ pub const Window = struct {
         return null;
     }
 
-    /// Route one input event to the core. Events before `bindCore` reach
-    /// nothing. Wayland and Vulkan framebuffer space are both Y-down (0 at
-    /// top), matching the scene coordinate system, so no flipping is needed.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
         switch (event) {
             .mouse_down => |m| {
@@ -655,15 +560,6 @@ pub const Window = struct {
         return pushCoreInput(binding, event, self.hasMarkedText());
     }
 
-    /// Queue `event` for the core's next drain. Only a key the keymap claims
-    /// counts as handled, so every other key still reaches the IME, and only
-    /// a press the router will act on (`Query.pressClaims`), so a press on
-    /// empty chrome still moves or resizes an undecorated window. While the
-    /// IME holds marked text it owns every key (Escape cancels the
-    /// composition, Return accepts a candidate), so a key down is neither
-    /// queued nor claimed: no binding or `on_key` handler may act on a
-    /// keystroke that only edited the composition. Windows drops
-    /// `VK_PROCESSKEY` for the same reason.
     fn pushCoreInput(binding: CoreBinding, event: input.InputEvent, composing: bool) bool {
         if (composing) {
             if (event == .key_down) return false;
@@ -680,12 +576,9 @@ pub const Window = struct {
         };
     }
 
-    /// Bind a core app. Call once, before the host's render thread starts.
     pub fn bindCore(self: *Self, binding: CoreBinding) void {
         std.debug.assert(self.core == null);
         std.debug.assert(self.wl_surface != null);
-        // The first configure arrived before the core existed; the host
-        // reads `size` once bound and tells the core.
         if (self.pending_resize) self.applyPendingSize();
         self.core = binding;
         std.debug.assert(!self.pending_resize);
@@ -704,19 +597,11 @@ pub const Window = struct {
         };
     }
 
-    /// A core app resizes through its queue: the next built frame carries the
-    /// new viewport, and the render thread resizes the swapchain and the
-    /// surface's viewport before it presents that frame, so the new size and
-    /// the buffer drawn for it reach the compositor in one commit.
     fn resizeCore(self: *Self, binding: CoreBinding) void {
         self.applyPendingSize();
         pushViewport(binding, self.size, self.scale_factor);
     }
 
-    /// Adopt the compositor's scale at the same logical size: the core
-    /// rebuilds and the render thread resizes the buffers before presenting
-    /// that frame. A configure whose size is still pending keeps it, and
-    /// reports the new scale with it.
     fn applyScale(self: *Self, scale: f64) void {
         std.debug.assert(scale > 0);
         if (self.scale_factor == scale) return;
@@ -787,8 +672,6 @@ pub const Window = struct {
         _ = data;
         _ = surface;
         _ = output;
-        // A scale change arrives as `preferred_buffer_scale`, or as
-        // `wp_fractional_scale_v1.preferred_scale` while that is bound.
     }
 
     fn surfaceLeave(
@@ -807,8 +690,6 @@ pub const Window = struct {
         factor: i32,
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
-        // While bound, `preferred_scale` carries the exact scale; this is the
-        // same scale rounded up (2 for 1.5), and would draw buffers too large.
         if (self.fractional_scale != null) return;
         if (factor < 1) {
             std.log.warn("wl_surface: ignoring preferred buffer scale {d}", .{factor});
@@ -816,14 +697,10 @@ pub const Window = struct {
         }
         const new_scale: f64 = @floatFromInt(factor);
         if (self.scale_factor == new_scale) return;
-        // The viewport maps buffers to the logical size; without one, the
-        // compositor needs the buffer scale.
         if (self.viewport == null) wayland.surfaceSetBufferScale(surface, factor);
         self.applyScale(new_scale);
     }
 
-    /// The compositor's preferred scale in 120ths (180 is 1.5). The viewport's
-    /// destination stays the logical size, so only the buffers change.
     fn fractionalPreferredScale(
         data: ?*anyopaque,
         fractional_scale: *wayland.WpFractionalScaleV1,
@@ -831,7 +708,6 @@ pub const Window = struct {
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
         std.debug.assert(self.fractional_scale == fractional_scale);
-        // The protocol has no zero scale; it would make empty buffers.
         if (scale_120ths == 0) {
             std.log.warn("wp_fractional_scale_v1: ignoring preferred scale 0", .{});
             return;
@@ -877,7 +753,6 @@ pub const Window = struct {
         _ = states;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Width/height of 0 means we can choose our own size
         if (width_px > 0 and height_px > 0) {
             self.pending_width = @intCast(width_px);
             self.pending_height = @intCast(height_px);
@@ -909,9 +784,6 @@ pub const Window = struct {
         _ = capabilities;
     }
 
-    /// Routed through `close()` so the compositor request and a programmatic
-    /// close run the same handler and state transition. Destroying the window
-    /// here would free it underneath the Wayland dispatch calling us.
     fn xdgToplevelClose(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
@@ -922,9 +794,6 @@ pub const Window = struct {
 
         self.close();
 
-        // Nothing was torn down: `window_id` is invalidated only by `deinit`,
-        // so this proves the window is still registered and still resolvable
-        // by the owner that will reclaim it.
         std.debug.assert(self.window_id.isValid());
     }
 

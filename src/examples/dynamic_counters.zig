@@ -28,7 +28,6 @@ pub const Counter = struct {
     }
 };
 
-/// The `.nano` entity pool holds 16; keep this under it.
 pub const counter_count_max = 10;
 
 const labels = [counter_count_max][]const u8{
@@ -130,8 +129,6 @@ const CounterCard = struct {
         const data = cx.get(Counter, self.counter);
         var buffer: [12]u8 = undefined;
         const count = std.fmt.bufPrint(&buffer, "{d}", .{data.count}) catch unreachable;
-        // Keyed by slot and generation, so a reused slot starts
-        // fresh.
         const key: u64 = (@as(u64, self.counter.generation) << 32) | self.counter.slot;
         cx.render(ui.box(.{
             .key = .{ .index = key },

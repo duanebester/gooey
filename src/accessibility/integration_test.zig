@@ -12,10 +12,8 @@ const ElementConfig = a11y.ElementConfig;
 const PlatformBridge = a11y.PlatformBridge;
 const MacBridge = a11y.MacBridge;
 
-/// The bridges' element slots at the tests' tree capacity.
 const element_count_max = a11y.TreeCapacity.standard.element_count_max;
 
-/// A tree at the `standard` profile's capacity, on the heap like a window's.
 fn createTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
     errdefer std.testing.allocator.destroy(tree);
@@ -337,9 +335,6 @@ test "list with position tracking" {
 }
 
 test "tree holds exactly its element capacity" {
-    // Fill the tree to its capacity with siblings; the last push still lands.
-    // One more push is a programmer error that asserts, so it is not run here;
-    // the fail-fast check `core-a11y-elements` covers that boundary.
     const tree = try createTree();
     defer destroyTree(tree);
 
@@ -378,7 +373,6 @@ test "tree holds exactly its depth capacity" {
 }
 
 test "zero overhead pattern" {
-    // The pattern used in Builder.accessible().
     const a11y_enabled = false;
 
     var work_done = false;
@@ -401,7 +395,6 @@ test "platform bridge creation" {
     tree.popElement();
     tree.endFrame();
 
-    // Safe no-ops when VoiceOver isn't running.
     b.syncDirty(tree, tree.getDirtyElements());
     b.removeElements(tree.getRemovedFingerprints());
     b.announce("Test announcement", .polite);
@@ -463,7 +456,6 @@ test "macos bridge slot allocation" {
     try std.testing.expect(slot2 != null);
     try std.testing.expect(slot3 != null);
 
-    // All slots should be different
     try std.testing.expect(slot1.? != slot2.?);
     try std.testing.expect(slot2.? != slot3.?);
     try std.testing.expect(slot1.? != slot3.?);
@@ -500,7 +492,6 @@ test "macos bridge voiceover detection" {
     var mac_bridge = MacBridge.init(element_count_max, null, null);
     const b = mac_bridge.bridge();
 
-    // The value depends on the system; just verify no crash.
     const is_active = b.isActive();
     _ = is_active;
 

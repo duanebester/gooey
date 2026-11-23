@@ -1,23 +1,3 @@
-//! Bridgetek EVE (BT81x) display controller over Linux spidev, or simulated.
-//! EVE is a display coprocessor, not a framebuffer: the panel scans out
-//! whatever its display list draws. `display_list.zig` builds those lists;
-//! this file moves bytes: memory writes, register reads, display list swaps
-//! on vertical blank, and the capacitive touch engine's contact register.
-//!
-//! The chip must already be booted, configured for its panel, and scanning
-//! out (`REG_PCLK` non-zero) before this opens it; board bring-up (reset
-//! line, clocks, panel timing, backlight limits) stays with the board's own
-//! driver, and nothing here writes the reset line, the clocks, or the
-//! backlight registers.
-//!
-//! `openSimulated` replaces the hardware with a 1024x600, 59.76 Hz chip in
-//! memory; each display list swap can dump `RAM_G` (1 MiB) followed by
-//! `RAM_DL` (8 KiB) to a file, which `eve_preview.py` renders to a PNG.
-//!
-//! `open` reserves one SPI message buffer (at most `message_bytes_max`) and
-//! `openSimulated` also the simulated address space (4 MiB), both at
-//! initialization; transfers allocate nothing.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
@@ -26,12 +6,10 @@ const reservation = @import("../../core/reservation.zig");
 
 const assert = std.debug.assert;
 
-// Memory map and registers (BT81x, `EVE_GpuDefs.h`).
 pub const ram_g: u32 = 0x000000;
 pub const ram_g_size: u32 = 1024 * 1024;
 pub const ram_dl: u32 = 0x300000;
 pub const ram_dl_size: u32 = 8 * 1024;
-/// Display list capacity in 32-bit commands.
 pub const display_list_words_max: u32 = ram_dl_size / 4;
 const address_space_size: u32 = 0x40_0000;
 const reg_id: u32 = 0x302000;
@@ -41,15 +19,11 @@ const reg_vsize: u32 = 0x302048;
 const reg_dlswap: u32 = 0x302054;
 const reg_pclk: u32 = 0x302070;
 pub const reg_ctouch_touch0_xy: u32 = 0x302124;
-/// Lines the chip could not render in time since reset (BT817/8); wraps.
 pub const reg_underrun: u32 = 0x30260C;
 const reg_id_value: u8 = 0x7C;
 const dlswap_frame: u32 = 2;
-/// `REG_CTOUCH_TOUCH0_XY` with no contact.
 pub const touch_none: u32 = 0x8000_8000;
 
-/// `struct spi_ioc_transfer` from <linux/spi/spidev.h>. Its buffers are
-/// `__u64` on every architecture, so the layout is the same on armv7.
 const SpiTransfer = extern struct {
     tx_buf: u64,
     rx_buf: u64,
@@ -66,42 +40,27 @@ const SpiTransfer = extern struct {
 
 comptime {
     assert(@sizeOf(SpiTransfer) == 32);
-    // Display lists and glyph cells are written in the host's byte order.
     assert(builtin.cpu.arch.endian() == .little);
     assert(ram_dl + ram_dl_size <= address_space_size);
     assert(reg_ctouch_touch0_xy + 4 <= address_space_size);
 }
 
-/// `SPI_IOC_MESSAGE(1)`: `_IOW('k', 0, char[32])`.
 const SPI_IOC_MESSAGE_1: u32 = 0x4020_6B00;
-/// `SPI_IOC_WR_MODE`: `_IOW('k', 1, __u8)`.
 const SPI_IOC_WR_MODE: u32 = 0x4001_6B01;
 
-/// Slowest SPI clock accepted; below it a display list misses its frame.
 pub const spi_hz_min: u32 = 1_000_000;
-/// BT81x SPI limit (`Tsclk` minimum 33.3 ns).
 pub const spi_hz_max: u32 = 30_000_000;
-/// Kernel default `spidev.bufsiz`, used when sysfs cannot be read.
 const spidev_bufsiz_default: u32 = 4096;
-/// Some kernels refuse messages close to `bufsiz`; keep the margin the
-/// board's C and Python EVE drivers use.
 const spidev_bufsiz_reserve: u32 = 512;
-/// Largest message buffer reserved at initialization.
 const message_bytes_max: u32 = 64 * 1024;
-/// Smallest usable message: a 3-byte address and a useful payload.
 const message_bytes_min: u32 = 512;
-/// Longest wait for the previous display list to reach the screen. A panel
-/// refreshes at least every 33 ms; anything longer means the chip stopped.
 const swap_wait_ns_max: u64 = 100 * std.time.ns_per_ms;
-/// Swap polls before `swap_wait_ns_max` must have passed: one per 1 ms sleep.
 const swap_poll_count_max: u32 = 200;
 pub const sim_panel_width: u32 = 1024;
 pub const sim_panel_height: u32 = 600;
-/// The RVT70's measured refresh: 59.76 Hz.
 const sim_frame_ns: u64 = 16_733_000;
 
 pub const Touch = struct {
-    /// Panel pixel coordinates; may lie slightly outside the panel.
     x: i16,
     y: i16,
 };
@@ -113,15 +72,10 @@ pub const Chip = struct {
     speed_hz: u32 = spi_hz_min,
     panel_width: u32 = 0,
     panel_height: u32 = 0,
-    /// One SPI message: 3 address bytes plus payload.
     message: []u8 = &.{},
-    /// Host simulation: the chip's address space; empty with real hardware.
     sim_memory: []u8 = &.{},
     sim_dump_path: ?[*:0]const u8 = null,
-    /// When the simulated swap in flight reaches the screen.
     sim_swap_due_ns: u64 = 0,
-    /// Payload bytes written since `takeBytesWritten`, without the 3-byte
-    /// address each SPI message starts with.
     bytes_written: u64 = 0,
 
     pub fn open(self: *Chip, path: [*:0]const u8, speed_hz: u32) !void {
@@ -138,15 +92,11 @@ pub const Chip = struct {
             return error.EveSpiSetupFailed;
         }
         self.* = .{ .fd = fd, .speed_hz = speed_hz };
-        // Messages must fit spidev's bounce buffer.
         const bufsiz = readSpidevBufsiz();
         try self.attach(@min(bufsiz - spidev_bufsiz_reserve, message_bytes_max));
         assert(self.fd >= 0);
     }
 
-    /// A chip that exists only in memory: register reads return a booted,
-    /// scanning 1024x600 panel, and each display list swap dumps `RAM_G` and
-    /// `RAM_DL` to `dump_path` (when given).
     pub fn openSimulated(self: *Chip, dump_path: ?[*:0]const u8) !void {
         assert(self.fd < 0);
         assert(self.sim_memory.len == 0);
@@ -167,7 +117,6 @@ pub const Chip = struct {
         assert(message_len >= message_bytes_min);
         assert(self.message.len == 0);
         var small: [4]u8 = undefined;
-        // Reads use a stack message, so they work before the buffer exists.
         try self.read(reg_id, small[0..1]);
         if (small[0] != reg_id_value) return error.EveNotRunning;
         if (try self.read32(reg_pclk) == 0) return error.EveNotScanningOut;
@@ -198,8 +147,6 @@ pub const Chip = struct {
         return self.sim_memory.len > 0;
     }
 
-    /// The payload bytes written since the last call, for the per-frame SPI
-    /// budget.
     pub fn takeBytesWritten(self: *Chip) u64 {
         assert(self.fd >= 0 or self.isSimulated());
         const bytes = self.bytes_written;
@@ -221,9 +168,6 @@ pub const Chip = struct {
         assert(offset == data.len);
     }
 
-    /// Wait until the last swapped display list is on screen, so the list
-    /// before it, and every `RAM_G` byte only it drew, is free. Returns the
-    /// nanoseconds waited.
     pub fn waitForSwap(self: *Chip) Error!u64 {
         assert(self.fd >= 0 or self.isSimulated());
         assert(self.panel_width > 0);
@@ -233,8 +177,6 @@ pub const Chip = struct {
             poll_count += 1;
             if (poll_count > swap_poll_count_max) return error.EveSwapTimeout;
             if (nowNanoseconds() - started > swap_wait_ns_max) return error.EveSwapTimeout;
-            // Each poll is an SPI read and a syscall; 1 ms keeps the cost low
-            // and still leaves most of a 16 ms frame to load the next list.
             const pause = linux.timespec{ .sec = 0, .nsec = std.time.ns_per_ms };
             _ = linux.nanosleep(&pause, null);
         }
@@ -243,18 +185,14 @@ pub const Chip = struct {
         return waited;
     }
 
-    /// Load `words` into `RAM_DL` and swap it in at the next vertical blank.
-    /// The previous swap must have completed (`waitForSwap`).
     pub fn swapDisplayList(self: *Chip, words: []const u32) Error!void {
         assert(words.len > 0);
         assert(words.len <= display_list_words_max);
-        assert(words[words.len - 1] == 0); // DISPLAY
+        assert(words[words.len - 1] == 0);
         try self.writeMemory(ram_dl, std.mem.sliceAsBytes(words));
         try self.write32(reg_dlswap, dlswap_frame);
     }
 
-    /// `REG_UNDERRUN`: lines scan-out showed unfinished since reset, because
-    /// a list was too long or drew too much on one line. It wraps.
     pub fn readUnderruns(self: *Chip) Error!u32 {
         assert(self.fd >= 0 or self.isSimulated());
         assert(reg_underrun % 4 == 0);
@@ -298,7 +236,6 @@ pub const Chip = struct {
         tx[0] = @intCast(address >> 16);
         tx[1] = @truncate(address >> 8);
         tx[2] = @truncate(address);
-        // Byte 3 is the dummy byte; data follows it.
         try self.transfer(tx[0 .. 4 + out.len], rx[0 .. 4 + out.len]);
         @memcpy(out, rx[4..][0..out.len]);
     }
@@ -329,7 +266,6 @@ pub const Chip = struct {
         assert(self.sim_memory.len == address_space_size);
         const address = (@as(u32, tx[0] & 0x3F) << 16) | (@as(u32, tx[1]) << 8) | tx[2];
         if (tx[0] & 0x80 == 0) {
-            // A requested swap completes at the next simulated refresh.
             if (nowNanoseconds() >= self.sim_swap_due_ns) {
                 @memset(self.sim_memory[reg_dlswap..][0..4], 0);
             }
@@ -345,7 +281,6 @@ pub const Chip = struct {
         }
     }
 
-    /// Write `RAM_G` then `RAM_DL` to `path`, as `eve_preview.py` reads them.
     fn simulateDump(self: *const Chip, path: [*:0]const u8) void {
         assert(self.sim_memory.len == address_space_size);
         const fd = posix.openatZ(posix.AT.FDCWD, path, .{
@@ -375,7 +310,6 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) bool {
     assert(fd >= 0);
     assert(bytes.len > 0);
     var written: usize = 0;
-    // Each write makes progress or fails; a regular file takes it in a few.
     while (written < bytes.len) {
         const count = std.c.write(fd, bytes[written..].ptr, bytes.len - written);
         if (count <= 0) return false;
@@ -385,8 +319,6 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) bool {
 }
 
 pub fn nowNanoseconds() u64 {
-    // The callers carry no `Io`; the same process-lifetime single-threaded
-    // `Io` the fbdev and Wayland hosts use.
     const io = std.Io.Threaded.global_single_threaded.io();
     const ns = std.Io.Timestamp.now(io, .awake).toNanoseconds();
     assert(ns >= 0);
@@ -422,12 +354,10 @@ test "a simulated swap loads the list into RAM_DL and completes at the next refr
     const loaded = chip.sim_memory[ram_dl..][0..12];
     try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&words), loaded);
     try testing.expect(try chip.waitForSwap() >= 10 * std.time.ns_per_ms);
-    // Payload only: 12 list bytes and the 4-byte swap request.
     try testing.expectEqual(@as(u64, 12 + 4), chip.takeBytesWritten());
 }
 
 test "touch reads the signed contact position, and none without contact" {
-    // X is the high half, Y the low half; -3 checks the sign extension.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();
@@ -439,8 +369,6 @@ test "touch reads the signed contact position, and none without contact" {
 }
 
 test "writes longer than one message split across consecutive addresses" {
-    // The simulated message holds 3581 payload bytes; 10000 bytes must land
-    // whole and in order.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();

@@ -1,72 +1,31 @@
-//! One BT81x display list, built command by command for one frame: at most
-//! 2048 commands (`RAM_DL`, 8 KiB), of which a frame uses at most `words_max`
-//! (1536) so the chip renders every line in time, swapped in at vertical
-//! blank. This file encodes commands and the drawing helpers the renderer
-//! composes primitives from; it keeps the graphics state already emitted so
-//! repeated colors, widths, and scissors cost nothing.
-//!
-//! - `roundRect`: `RECTS` with `LINE_WIDTH` as the corner radius. EVE grows a
-//!   rect by its line width on every side, so the vertices are inset by it.
-//! - `squareRect`: the BT817 fades a whole rect when its radius is under 1 px
-//!   (measured on the RVT70: radius 0.5 px fills at 157/255), so square
-//!   corners draw with a 1 px radius grown past the box and trimmed to whole
-//!   pixels with the scissor. 1 px lines stay crisp.
-//! - `cell`: one `VERTEX2II` naming a bitmap handle (a page of glyph cells,
-//!   `cells.zig`) and a cell. `VERTEX2II` reaches 0..511 px, so cells
-//!   elsewhere shift the origin with `VERTEX_TRANSLATE_X`/`_Y` in 512 px steps.
-//! - `beginStrip`/`beginPoints` and `vertex`: `LINE_STRIP` and `POINTS`.
-//!
-//! The renderer checks room with `room` before each primitive, against the
-//! worst case that primitive emits (the `*_words_max` constants), and fails
-//! fast when the frame needs more than the list holds; `emit` asserts it.
-
 const std = @import("std");
 const chip = @import("chip.zig");
 const eve_limits = @import("limits.zig");
 
 const assert = std.debug.assert;
 
-/// Commands a frame's list may use: the measured line-budget cap
-/// (`EveLimits.display_list_words_frame_max`), below `RAM_DL`'s 2048.
 pub const words_max: u32 = eve_limits.EveLimits.bt81x.display_list_words_frame_max;
 pub const preamble_words: u32 = 7;
-/// Worst case of `roundRect` and `squareRect`: scissor (2), color (2),
-/// line width, begin, translate (2), and two vertices.
 pub const rect_words_max: u32 = 10;
-/// Worst case of `cell`: scissor (2), the page's handle setup (6), the
-/// identity transform after an image (2), color (2), begin, translate (2),
-/// and the vertex.
 pub const cell_words_max: u32 = 16;
-/// Worst case of `image`: scissor (2), the image handle's setup (7), the
-/// scale (2), color (2), begin, translate (2), and the vertex.
 pub const image_words_max: u32 = 17;
-/// Worst case of `imageRounded` beyond `image`: the stencil mask drawn and
-/// cleared (two rects) and the stencil and colour-mask switches around them.
 pub const image_rounded_words_extra: u32 = 2 * rect_words_max + 10;
-/// Worst case of `beginStrip` or `beginPoints` before the vertices: scissor
-/// (2), color (2), width or size, begin, translate (2).
 pub const strip_words_max: u32 = 8;
-/// Pages of cells, one bitmap handle each (handles 0..13). Handle 14 draws
-/// images; handles 15 to 31 stay free for the coprocessor's scratch handle
-/// and ROM fonts.
 pub const handle_count_max: u32 = 14;
 pub const image_handle: u32 = 14;
 
-/// `VERTEX2II` reaches 0..511 in each axis.
 const vertex2ii_extent: i32 = 512;
-/// Vertex coordinates in 1/8 px (`VERTEX_FORMAT(3)`): -2048..2047 px.
 const vertex_fraction_bits: u32 = 3;
 
 comptime {
     assert(words_max <= chip.display_list_words_max);
     assert(preamble_words + 1 == eve_limits.EveLimits.bt81x.display_list_frame_words);
-    assert(handle_count_max <= 16); // `pages_configured` is a `u16`.
+    assert(handle_count_max <= 16);
     assert(image_handle >= handle_count_max);
     assert(image_handle < 15);
     assert(preamble_words + 1 < words_max);
 }
 
-// Primitives and enums of the BT81x programming guide.
 const prim_bitmaps: u32 = 1;
 const prim_points: u32 = 2;
 const prim_line_strip: u32 = 4;
@@ -79,7 +38,6 @@ const stencil_not_equal: u32 = 6;
 const stencil_keep: u32 = 1;
 const stencil_replace: u32 = 2;
 
-/// A device-pixel rectangle.
 pub const Box = struct {
     x: f32,
     y: f32,
@@ -87,17 +45,13 @@ pub const Box = struct {
     h: f32,
 };
 
-/// A scissor in whole device pixels: x, y, width, height.
 pub const Scissor = [4]u32;
 
-/// Straight RGB and alpha, as the chip takes them.
 pub const Color = struct {
     rgb: u32,
     alpha: u8,
 };
 
-/// One image draw: an ARGB4 rectangle of `texels` at `source`, `stride`
-/// bytes a row, drawn `size` whole pixels large with its top-left at `at`.
 pub const ImageDraw = struct {
     source: u32,
     stride: u32,
@@ -107,13 +61,11 @@ pub const ImageDraw = struct {
     color: Color,
 };
 
-/// Where a cell page lives and how big its cells are.
 pub const PageLayout = struct {
     address: u32,
     cell_size: u32,
 };
 
-/// Graphics state already emitted in this list, so repeats are skipped.
 const DrawState = struct {
     primitive: u32 = 0xFF,
     rgb: u32 = 0xFFFFFF,
@@ -121,9 +73,7 @@ const DrawState = struct {
     line_width: u32 = 16,
     point_size: u32 = 16,
     scissor: Scissor = .{ 0, 0, 0, 0 },
-    /// `VERTEX_TRANSLATE_X`/`_Y` in whole pixels.
     translate: [2]i32 = .{ 0, 0 },
-    /// `BITMAP_TRANSFORM_A` and `_E` in 8.8 fixed point; 256 is 1:1.
     transform: [2]u32 = .{ 256, 256 },
 };
 
@@ -132,18 +82,11 @@ pub const DisplayList = struct {
     count: u32 = 0,
     state: DrawState = .{},
     panel: Scissor = .{ 0, 0, 0, 0 },
-    /// The clip of the primitive being drawn. Square rects narrow the
-    /// scissor below it; everything else draws with it.
     clip: Scissor = .{ 0, 0, 0, 0 },
-    /// Pages whose bitmap handle this list has set up. The chip keeps handle
-    /// state across lists, but setting it in every list keeps each list
-    /// self-contained, whatever else touched the handles.
     pages_configured: u16 = 0,
 
     const Self = @This();
 
-    /// Start a list: clear to `clear`, pin the state the cache assumes, and
-    /// scissor to the panel.
     pub fn begin(self: *Self, panel_width: u32, panel_height: u32, clear: u32) void {
         assert(panel_width > 0);
         assert(panel_height > 0);
@@ -153,10 +96,9 @@ pub const DisplayList = struct {
         self.pages_configured = 0;
         self.panel = .{ 0, 0, panel_width, panel_height };
         self.clip = self.panel;
-        self.emit((2 << 24) | clear); // CLEAR_COLOR_RGB
-        self.emit((38 << 24) | 0b111); // CLEAR(color, stencil, tag)
-        self.emit((39 << 24) | vertex_fraction_bits); // VERTEX_FORMAT
-        // The graphics context resets with each list; pin what the cache holds.
+        self.emit((2 << 24) | clear);
+        self.emit((38 << 24) | 0b111);
+        self.emit((39 << 24) | vertex_fraction_bits);
         self.emit(colorRgb(self.state.rgb));
         self.emit(colorA(self.state.alpha));
         self.state.scissor = self.panel;
@@ -165,7 +107,6 @@ pub const DisplayList = struct {
         assert(self.count == preamble_words);
     }
 
-    /// Close the list with `DISPLAY`. `room` always leaves space for it.
     pub fn finish(self: *Self) []const u32 {
         assert(self.count < words_max);
         self.words[self.count] = 0;
@@ -188,7 +129,6 @@ pub const DisplayList = struct {
         self.clip = clip;
     }
 
-    /// An antialiased rect with rounded corners, `radius` in device pixels.
     pub fn roundRect(self: *Self, box: Box, radius: f32, color: Color) void {
         assert(box.w > 0);
         assert(box.h > 0);
@@ -208,8 +148,6 @@ pub const DisplayList = struct {
         );
     }
 
-    /// A rect with square corners, snapped to whole pixels: a 1 px radius
-    /// rect grown past the box, scissored to the box within the clip.
     pub fn squareRect(self: *Self, box: Box, color: Color) void {
         assert(box.w > 0);
         assert(box.h > 0);
@@ -232,27 +170,22 @@ pub const DisplayList = struct {
         self.vertex(@floatFromInt(right), @floatFromInt(bottom));
     }
 
-    /// Mark the stencil with 1 where the next rects draw, without color.
     pub fn stencilMarkBegin(self: *Self) void {
         self.emit(colorMask(false));
         self.emit(stencilFunc(stencil_always, 1));
         self.emit(stencilOp(stencil_replace, stencil_replace));
     }
 
-    /// Draw color again, only outside the marked stencil.
     pub fn stencilOutsideBegin(self: *Self) void {
         self.emit(colorMask(true));
         self.emit(stencilFunc(stencil_not_equal, 1));
         self.emit(stencilOp(stencil_keep, stencil_keep));
     }
 
-    /// Draw color everywhere again; the stencil keeps its marks.
     pub fn stencilTestEnd(self: *Self) void {
         self.emit(stencilFunc(stencil_always, 0));
     }
 
-    /// Clear the marks by drawing the same rects with reference 0, then
-    /// restore color writes.
     pub fn stencilUnmarkBegin(self: *Self) void {
         self.emit(colorMask(false));
         self.emit(stencilOp(stencil_replace, stencil_replace));
@@ -263,8 +196,6 @@ pub const DisplayList = struct {
         self.emit(stencilOp(stencil_keep, stencil_keep));
     }
 
-    /// Draw cell `index` of page `page` (a bitmap handle) with its top-left
-    /// corner at whole device pixel (x, y).
     pub fn cell(
         self: *Self,
         page: u8,
@@ -283,10 +214,6 @@ pub const DisplayList = struct {
         self.vertex2ii(at, page, index);
     }
 
-    /// Draw an image from the image mirror (`images.zig`). A draw larger or
-    /// smaller than its texels scales through `BITMAP_TRANSFORM_A`/`_E`
-    /// (texels per pixel in 8.8) and filters bilinearly; a 1:1 draw samples
-    /// the nearest texel, so it stays as sharp as the source.
     pub fn image(self: *Self, draw: *const ImageDraw) void {
         assert(draw.texels[0] > 0);
         assert(draw.texels[1] > 0);
@@ -302,22 +229,19 @@ pub const DisplayList = struct {
         const width = draw.size[0];
         const height = draw.size[1];
         const scaled = draw.texels[0] != width or rows != height;
-        const filter: u32 = @intFromBool(scaled); // BILINEAR when scaled.
-        self.emit((5 << 24) | handle); // BITMAP_HANDLE
-        self.emit((1 << 24) | draw.source); // BITMAP_SOURCE
+        const filter: u32 = @intFromBool(scaled);
+        self.emit((5 << 24) | handle);
+        self.emit((1 << 24) | draw.source);
         self.emit((7 << 24) | (format_argb4 << 19) | ((stride & 1023) << 9) | (rows & 511));
-        self.emit((40 << 24) | ((stride >> 10) << 2) | (rows >> 9)); // BITMAP_LAYOUT_H
+        self.emit((40 << 24) | ((stride >> 10) << 2) | (rows >> 9));
         self.emit((8 << 24) | (filter << 20) | ((width & 511) << 9) | (height & 511));
-        self.emit((41 << 24) | ((width >> 9) << 2) | (height >> 9)); // BITMAP_SIZE_H
+        self.emit((41 << 24) | ((width >> 9) << 2) | (height >> 9));
         self.setTransform(.{ transformOf(draw.texels[0], width), transformOf(rows, height) });
         self.setColor(draw.color);
         self.beginPrimitive(prim_bitmaps, false);
         self.vertex2ii(draw.at, image_handle, 0);
     }
 
-    /// `image` with rounded corners: the rounded box is marked in the
-    /// stencil buffer, the image draws only inside the mark, and the mark is
-    /// cleared again for the next primitive.
     pub fn imageRounded(self: *Self, box: Box, radius: f32, draw: *const ImageDraw) void {
         assert(radius > 0);
         assert(box.w > 0);
@@ -333,8 +257,6 @@ pub const DisplayList = struct {
         self.stencilUnmarkEnd();
     }
 
-    /// One `VERTEX2II` of `handle` and `cell_index` with its top-left at
-    /// whole pixel `at`, moving the origin in 512 px steps to reach it.
     fn vertex2ii(self: *Self, at: [2]i32, handle: u32, cell_index: u32) void {
         assert(handle < 32);
         assert(cell_index < 128);
@@ -352,8 +274,6 @@ pub const DisplayList = struct {
         self.emit((2 << 30) | (local_x << 21) | (local_y << 12) | (handle << 7) | cell_index);
     }
 
-    /// Start a line strip of half-width `half_width_units` (1/16 px). Strips
-    /// always restart, or consecutive polylines would join.
     pub fn beginStrip(self: *Self, half_width_units: u32, color: Color) void {
         assert(half_width_units > 0);
         assert(half_width_units <= 4095);
@@ -364,14 +284,13 @@ pub const DisplayList = struct {
         self.setTranslate(.{ 0, 0 });
     }
 
-    /// Start points of radius `radius_units` (1/16 px).
     pub fn beginPoints(self: *Self, radius_units: u32, color: Color) void {
         assert(radius_units > 0);
         assert(radius_units <= 0x1FFF);
         self.applyScissor(self.clip);
         self.setColor(color);
         if (self.state.point_size != radius_units) {
-            self.emit((13 << 24) | radius_units); // POINT_SIZE
+            self.emit((13 << 24) | radius_units);
             self.state.point_size = radius_units;
         }
         self.beginPrimitive(prim_points, false);
@@ -383,7 +302,6 @@ pub const DisplayList = struct {
         self.emit(vertex2f(x, y));
     }
 
-    /// Set up page `index`'s bitmap handle, once per list.
     fn configurePage(self: *Self, index: u8, layout: PageLayout) void {
         assert(index < handle_count_max);
         assert(layout.cell_size > 0);
@@ -391,28 +309,26 @@ pub const DisplayList = struct {
         const bit = @as(u16, 1) << @intCast(index);
         if (self.pages_configured & bit != 0) return;
         const size = layout.cell_size;
-        self.emit((5 << 24) | @as(u32, index)); // BITMAP_HANDLE
-        self.emit((1 << 24) | layout.address); // BITMAP_SOURCE
-        self.emit((7 << 24) | (format_l8 << 19) | (size << 9) | size); // BITMAP_LAYOUT
-        self.emit(40 << 24); // BITMAP_LAYOUT_H: sizes stay below 512.
-        self.emit((8 << 24) | (size << 9) | size); // BITMAP_SIZE, NEAREST, BORDER
-        self.emit(41 << 24); // BITMAP_SIZE_H
+        self.emit((5 << 24) | @as(u32, index));
+        self.emit((1 << 24) | layout.address);
+        self.emit((7 << 24) | (format_l8 << 19) | (size << 9) | size);
+        self.emit(40 << 24);
+        self.emit((8 << 24) | (size << 9) | size);
+        self.emit(41 << 24);
         self.pages_configured |= bit;
     }
 
-    /// `BITMAP_TRANSFORM_A` and `_E`, 8.8 texels per pixel. The other four
-    /// coefficients keep their reset values (no shear or offset).
     fn setTransform(self: *Self, transform: [2]u32) void {
         assert(transform[0] > 0);
         assert(transform[1] > 0);
         assert(transform[0] < 0x10000);
         assert(transform[1] < 0x10000);
         if (self.state.transform[0] != transform[0]) {
-            self.emit((21 << 24) | transform[0]); // BITMAP_TRANSFORM_A, 8.8
+            self.emit((21 << 24) | transform[0]);
             self.state.transform[0] = transform[0];
         }
         if (self.state.transform[1] != transform[1]) {
-            self.emit((25 << 24) | transform[1]); // BITMAP_TRANSFORM_E, 8.8
+            self.emit((25 << 24) | transform[1]);
             self.state.transform[1] = transform[1];
         }
     }
@@ -448,8 +364,6 @@ pub const DisplayList = struct {
         self.state.line_width = width;
     }
 
-    /// Start `primitive`, unless it is already in progress and need not
-    /// restart.
     fn beginPrimitive(self: *Self, primitive: u32, restart: bool) void {
         assert(primitive <= 9);
         if (self.state.primitive == primitive and !restart) return;
@@ -471,7 +385,6 @@ pub const DisplayList = struct {
     }
 
     fn emit(self: *Self, word: u32) void {
-        // Callers check `room` first; overrunning is a programmer error.
         assert(self.count + 1 < words_max);
         self.words[self.count] = word;
         self.count += 1;
@@ -483,7 +396,6 @@ fn colorRgb(rgb: u32) u32 {
     return (4 << 24) | rgb;
 }
 
-/// Texels per pixel in 8.8 fixed point, for `count` texels drawn `pixels` wide.
 fn transformOf(count: u32, pixels: u32) u32 {
     assert(count > 0);
     assert(pixels > 0);
@@ -523,7 +435,6 @@ fn stencilOp(fail: u32, pass: u32) u32 {
     return (12 << 24) | (fail << 3) | pass;
 }
 
-/// Device pixels to a `VERTEX2F` in 1/8 px units, clamped to its range.
 pub fn vertex2f(x: f32, y: f32) u32 {
     const ux: u32 = @bitCast(eighths(x));
     const uy: u32 = @bitCast(eighths(y));
@@ -540,7 +451,6 @@ fn snap(value: f32) i64 {
     return @intFromFloat(std.math.clamp(@round(value), -4096, 4096));
 }
 
-/// A non-negative quantity in whole units, clamped to 12 bits.
 pub fn roundUnits(value: f32) u32 {
     assert(!std.math.isNan(value));
     return @intFromFloat(std.math.clamp(@round(value), 0, 4095));

@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-// Set true to debug WASM stack overflow issues.
 const verbose_init_logging = false;
 
 const wasm_log = if (builtin.os.tag == .freestanding and verbose_init_logging)
@@ -58,7 +57,6 @@ pub const WindowsBridge = if (builtin.os.tag == .windows) windows_bridge.Windows
 
 const integration_test = @import("integration_test.zig");
 
-/// Only one platform bridge is active at a time.
 pub const PlatformBridge = union(enum) {
     mac: if (builtin.os.tag == .macos) MacBridge else void,
     web: if (builtin.os.tag == .freestanding) WebBridge else void,
@@ -66,13 +64,6 @@ pub const PlatformBridge = union(enum) {
     null_bridge: void,
 };
 
-/// Create the appropriate platform bridge for the current OS.
-///
-/// `element_count_max` is the tree's `a11y.element_count_max`, which sizes the
-/// bridge's element slots. `window` is the platform window (objc.Object on
-/// macOS, the window's `uia.Host` on Windows); `view` is the platform view for
-/// coordinate conversion (objc.Object on macOS). `noinline` prevents stack
-/// accumulation in WASM builds.
 pub noinline fn createPlatformBridge(
     platform_bridge: *PlatformBridge,
     element_count_max: u16,
@@ -107,7 +98,6 @@ test "platform bridge creation" {
     const capacity = TreeCapacity.standard;
     const b = createPlatformBridge(&platform_bridge, capacity.element_count_max, null, null);
 
-    // Bridge should be usable regardless of platform.
     var t: Tree = undefined;
     try t.initInPlace(&capacity);
     defer t.deinit();
@@ -116,7 +106,6 @@ test "platform bridge creation" {
     t.popElement();
     t.endFrame();
 
-    // Safe no-ops when VoiceOver isn't running.
     b.syncDirty(&t, t.getDirtyElements());
     b.removeElements(t.getRemovedFingerprints());
     b.announce("Test", .polite);

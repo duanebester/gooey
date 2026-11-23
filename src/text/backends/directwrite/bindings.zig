@@ -1,13 +1,3 @@
-//! Hand-written subset of `dwrite.dll`, so the tree type-checks from any host.
-//!
-//! DirectWrite is COM: an interface pointer points at an object whose first
-//! field is its vtable pointer, and every method takes the object as its first
-//! argument. Each vtable below lists every slot of the interface in SDK-header
-//! order, because a method is found by its slot index alone; uncalled slots
-//! are typed `Slot`, and the comptime block at the end pins the slot index of
-//! every called method and the 64-bit layout of every structure. Released COM
-//! vtables and structures never change, and naming follows the SDK.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -20,14 +10,12 @@ pub const FALSE: BOOL = 0;
 
 pub const S_OK: HRESULT = 0;
 pub const E_NOINTERFACE: HRESULT = @bitCast(@as(u32, 0x8000_4002));
-/// `HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)`.
 pub const E_NOT_SUFFICIENT_BUFFER: HRESULT = @bitCast(@as(u32, 0x8007_007A));
 
 pub fn succeeded(result: HRESULT) bool {
     return result >= 0;
 }
 
-/// A vtable slot the backend never calls. It only holds its place.
 pub const Slot = *const anyopaque;
 
 pub const GUID = extern struct {
@@ -101,8 +89,6 @@ pub const DWRITE_MEASURING_MODE_NATURAL: u32 = 0;
 pub const DWRITE_GRID_FIT_MODE_DISABLED: u32 = 1;
 pub const DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE: u32 = 1;
 
-/// With `DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE`, this texture type holds one
-/// 8-bit coverage value per pixel, not the binary coverage its name suggests.
 pub const DWRITE_TEXTURE_ALIASED_1x1: u32 = 0;
 
 pub const DWRITE_FONT_METRICS = extern struct {
@@ -158,7 +144,6 @@ pub const DWRITE_SCRIPT_ANALYSIS = extern struct {
     shapes: u32,
 };
 
-/// Bit fields in the headers; the shaper only passes these between calls.
 pub const DWRITE_SHAPING_TEXT_PROPERTIES = extern struct { bits: u16 };
 pub const DWRITE_SHAPING_GLYPH_PROPERTIES = extern struct { bits: u16 };
 
@@ -197,10 +182,8 @@ pub const IDWriteFactory2 = extern struct {
         ) callconv(.winapi) HRESULT,
         CreateNumberSubstitution: Slot,
         CreateGlyphRunAnalysis: Slot,
-        // IDWriteFactory1.
         GetEudcFontCollection: Slot,
         CreateCustomRenderingParams1: Slot,
-        // IDWriteFactory2.
         GetSystemFontFallback: Slot,
         CreateFontFallbackBuilder: Slot,
         TranslateColorGlyphRun: Slot,
@@ -209,12 +192,12 @@ pub const IDWriteFactory2 = extern struct {
             *IDWriteFactory2,
             *const DWRITE_GLYPH_RUN,
             ?*const DWRITE_MATRIX,
-            u32, // DWRITE_RENDERING_MODE
-            u32, // DWRITE_MEASURING_MODE
-            u32, // DWRITE_GRID_FIT_MODE
-            u32, // DWRITE_TEXT_ANTIALIAS_MODE
-            f32, // baselineOriginX
-            f32, // baselineOriginY
+            u32,
+            u32,
+            u32,
+            u32,
+            f32,
+            f32,
             *?*IDWriteGlyphRunAnalysis,
         ) callconv(.winapi) HRESULT,
     };
@@ -258,7 +241,6 @@ pub const IDWriteFontFamily = extern struct {
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*IDWriteFontFamily) callconv(.winapi) u32,
-        // IDWriteFontList.
         GetFontCollection: Slot,
         GetFontCount: *const fn (*IDWriteFontFamily) callconv(.winapi) u32,
         GetFont: *const fn (
@@ -266,7 +248,6 @@ pub const IDWriteFontFamily = extern struct {
             u32,
             *?*IDWriteFont,
         ) callconv(.winapi) HRESULT,
-        // IDWriteFontFamily.
         GetFamilyNames: Slot,
         GetFirstMatchingFont: Slot,
         GetMatchingFonts: Slot,
@@ -350,9 +331,7 @@ pub const IDWriteFontFace1 = extern struct {
     vtable: *const VTable,
 
     pub const VTable = extern struct {
-        // IDWriteFontFace: 18 slots.
         base: [18]Slot,
-        // IDWriteFontFace1.
         GetMetrics1: Slot,
         GetGdiCompatibleMetrics1: Slot,
         GetCaretMetrics: Slot,
@@ -361,7 +340,6 @@ pub const IDWriteFontFace1 = extern struct {
     };
 
     pub fn release(self: *IDWriteFontFace1) void {
-        // `Release` is slot 2 of every interface.
         const release_fn: *const fn (*IDWriteFontFace1) callconv(.winapi) u32 =
             @ptrCast(self.vtable.base[2]);
         _ = release_fn(self);
@@ -378,8 +356,8 @@ pub const IDWriteTextAnalyzer = extern struct {
         AnalyzeScript: *const fn (
             *IDWriteTextAnalyzer,
             *IDWriteTextAnalysisSource,
-            u32, // textPosition
-            u32, // textLength
+            u32,
+            u32,
             *IDWriteTextAnalysisSink,
         ) callconv(.winapi) HRESULT,
         AnalyzeBidi: Slot,
@@ -387,43 +365,43 @@ pub const IDWriteTextAnalyzer = extern struct {
         AnalyzeLineBreakpoints: Slot,
         GetGlyphs: *const fn (
             *IDWriteTextAnalyzer,
-            [*]const WCHAR, // textString
-            u32, // textLength
+            [*]const WCHAR,
+            u32,
             *IDWriteFontFace,
-            BOOL, // isSideways
-            BOOL, // isRightToLeft
+            BOOL,
+            BOOL,
             *const DWRITE_SCRIPT_ANALYSIS,
-            ?[*:0]const WCHAR, // localeName
-            ?*anyopaque, // numberSubstitution
-            ?*const anyopaque, // features
-            ?[*]const u32, // featureRangeLengths
-            u32, // featureRanges
-            u32, // maxGlyphCount
-            [*]u16, // clusterMap
+            ?[*:0]const WCHAR,
+            ?*anyopaque,
+            ?*const anyopaque,
+            ?[*]const u32,
+            u32,
+            u32,
+            [*]u16,
             [*]DWRITE_SHAPING_TEXT_PROPERTIES,
-            [*]u16, // glyphIndices
+            [*]u16,
             [*]DWRITE_SHAPING_GLYPH_PROPERTIES,
-            *u32, // actualGlyphCount
+            *u32,
         ) callconv(.winapi) HRESULT,
         GetGlyphPlacements: *const fn (
             *IDWriteTextAnalyzer,
-            [*]const WCHAR, // textString
-            [*]const u16, // clusterMap
+            [*]const WCHAR,
+            [*]const u16,
             [*]DWRITE_SHAPING_TEXT_PROPERTIES,
-            u32, // textLength
-            [*]const u16, // glyphIndices
+            u32,
+            [*]const u16,
             [*]const DWRITE_SHAPING_GLYPH_PROPERTIES,
-            u32, // glyphCount
+            u32,
             *IDWriteFontFace,
-            f32, // fontEmSize
-            BOOL, // isSideways
-            BOOL, // isRightToLeft
+            f32,
+            BOOL,
+            BOOL,
             *const DWRITE_SCRIPT_ANALYSIS,
-            ?[*:0]const WCHAR, // localeName
-            ?*const anyopaque, // features
-            ?[*]const u32, // featureRangeLengths
-            u32, // featureRanges
-            [*]f32, // glyphAdvances
+            ?[*:0]const WCHAR,
+            ?*const anyopaque,
+            ?[*]const u32,
+            u32,
+            [*]f32,
             [*]DWRITE_GLYPH_OFFSET,
         ) callconv(.winapi) HRESULT,
         GetGdiCompatibleGlyphPlacements: Slot,
@@ -443,15 +421,15 @@ pub const IDWriteGlyphRunAnalysis = extern struct {
         Release: *const fn (*IDWriteGlyphRunAnalysis) callconv(.winapi) u32,
         GetAlphaTextureBounds: *const fn (
             *IDWriteGlyphRunAnalysis,
-            u32, // DWRITE_TEXTURE_TYPE
+            u32,
             *RECT,
         ) callconv(.winapi) HRESULT,
         CreateAlphaTexture: *const fn (
             *IDWriteGlyphRunAnalysis,
-            u32, // DWRITE_TEXTURE_TYPE
+            u32,
             *const RECT,
             [*]u8,
-            u32, // bufferSize
+            u32,
         ) callconv(.winapi) HRESULT,
         GetAlphaBlendParams: Slot,
     };
@@ -461,7 +439,6 @@ pub const IDWriteGlyphRunAnalysis = extern struct {
     }
 };
 
-/// The text source `AnalyzeScript` reads from. The shaper implements it.
 pub const IDWriteTextAnalysisSource = extern struct {
     vtable: *const VTable,
 
@@ -503,7 +480,6 @@ pub const IDWriteTextAnalysisSource = extern struct {
     };
 };
 
-/// The sink `AnalyzeScript` reports script runs to. The shaper implements it.
 pub const IDWriteTextAnalysisSink = extern struct {
     vtable: *const VTable,
 
@@ -554,7 +530,6 @@ fn assertSlot(comptime VTable: type, comptime name: []const u8, comptime slot: u
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(GUID) == 16);

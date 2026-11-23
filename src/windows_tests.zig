@@ -1,8 +1,3 @@
-//! Test root for the Windows backends: Win32 input, DirectWrite, WIC, the software SVG
-//! rasterizer, and UI Automation. This root names the Windows set explicitly so its
-//! coverage does not depend on what `root.zig`'s discovery chain reaches. It lives in
-//! `src/` because a module cannot import files above its root's directory.
-
 test {
     _ = @import("platform/windows/clipboard.zig");
     _ = @import("platform/windows/core_host.zig");

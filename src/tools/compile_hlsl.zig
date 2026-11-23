@@ -1,5 +1,3 @@
-//! Regenerates a checked-in `.dxbc` from HLSL with the system `D3DCompiler_47.dll`.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const Dir = std.Io.Dir;
@@ -8,12 +6,8 @@ const assert = std.debug.assert;
 
 const source_bytes_max: u32 = 256 * 1024;
 
-/// `D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3 |
-/// D3DCOMPILE_WARNINGS_ARE_ERRORS` from `d3dcompiler.h`.
 const compile_flags: u32 = (1 << 11) | (1 << 15) | (1 << 18);
 
-/// `D3D_COMPILE_STANDARD_FILE_INCLUDE`: resolve `#include` relative to the
-/// source file, by the sentinel pointer value 1 the header defines.
 const standard_file_include: *anyopaque = @ptrFromInt(1);
 
 const ID3DBlob = extern struct {
@@ -68,7 +62,6 @@ pub fn main(init: std.process.Init) !void {
 
     const buffer = try arena.alloc(u8, source_bytes_max);
     const source = try Dir.cwd().readFile(io, source_path, buffer);
-    // A read that fills the buffer may have been cut short.
     if (source.len == buffer.len) {
         std.debug.panic("compile_hlsl: {s} is not smaller than source_bytes_max {d}", .{
             source_path,

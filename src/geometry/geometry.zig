@@ -67,7 +67,6 @@ pub const GpuEdges = extern struct {
     pub const zero = GpuEdges{};
 };
 
-/// Logical pixels (before scaling)
 pub const Pixels = f32;
 
 pub fn Point(comptime T: type) type {
@@ -331,7 +330,6 @@ pub const Color = struct {
         }
     }
 
-    /// Hue wraps once: 1 is red again.
     pub fn hsla(h: f32, s: f32, l: f32, a: f32) Color {
         std.debug.assert(s >= 0.0 and s <= 1.0);
         std.debug.assert(l >= 0.0 and l <= 1.0);
@@ -498,9 +496,6 @@ test "corners gpu conversion" {
 }
 
 test "Color.hsla converts each hue sector and grey" {
-    // Expected values worked by hand so each hue branch is hit: q = 0.9,
-    // p = 0.1; red falls in the falling sector, green on the plateau, and
-    // blue wraps past 2/3.
     const color = Color.hsla(0.3, 0.8, 0.5, 0.4);
     try std.testing.expectApproxEqAbs(@as(f32, 0.26), color.r, 1e-5);
     try std.testing.expectApproxEqAbs(@as(f32, 0.9), color.g, 1e-5);

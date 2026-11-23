@@ -1,5 +1,3 @@
-//! The router: hit testing, focus, hover, and handler dispatch.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const records = @import("records.zig");
@@ -23,10 +21,6 @@ const index_none = records.index_none;
 
 pub const Point = struct { x: f32, y: f32 };
 
-// Synchronous, read-only questions a platform must answer before its
-// callback returns (`firstRectForCharacterRange`, `performKeyEquivalent`).
-// Reads only the rendered frame; it cannot mutate state, invoke handlers,
-// or re-enter the core.
 pub const Query = struct {
     window: *const Window,
 
@@ -43,9 +37,6 @@ pub const Query = struct {
         return ime.cursor_rect;
     }
 
-    // The text field the rendered frame's IME answers are for, or null when
-    // none is focused. A host makes the IME forget its composition when it
-    // changes, since the core commits it into the old field.
     pub fn imeOwner(self: *const Query) ?ElementId {
         const ime = self.window.rendered().ime orelse return null;
         assert(ime.owner.isKeyed());
@@ -58,19 +49,12 @@ pub const Query = struct {
         return .{ .offset = ime.selected_start, .len = ime.selected_end - ime.selected_start };
     }
 
-    // Whether a keymap binding names an action that an element on the focus
-    // path handles, so the drain will consume `key`.
     pub fn keymapClaims(self: *const Query, key: input.KeyEvent) bool {
         assert(self.window.phase != .build);
         if (debugger.isToggle(&key)) return true;
         return findAction(self.window, &key) != null;
     }
 
-    /// Whether the drain will act on a press at `point`: it lands on a
-    /// scrollbar, or a record on its press path has `on_click`, takes focus,
-    /// or starts a gesture (`Box.draggable`, `Box.on_pointer_drag`). Clicks
-    /// fire on release, so a platform drawing its own window frame asks this
-    /// at the press and moves or resizes the window only when it is false.
     pub fn pressClaims(self: *const Query, point: Point) bool {
         assert(self.window.phase != .build);
         assert(std.math.isFinite(point.x));
@@ -97,9 +81,6 @@ pub const Query = struct {
     }
 };
 
-// The deepest hit record containing `point`, or `index_none`. Records below
-// the last modal fragment are never hit, and records of `pointer_events =
-// .none` boxes let the point through to earlier ones.
 fn hitIndex(frame: *const records.Frame, point: Point) u32 {
     assert(frame.hit_count <= frame.hits.len);
     assert(frame.modal_hit_start <= frame.hit_count);
@@ -151,23 +132,18 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
             debugger.press(window, point.x, point.y);
-            // A press ends a keyboard drag, then lands as usual.
             if (window.drag.keyboard) cancelDrag(window);
             press(window, event, point);
         },
         .mouse_up => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
-            // Only the left button drags a thumb, so only its release ends
-            // the drag; another button's release lands as usual.
             if (window.scroll_drag != .root and mouse.button == .left) endScrollDrag(window);
             if (window.capture.id != .root and window.capture.button == mouse.button) {
                 finishCapture(window, event, .end, point);
             }
             const pointer_drag = window.drag.phase != .idle and !window.drag.keyboard;
             if (pointer_drag and window.drag.button == mouse.button) {
-                // A started drag drops and clicks nothing; an armed one never
-                // moved, so its press clicks as usual.
                 if (window.drag.phase == .active) {
                     drop(window, event, point);
                     return;
@@ -176,10 +152,6 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             }
             if (mouse.button == .left) release(window, event, point);
         },
-        // An entry carries a real position: AppKit holds back the entry of
-        // a drag that left the window and delivers it as the first move
-        // after the release, so dropping it would leave the hover and the
-        // cursor of the drag in place.
         .mouse_moved, .mouse_dragged, .mouse_entered => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
@@ -195,7 +167,6 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             debugger.pointerMoved(window);
         },
         .key_down => keyDown(window, event),
-        // Typing reaches no text field during a keyboard drag.
         .key_up, .text_input, .composition => {
             if (!window.drag.keyboard) keyToFocus(window, event);
         },
@@ -206,8 +177,6 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
     }
 }
 
-// The platform took the pointer gesture away: a capture or a drag cancels
-// instead of ending, so nothing drops or commits.
 fn cancelPointer(window: *Window, event: *const input.InputEvent) void {
     assert(event.* == .pointer_cancelled);
     if (window.scroll_drag != .root) endScrollDrag(window);
@@ -223,9 +192,6 @@ fn cancelPointer(window: *Window, event: *const input.InputEvent) void {
     assert(window.capture.id == .root);
 }
 
-// One event for everything a focus loss let go of: the gesture cancels as
-// `pointer_cancelled` does, then each held key is released as its own
-// `key_up`, as a platform reporting them one by one would deliver them.
 fn focusLost(window: *Window, lost: *const input.FocusLostEvent) void {
     if (lost.pointer_cancelled) {
         const cancelled: input.InputEvent = .pointer_cancelled;
@@ -244,14 +210,11 @@ fn focusLost(window: *Window, lost: *const input.FocusLostEvent) void {
             .characters_ignoring_modifiers = null,
             .is_repeat = false,
         } };
-        // Typing reaches no text field during a keyboard drag.
         if (!window.drag.keyboard) keyToFocus(window, &up);
     }
     assert(released == lost.keys_held.count());
 }
 
-// Escape cancels a capture or a drag and goes no further. A keyboard drag
-// takes every key.
 fn keyDown(window: *Window, event: *const input.InputEvent) void {
     const key = &event.key_down;
     if (window.drag.keyboard) {
@@ -276,27 +239,15 @@ fn pointOf(position: anytype) Point {
     return point;
 }
 
-// A press: click-outside handlers and focus now; the click itself fires on
-// the left release, so a left press records the path it landed on.
 fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
     const context = contextPress(&event.mouse_down);
-    // A macOS Ctrl+press is the left button that opens a context menu: it
-    // clicks nothing, and takes no scrollbar, capture, or drag.
     const left = event.mouse_down.button == .left and !context;
-    // Only the left button drags a thumb or jumps a track, as native
-    // scrollbars do, and a thumb drag in progress is not taken over: any
-    // other press lands as usual below.
     const scrollbar_free = left and window.scroll_drag == .root;
     if (scrollbar_free and pressScrollbar(window, target, point)) return;
-    // A press the scrollbar did not take leaves any thumb drag as it was.
     assert(window.scroll_drag == .root or !scrollbar_free);
-    // Only the left button clicks, as a browser's `click` and native
-    // buttons do: another button's press leaves a left press's path alone.
     if (left) window.press_len = pathOf(frame, target, window.press_path);
-    // A second button pressed during a gesture lands as usual but does
-    // not take the gesture over.
     const ctrl_click = context and event.mouse_down.button == .left;
     const idle = window.capture.id == .root and window.drag.phase == .idle and !ctrl_click;
     const gesture = if (idle) gestureIndex(frame, target) else index_none;
@@ -331,17 +282,9 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     }
     setFocus(window, focus_id, false);
     if (capturing) deliverCapture(window, event, .begin, point);
-    // After click-outside and focus, as a browser's `contextmenu` follows
-    // `mousedown`: a menu already open closes, and the handler sees where
-    // focus landed.
     if (context) contextMenu(window, event, target);
 }
 
-// A left release: click handlers bubbling from the record under the
-// pointer, limited to records the left press also landed in. Pressing one
-// button and releasing over another clicks neither; releasing over the
-// pressed button's child clicks the button. Right and middle releases
-// click nothing; handlers read them through `effects.inputEvent()`.
 fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
     assert(event.mouse_up.button == .left);
     const pressed = window.press_path[0..window.press_len];
@@ -362,8 +305,6 @@ fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
     }
 }
 
-// The innermost record on the press path with `Box.on_pointer_drag` or
-// `Box.draggable`; a box has at most one of them (`cx.checkKeyed`).
 fn gestureIndex(frame: *const records.Frame, target: u32) u32 {
     var index = target;
     var depth: u32 = 0;
@@ -377,8 +318,6 @@ fn gestureIndex(frame: *const records.Frame, target: u32) u32 {
     return index_none;
 }
 
-// A press on a draggable arms a drag of its payload; nothing renders until
-// it starts.
 fn armDrag(
     window: *Window,
     record: *const records.HitRecord,
@@ -403,10 +342,6 @@ fn armDrag(
     };
 }
 
-// An armed drag starts past `click_slop_px` from the press, after which its
-// release clicks nothing; a started one follows the pointer, and renders so
-// its preview moves. `updateHover`, which runs next, finds the target it is
-// `over` from the same hit test as the hover.
 fn moveDrag(window: *Window, point: Point) void {
     const drag = &window.drag;
     assert(drag.phase != .idle);
@@ -416,8 +351,6 @@ fn moveDrag(window: *Window, point: Point) void {
         const slop = Capture.click_slop_px;
         if (dx * dx + dy * dy <= slop * slop) return;
         drag.phase = .active;
-        // A left drag's release clicks nothing; another button's leaves a
-        // left press to click.
         if (drag.button == .left) window.press_len = 0;
     }
     drag.x = point.x;
@@ -438,10 +371,6 @@ fn dropTargetFrom(frame: *const records.Frame, index_start: u32, type_id: usize)
     return index_none;
 }
 
-// A release ends a started drag: over a target of its type it calls that
-// target's `on_drop` with the payload; anywhere else it cancels. The payload
-// was copied at the press, so it drops even if its source has stopped
-// rendering since.
 fn drop(window: *Window, event: *const input.InputEvent, point: Point) void {
     const drag = window.drag;
     assert(drag.phase == .active);
@@ -455,7 +384,6 @@ fn drop(window: *Window, event: *const input.InputEvent, point: Point) void {
     if (target != index_none) deliverDrop(window, event, &drag, target);
 }
 
-// Calls the target's `on_drop` in the frame on screen.
 fn deliverDrop(
     window: *Window,
     event: *const input.InputEvent,
@@ -474,8 +402,6 @@ fn deliverDrop(
     if (effects.click_request) |id| clickRequested(window, id, event);
 }
 
-// Escape or a lost gesture: the drag ends with no call, and a started one
-// renders without its preview.
 fn cancelDrag(window: *Window) void {
     assert(window.drag.phase != .idle);
     if (window.drag.phase == .active) window.render_requested = true;
@@ -485,9 +411,6 @@ fn cancelDrag(window: *Window) void {
     assert(window.drag.over == .root);
 }
 
-// `effects.startDrag`: start the keyboard drag, and hold it to what
-// `startDrag` told the handler, so an app that announced a pick-up on true
-// never announces one that did not happen.
 fn applyDragStart(window: *Window, request: handler_mod.Effects.DragStart) void {
     const before = window.drag;
     startKeyboardDrag(window, request.id);
@@ -502,10 +425,6 @@ fn applyDragStart(window: *Window, request: handler_mod.Effects.DragStart) void 
     }
 }
 
-// A keyboard drag of draggable `id` starts active, over nothing, at its
-// source's centre. A gesture already on, or an `id` the frame on screen
-// lacks, starts none: the facts `Effects.startDrag` read before the handler
-// returned, which nothing between the two changes.
 fn startKeyboardDrag(window: *Window, id: ElementId) void {
     assert(id.isKeyed());
     if (window.drag.phase != .idle) return;
@@ -514,7 +433,6 @@ fn startKeyboardDrag(window: *Window, id: ElementId) void {
     const index = findRecord(frame, id);
     if (index == index_none) return;
     const record = &frame.hits[index];
-    // `Effects.startDrag` panicked on a record that is not draggable.
     assert(record.drag_type != 0);
     const centre = centreOf(record.bounds);
     window.drag = .{
@@ -541,9 +459,6 @@ fn centreOf(bounds: records.Rect) Point {
     return .{ .x = bounds.x + bounds.width / 2, .y = bounds.y + bounds.height / 2 };
 }
 
-// A key during a keyboard drag, which takes them all: Tab and the arrows
-// move `over`, Enter or Space drops on it, Escape cancels, and any other
-// key does nothing, so typing reaches no text field.
 fn keyboardDragKey(window: *Window, event: *const input.InputEvent) void {
     assert(window.drag.keyboard);
     assert(window.drag.phase == .active);
@@ -557,10 +472,6 @@ fn keyboardDragKey(window: *Window, event: *const input.InputEvent) void {
     }
 }
 
-// Move `over` and focus, with its ring, to the next drop target of the
-// payload's type in tree order (the previous with `backward`), wrapping,
-// from `over` or else the source. Only targets the pointer could reach
-// count: none under a modal or with `pointer_events = .none`.
 fn moveKeyboardOver(window: *Window, backward: bool) void {
     const drag = &window.drag;
     assert(drag.keyboard);
@@ -570,7 +481,6 @@ fn moveKeyboardOver(window: *Window, backward: bool) void {
     assert(count <= frame.hits.len);
     if (count == 0) return;
     const from = findRecord(frame, if (drag.over != .root) drag.over else drag.source);
-    // With neither on screen, the walk starts just outside the list's end.
     var index: u32 = from;
     if (from == index_none) index = if (backward) 0 else count - 1;
     var steps: u32 = 0;
@@ -596,10 +506,6 @@ fn setKeyboardOver(window: *Window, record: *const records.HitRecord) void {
     window.render_requested = true;
 }
 
-// Enter or Space: drop on `over`, if it still renders; over nothing, the
-// drag stays on. Focus stays on a focusable target, so a screen reader does
-// not move and cut off the drop's announcement (VoiceOver stops speech on a
-// focus change); otherwise it returns to the source.
 fn keyboardDrop(window: *Window, event: *const input.InputEvent) void {
     const drag = window.drag;
     assert(drag.keyboard);
@@ -613,8 +519,6 @@ fn keyboardDrop(window: *Window, event: *const input.InputEvent) void {
     deliverDrop(window, event, &drag, target);
 }
 
-// A keyboard drag ends: the preview goes, and focus returns to the source
-// with its ring; if the source moved, `validateFocus` finds its successor.
 fn endKeyboardDrag(window: *Window) void {
     assert(window.drag.keyboard);
     const source = window.drag.source;
@@ -623,8 +527,6 @@ fn endKeyboardDrag(window: *Window) void {
     assert(!window.drag.keyboard);
 }
 
-// A capture's pointer move. Past `click_slop_px` from the press the gesture
-// is a drag, so its release clicks nothing.
 fn moveCapture(window: *Window, event: *const input.InputEvent, point: Point) void {
     const capture = &window.capture;
     assert(capture.id.isKeyed());
@@ -640,8 +542,6 @@ fn moveCapture(window: *Window, event: *const input.InputEvent, point: Point) vo
     deliverCapture(window, event, .move, point);
 }
 
-// Ends a capture with `end` or `cancel`, then resolves the cursor from what
-// is under the pointer again.
 fn finishCapture(
     window: *Window,
     event: *const input.InputEvent,
@@ -657,8 +557,6 @@ fn finishCapture(
     assert(window.capture.id == .root);
 }
 
-// Where a capture ends that no pointer event ends: the last pointer
-// position, or the press when the pointer has left the window.
 fn capturePoint(window: *const Window) Point {
     assert(window.capture.id.isKeyed());
     const pointer = window.pointer orelse
@@ -666,9 +564,6 @@ fn capturePoint(window: *const Window) Point {
     return .{ .x = pointer.x, .y = pointer.y };
 }
 
-// Call the capturing record's `on_pointer_drag` with one step, from the
-// frame on screen. A box that stopped rendering, or no longer has the
-// handler, ends the capture with no call: nothing is left to tell.
 fn deliverCapture(
     window: *Window,
     event: *const input.InputEvent,
@@ -709,10 +604,6 @@ fn modifiersOf(event: *const input.InputEvent) input.Modifiers {
     };
 }
 
-// A left press on a scroll box's scrollbar drags its thumb or jumps along
-// its track, and is consumed: no click, focus, or click-outside. The
-// innermost scroll box whose bar is under the pointer takes it. `press`
-// calls it only with no thumb drag in progress.
 fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
     assert(window.scroll_drag == .root);
     const frame = window.rendered();
@@ -725,7 +616,6 @@ fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
             if (window.retained.find(window_mod.ScrollState, record.id)) |state| {
                 if (state.press(point.x, point.y)) {
                     if (state.dragging != null) window.scroll_drag = record.id;
-                    // A thumb press starts a drag; a track press jumps.
                     assert((state.dragging != null) == window.scroll_drag.isKeyed());
                     window.render_requested = true;
                     window.press_len = 0;
@@ -738,8 +628,6 @@ fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
     return false;
 }
 
-// The dragged box stops dragging if it stopped rendering, which retired its
-// state.
 fn dragScrollbar(window: *Window, point: Point) void {
     assert(window.scroll_drag.isKeyed());
     const state = window.retained.find(window_mod.ScrollState, window.scroll_drag) orelse {
@@ -750,7 +638,6 @@ fn dragScrollbar(window: *Window, point: Point) void {
     if (state.drag(point.x, point.y)) window.render_requested = true;
 }
 
-// The release ends the drag and redraws the thumb in its resting colour.
 fn endScrollDrag(window: *Window) void {
     assert(window.scroll_drag.isKeyed());
     if (window.retained.find(window_mod.ScrollState, window.scroll_drag)) |state| {
@@ -779,7 +666,6 @@ fn clickOutside(window: *Window, event: *const input.InputEvent, target: u32) vo
     for (frame.hits[0..frame.hit_count], 0..) |*record, index| {
         if (record.on_click_outside == index_none) continue;
         if (isAncestorOrSelf(frame, @intCast(index), target)) continue;
-        // Every click-outside handler runs; one cannot stop another.
         _ = invoke(window, frame.handlerAt(record.on_click_outside).?, event, null, record.id);
     }
 }
@@ -816,10 +702,6 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
     return false;
 }
 
-// The wheel scrolls the innermost scrollable under the pointer: a text area
-// or editor through its key handler, or a `Style.scroll` box through its
-// retained offset. A box already at its end passes the wheel to the boxes
-// around it; a wheel nothing can take is dropped.
 fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
     assert(event.* == .scroll);
     const frame = window.rendered();
@@ -844,8 +726,6 @@ fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
     }
 }
 
-// Returns whether the box's offset moved. The rendered frame's records
-// outlive the box only if it stopped rendering, which retires its state.
 fn scrollBox(window: *Window, id: ElementId, scroll: *const input.ScrollEvent) bool {
     assert(id.isKeyed());
     const state = window.retained.find(window_mod.ScrollState, id) orelse return false;
@@ -860,8 +740,6 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
     if (debugger.routeKey(window, event)) return;
     if (event.* == .key_down) {
         if (findAction(window, &event.key_down)) |found| {
-            // A handled action consumes the key, whether or not it stops
-            // propagation: there is nothing further for it to reach.
             _ = invoke(window, found.handler, event, null, found.id);
             return;
         }
@@ -876,10 +754,6 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
     }
     if (bubble(window, event, target, .key)) return;
     if (event.* != .key_down) return;
-    // The defaults for a key no handler claimed, as a browser's: Tab moves
-    // focus, Enter or Space clicks the element the key was sent to, which a
-    // handler may have moved focus away from, and Shift+F10 opens its
-    // context menu.
     const key = &event.key_down;
     assert(target < frame.hit_count);
     if (key.key == .tab) {
@@ -895,8 +769,6 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
     }
 }
 
-// Shift+F10 alone, and not a repeat: the Windows and Linux key for the
-// focused element's context menu.
 fn opensContextMenu(key: *const input.KeyEvent) bool {
     const modifiers = key.modifiers;
     if (key.is_repeat) return false;
@@ -904,16 +776,12 @@ fn opensContextMenu(key: *const input.KeyEvent) bool {
     return key.key == .f10 and modifiers.shift;
 }
 
-// A press that opens a context menu instead of clicking: the right button,
-// or on macOS a Ctrl+press of the left, as AppKit's menus take it.
 fn contextPress(mouse: *const input.MouseEvent) bool {
     if (mouse.button == .right) return true;
     if (builtin.os.tag != .macos) return false;
     return mouse.button == .left and mouse.modifiers.ctrl;
 }
 
-// Only the nearest record from `target` up that has one, so a menu inside a
-// menu's area opens instead of both.
 fn contextMenu(window: *Window, event: *const input.InputEvent, target: u32) void {
     assert(event.* == .mouse_down or event.* == .key_down);
     const frame = window.rendered();
@@ -931,8 +799,6 @@ fn contextMenu(window: *Window, event: *const input.InputEvent, target: u32) voi
     }
 }
 
-// Enter or Space without Cmd, Ctrl, or Alt, and not a repeat: one click per
-// press, as a native button gives.
 fn activates(key: *const input.KeyEvent) bool {
     const modifiers = key.modifiers;
     if (key.is_repeat) return false;
@@ -943,8 +809,6 @@ fn activates(key: *const input.KeyEvent) bool {
     };
 }
 
-// The focus path for keys, innermost first: the focused record and its
-// ancestors, or with nothing focused the top-level records in tree order.
 const FocusPath = struct {
     frame: *const records.Frame,
     next_index: u32,
@@ -1006,10 +870,6 @@ fn findAction(window: *const Window, key: *const input.KeyEvent) ?FoundAction {
     return null;
 }
 
-// Focus the next (or previous) tab stop in tree order, wrapping, among the
-// records a modal leaves reachable: Tab never reaches a control the pointer
-// cannot, so Enter cannot click it. A focusable record that is not a tab
-// stop, such as a Select's option, is left to its control's keys.
 fn moveFocus(window: *Window, backward: bool) void {
     const frame = window.rendered();
     const start = frame.modal_hit_start;
@@ -1042,9 +902,6 @@ fn routeCompletion(window: *Window, completion: *const events.Completion) void {
     _ = invoke(window, handler, null, completion, .root);
 }
 
-// Deliver one job result or end (`Effects.spawn`): call the job's
-// `on_result` or `on_done` like any root handler, then free what the
-// delivery held. A cancelled job's results are dropped here.
 pub fn routeJob(window: *Window, entry: *const events.JobEntry) void {
     window.assertPhase(.drain);
     const delivery = window.jobs.delivery(entry) orelse return;
@@ -1054,12 +911,9 @@ pub fn routeJob(window: *Window, entry: *const events.JobEntry) void {
     call(window, delivery.handler, &effects);
     if (effects.click_request) |id| clickRequested(window, id, null);
     window.jobs.finishDelivery(entry);
-    // The handler changed state the screen shows.
     window.render_requested = true;
 }
 
-// Invoke one handler and apply its effects, then the click it requested, if
-// any. Returns whether the handler stopped propagation.
 fn invoke(
     window: *Window,
     handler: handler_mod.Handler,
@@ -1074,8 +928,6 @@ fn invoke(
     return effects.propagation_stopped;
 }
 
-// `effects.click`: the clicked element's `on_click`, from the frame on
-// screen. Not recursive: a click it requests in turn is a programmer error.
 fn clickRequested(window: *Window, id: ElementId, event: ?*const input.InputEvent) void {
     assert(id.isKeyed());
     const frame = window.rendered();
@@ -1091,8 +943,6 @@ fn clickRequested(window: *Window, id: ElementId, event: ?*const input.InputEven
     );
 }
 
-// Run one handler and apply every request but a click, which `invoke`
-// applies after it.
 fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Effects) void {
     assert(effects.click_request == null);
     assert(!effects.propagation_stopped);
@@ -1106,7 +956,6 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;
-    // Focus a handler moves for a key shows its ring, as Tab's does.
     const from_keyboard = if (effects.event) |event| isKeyboard(event) else false;
     switch (effects.focus_request) {
         .none => {},
@@ -1116,8 +965,6 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     if (effects.file_dialog) |request| requestDialog(window, request);
     if (effects.font_request) |request| requestFont(window, request);
     if (effects.theme_request) |theme| {
-        // Only build reads the theme, on this thread, so the swap is safe
-        // with a frame in flight; the clear colour follows at that build.
         window.theme = theme;
         window.render_requested = true;
     }
@@ -1133,9 +980,6 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     if (effects.scroll_request) |request| requestScroll(window, request);
 }
 
-// `effects.scrollTo`: hand the target to the box's retained state for the
-// next layout. A child's key becomes its id now, since a name's bytes do not
-// outlive the handler; an index key is kept for a `List` to build its row.
 fn requestScroll(window: *Window, request: handler_mod.Effects.ScrollRequest) void {
     assert(request.id.isKeyed());
     const ScrollState = window_mod.ScrollState;
@@ -1161,8 +1005,6 @@ fn isKeyboard(event: *const input.InputEvent) bool {
     };
 }
 
-// Copy a font change for the tick to apply (`tick.applyFont`). A name past
-// `family_name_bytes_max` is a programmer error, named here.
 pub fn requestFont(window: *Window, request: handler_mod.Effects.FontRequest) void {
     assert(request.size > 0 and request.size < 1000);
     if (request.name.len == 0 or request.name.len > window_mod.PendingFont.name_bytes_max) {
@@ -1190,8 +1032,6 @@ fn requestDialog(window: *Window, request: handler_mod.FileDialogRequest) void {
             handler_mod.typeName(window.store.root_type_id),
         });
     }
-    // `Effects.openFileDialog` refused a request while one waits or every
-    // slot is in use, so the tick's `freeDialogSlot` finds one.
     assert(window.pending_dialog == null);
     var slot_free_count: u32 = 0;
     for (window.dialog_handlers) |slot| {
@@ -1206,8 +1046,6 @@ fn requestDialog(window: *Window, request: handler_mod.FileDialogRequest) void {
     window.pending_dialog = copy;
 }
 
-// Copy a save request's folder and name into the window, since the handler's
-// strings may live in its frame. Both share one bounded buffer.
 fn copySaveOptions(window: *Window, options: *handler_mod.SavePromptOptions) void {
     const capacity = window.dialog_request_bytes.len;
     const directory_len = if (options.directory) |directory| directory.len else 0;
@@ -1232,7 +1070,6 @@ fn copySaveOptions(window: *Window, options: *handler_mod.SavePromptOptions) voi
     assert(directory_len + name_len <= capacity);
 }
 
-// `visible` draws the focused element's ring: focus moved by keyboard.
 pub fn setFocus(window: *Window, id: ElementId, visible: bool) void {
     if (window.focus == id and window.focus_visible == visible) return;
     window.focus = id;
@@ -1241,11 +1078,6 @@ pub fn setFocus(window: *Window, id: ElementId, visible: bool) void {
     window.render_requested = true;
 }
 
-// Recompute the focus path against the frame on screen before a build, so
-// `cx.focusVisibleWithin` sees a focus move a handler made in this tick's
-// drain. Focus the frame on screen does not hold yet, such as an element a
-// handler focused before it first renders, leaves the path empty and asks
-// for one more build, which finds it.
 pub fn updateFocusPath(window: *Window) void {
     window.assertPhase(.build);
     window.focus_len = 0;
@@ -1265,8 +1097,6 @@ pub fn updateHover(window: *Window) void {
     const frame = window.rendered();
     var path: [window_mod.box_depth_ceiling]ElementId = undefined;
     var len: u32 = 0;
-    // Resolved even when the path is unchanged: a new frame may give the
-    // same records another cursor. A capture keeps the cursor of its press.
     var target: u32 = index_none;
     if (window.pointer) |pointer| {
         target = hitIndex(frame, .{ .x = pointer.x, .y = pointer.y });
@@ -1289,8 +1119,6 @@ pub fn updateHover(window: *Window) void {
     window.render_requested = true;
 }
 
-// A started drag's target from the hover's own hit test, so a move costs
-// one; after a flip, a target that slid under a still pointer becomes it.
 fn updateOver(window: *Window, frame: *const records.Frame, target: u32) void {
     const drag = &window.drag;
     if (drag.phase != .active) {
@@ -1305,9 +1133,6 @@ fn updateOver(window: *Window, frame: *const records.Frame, target: u32) void {
     window.render_requested = true;
 }
 
-// A keyboard drag ignores the pointer. After a flip its `x`, `y` follow
-// `over` (or the source) to where the frame placed it; a target that
-// stopped rendering leaves `over` at none and focus on the source.
 fn followKeyboardOver(window: *Window, frame: *const records.Frame) void {
     const drag = &window.drag;
     assert(drag.keyboard);
@@ -1334,8 +1159,6 @@ fn moveKeyboardPoint(window: *Window, bounds: records.Rect) void {
     window.render_requested = true;
 }
 
-// The innermost cursor set on `index` or its ancestors; `.default` when none
-// sets one or `index` is none.
 fn cursorOf(frame: *const records.Frame, index_start: u32) element.CursorShape {
     var index = index_start;
     var depth: u32 = 0;
@@ -1347,10 +1170,6 @@ fn cursorOf(frame: *const records.Frame, index_start: u32) element.CursorShape {
     return .default;
 }
 
-// Move focus off an element that the frame just built did not render, no
-// longer lets focus, or that a modal opened over: keys must not reach what
-// the pointer cannot. Focus passes to its successor (`focusSuccessor`), so
-// the next Tab continues from where it was, and keeps its ring.
 pub fn validateFocus(window: *Window) void {
     if (window.focus == .root) return;
     const frame = window.built();
@@ -1369,17 +1188,10 @@ pub fn validateFocus(window: *Window) void {
     window.render_requested = true;
 }
 
-// Tab stops tried on each side of a lost focus.
 const successor_tab_stop_count_max: u32 = 32;
 const successor_candidate_count_max: u32 =
     window_mod.box_depth_ceiling + 2 * successor_tab_stop_count_max;
 
-// Where focus goes when `lost` leaves: in the frame on screen, its nearest
-// focusable ancestor, such as the combobox of an option chosen with the
-// pointer; else the next tab stop after it, such as the next row's control
-// after a deleted row's; else the previous one. The first of these that
-// `built` still renders, focusable and reachable past its modal, wins. None
-// is `.root`.
 fn focusSuccessor(
     rendered: *const records.Frame,
     built: *const records.Frame,

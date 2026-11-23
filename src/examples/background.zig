@@ -32,7 +32,6 @@ pub const Fetch = struct {
         len: u16,
         bytes: [64]u8,
     };
-    /// One post per chunk.
     pub const posts_max: u32 = reply_chunks.len;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
@@ -57,7 +56,6 @@ pub const CountLines = struct {
         bytes: u64,
         lines: u64,
     };
-    /// One count, posted at the end.
     pub const posts_max: u32 = 1;
 
     const file_bytes_max: u64 = 1 << 30;
@@ -70,8 +68,6 @@ pub const CountLines = struct {
         defer file.close(io);
         var buffer: [buffer_bytes]u8 = undefined;
         var counted: Result = .{ .bytes = 0, .lines = 0 };
-        // Bounded by `file_bytes_max`; a read returns at least one byte or
-        // ends the stream.
         while (counted.bytes < file_bytes_max) {
             if (job.cancelled()) return error.Canceled;
             const read = file.readStreaming(io, &.{&buffer}) catch |err| switch (err) {
@@ -189,7 +185,6 @@ pub const State = struct {
     }
 
     pub fn deinit(self: *State) void {
-        // Every job has returned by now, so nothing else reaches `State`.
         if (self.fetch != null) std.log.info("background: quit with a fetch in flight", .{});
     }
 
@@ -236,7 +231,6 @@ pub fn render(cx: *Cx) void {
                 .disabled = s.fetch == null,
                 .on_click = cx.on(State.cancelFetch, .{}),
             },
-            // The web binds no file dialog service.
             if (builtin.cpu.arch.isWasm()) null else Button{
                 .label = "Count lines\u{2026}",
                 .variant = .secondary,

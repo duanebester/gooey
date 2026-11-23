@@ -5,7 +5,6 @@ const ImageData = atlas.ImageData;
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
-    /// RGBA pixel data (owned by allocator)
     pixels: []u8,
     allocator: std.mem.Allocator,
 

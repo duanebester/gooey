@@ -1,12 +1,8 @@
-//! Accessible element, the a11y parallel to LayoutElement.
-
 const std = @import("std");
 const types = @import("types.zig");
 const fingerprint_mod = @import("fingerprint.zig");
 const layout = @import("../layout/layout.zig");
 
-/// A text field's selection, as byte offsets into its value; `start == end`
-/// is the caret.
 pub const TextSelection = struct { start: u32, end: u32 };
 
 pub const Element = struct {
@@ -14,14 +10,12 @@ pub const Element = struct {
 
     role: types.Role,
 
-    /// Slice into the component's string; zero-copy within a frame.
     name: ?[]const u8 = null,
 
     description: ?[]const u8 = null,
 
     value: ?[]const u8 = null,
 
-    /// The selection in `value`, while this is the focused text field.
     selection: ?TextSelection = null,
 
     state: types.State = .{},
@@ -33,19 +27,15 @@ pub const Element = struct {
     value_min: ?f32 = null,
     value_max: ?f32 = null,
     value_now: ?f32 = null,
-    /// The axis of a separator, slider, or scrollbar; null leaves it to
-    /// the platform's default for the role.
     orientation: ?types.Orientation = null,
 
-    /// 1-based position in set.
     pos_in_set: ?u16 = null,
 
-    /// Total items in set.
     set_size: ?u16 = null,
 
     parent: ?u16 = null,
     first_child: ?u16 = null,
-    last_child: ?u16 = null, // O(1) child append
+    last_child: ?u16 = null,
     next_sibling: ?u16 = null,
     child_count: u16 = 0,
 
@@ -70,13 +60,12 @@ pub const Element = struct {
 
     pub fn isFocusable(self: *const Self) bool {
         std.debug.assert(self.fingerprint.isValid() or !self.isAccessible());
-        std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF); // Only 12 bits used
+        std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF);
 
         if (self.state.disabled or self.state.hidden) return false;
         return self.role.isFocusableByDefault();
     }
 
-    /// Excludes bounds: position changes don't need re-announcement.
     pub fn contentHash(self: *const Self) u32 {
         std.debug.assert(self.fingerprint.isValid() or self.role == .presentation);
         std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF);
@@ -91,8 +80,6 @@ pub const Element = struct {
         if (self.value) |v| h.update(v);
         if (self.description) |d| h.update(d);
 
-        // A caret or selection move re-syncs the field so the bridge can
-        // report it.
         if (self.selection) |s| h.update(std.mem.asBytes(&s));
 
         if (self.value_now) |vn| h.update(std.mem.asBytes(&vn));
@@ -161,7 +148,6 @@ pub const Element = struct {
 };
 
 comptime {
-    // ~160-byte target for cache efficiency; bound is loose for alignment.
     std.debug.assert(@sizeOf(Element) <= 192);
 
     std.debug.assert(@alignOf(Element) <= 8);
@@ -221,8 +207,6 @@ test "element content hash stability" {
     elem3.state.focused = false;
     try std.testing.expect(elem1.contentHash() != elem3.contentHash());
 
-    // A caret or selection move with the same text re-syncs the field, so
-    // VoiceOver hears about it; gaining the caret at offset 0 counts too.
     var field = Element.init(fp, .textbox);
     field.value = "milk";
     var caret = field;

@@ -73,8 +73,6 @@ pub const WebShaper = struct {
                 @intCast(char_len),
             );
 
-            // Kerning: pair width minus the sum of the individual widths,
-            // applied to the previous glyph's advance.
             if (i > 0) {
                 const prev_cp = codepoints.items[i - 1];
                 const prev_len = std.unicode.utf8Encode(prev_cp, &pair_buf) catch 0;
@@ -111,7 +109,6 @@ pub const WebShaper = struct {
 
         const result = try glyph_buffer.toOwnedSlice(allocator);
 
-        // Use full string measurement as authoritative width (captures ligatures)
         const total = measureText(font_name.ptr, @intCast(font_name.len), font_size, text.ptr, @intCast(text.len));
 
         return ShapedRun{ .glyphs = result, .width = total };

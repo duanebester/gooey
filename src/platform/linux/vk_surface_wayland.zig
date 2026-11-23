@@ -3,8 +3,6 @@ const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
 const wayland = @import("wayland.zig");
 
-/// Borrowed Wayland objects a `VkSurfaceKHR` is created from. The window owns
-/// both and keeps them alive for as long as the renderer that holds this.
 pub const WaylandSurface = struct {
     display: *wayland.Display,
     surface: *wayland.Surface,
@@ -15,7 +13,6 @@ pub const WaylandSurface = struct {
         WaylandSurfaceCreationFailed,
     };
 
-    /// The caller owns the returned `VkSurfaceKHR`.
     pub fn create(self: *const WaylandSurface, instance: vk.Instance) CreateError!vk.Surface {
         assert(instance != null);
 
@@ -38,22 +35,11 @@ pub const WaylandSurface = struct {
         return surface;
     }
 
-    // The flush and roundtrip results below are deliberately unchecked: they
-    // only fail once the display connection is lost, and a lost compositor has
-    // already released every buffer, so swapchain teardown proceeds either way.
-
     pub fn swapchainDestroyBegin(self: *const WaylandSurface) void {
         _ = wayland.wl_display_flush(self.display);
         _ = wayland.wl_display_roundtrip(self.display);
     }
 
-    // Roundtrips drain compositor wl_buffer.release events after swapchain
-    // destruction. A "queue destroyed while proxies still attached" warning
-    // may still appear: Mesa creates an internal wl_buffer per swapchain
-    // image, destroys them with the swapchain, and the compositor may send
-    // releases after the app exits. The warning is a libwayland-client debug
-    // message, not a resource leak; the roundtrips minimize but cannot fully
-    // eliminate the race.
     pub fn swapchainDestroyEnd(self: *const WaylandSurface) void {
         _ = wayland.wl_display_flush(self.display);
         _ = wayland.wl_display_roundtrip(self.display);

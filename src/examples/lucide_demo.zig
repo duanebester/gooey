@@ -14,7 +14,6 @@ const COLS: u32 = 16;
 
 const CELL_SIZE: f32 = 32;
 
-/// Lucide's canonical icon size.
 const ICON_SIZE: f32 = 24;
 
 const ROW_GAP: f32 = 4;
@@ -118,7 +117,6 @@ const IconCells = struct {
         assert(self.end <= TOTAL_ICONS);
         var index = self.start;
         while (index < self.end) : (index += 1) {
-            // Keyed by position in the row, so hover follows the cell.
             const key = gooey.Key{ .index = index - self.start };
             const hovered = cx.hovered(cx.id(key));
             cx.render(ui.box(.{ .key = key, .style = .{

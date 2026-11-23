@@ -1,24 +1,17 @@
 const std = @import("std");
 const svg_mod = @import("../path.zig");
 
-// Manual CoreGraphics bindings: Zig 0.16.0's Aro cannot parse the ObjC block
-// syntax (^) in the CoreGraphics umbrella header. The framework is linked via
-// build.zig.
 const cg = struct {
     const CGPath = opaque {};
     const CGContext = opaque {};
     const CGColorSpace = opaque {};
 
-    // Nullable opaque pointers, matching the CF convention.
     const CGMutablePathRef = ?*CGPath;
     const CGContextRef = ?*CGContext;
     const CGColorSpaceRef = ?*CGColorSpace;
 
-    // CGFloat is f64 on 64-bit macOS.
     const CGFloat = f64;
 
-    // Values match the CoreGraphics enums (CGImageAlphaInfo, CGLineCap,
-    // CGLineJoin); the headers cannot be translated here.
     const kCGImageAlphaPremultipliedLast: u32 = 1;
     const kCGLineCapRound: i32 = 1;
     const kCGLineJoinRound: i32 = 1;
@@ -68,7 +61,6 @@ pub const RasterizedSvg = struct {
 
 pub const RasterizeError = error{
     EmptyPath,
-    /// The path exceeds `RasterBudget.path_bytes_max` or its parse reservation.
     PathTooComplex,
     GraphicsError,
     BufferTooSmall,
@@ -82,12 +74,8 @@ pub const StrokeOptions = struct {
 
 pub const RasterBudget = svg_mod.RasterBudget;
 
-/// Alignment padding before the parse reservations (1 and 4 byte aligned).
 const scratch_alignment_slack_bytes: u32 = 2 * 3;
 
-/// Bytes one rasterization allocates: the parsed path and the stroke buffer
-/// used when fill and stroke combine. CoreGraphics flattens curves itself, so
-/// `vertex_count_max` does not apply here.
 pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     std.debug.assert(device_size_max > 0);
     std.debug.assert(budget.path_bytes_max > 0);
@@ -490,7 +478,6 @@ fn createBitmapContext(
     return ctx;
 }
 
-/// Output format: R = fill alpha, G = stroke alpha, B = unused, A = combined alpha
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -521,8 +508,6 @@ pub fn rasterizeWithOptions(
     const scale: f64 = @as(f64, @floatFromInt(device_size)) / @as(f64, viewbox);
 
     if (fill and stroke.enabled) {
-        // Closed path for fill, open for stroke: closing would fill the
-        // subpath outline instead of stroking it.
         const fill_path = buildCGPathFromCommands(&path, true) orelse return error.GraphicsError;
         defer cg.CGPathRelease(fill_path);
         const stroke_path = buildCGPathFromCommands(&path, false) orelse return error.GraphicsError;
@@ -547,7 +532,6 @@ pub fn rasterizeWithOptions(
 
             cg.CGContextAddPath(ctx, stroke_path);
             cg.CGContextSetRGBStrokeColor(ctx, 1.0, 1.0, 1.0, 1.0);
-            // Stroke width is in device pixels, but context is scaled, so convert to viewbox units
             cg.CGContextSetLineWidth(ctx, stroke.width / @as(f32, @floatCast(scale)));
             cg.CGContextSetLineCap(ctx, cg.kCGLineCapRound);
             cg.CGContextSetLineJoin(ctx, cg.kCGLineJoinRound);
@@ -584,7 +568,6 @@ pub fn rasterizeWithOptions(
             }
         } else if (stroke.enabled) {
             cg.CGContextSetRGBStrokeColor(ctx, 1.0, 1.0, 1.0, 1.0);
-            // Stroke width is in device pixels, but context is scaled, so convert to viewbox units
             cg.CGContextSetLineWidth(ctx, stroke.width / @as(f32, @floatCast(scale)));
             cg.CGContextSetLineCap(ctx, cg.kCGLineCapRound);
             cg.CGContextSetLineJoin(ctx, cg.kCGLineJoinRound);

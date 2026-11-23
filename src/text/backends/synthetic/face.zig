@@ -1,11 +1,3 @@
-//! Deterministic metrics and box glyphs, no font files: goldens compare paint
-//! and hit records across machines, so every metric derives from the point
-//! size and codepoint alone. Advances differ by character class (a single
-//! advance would hide off-by-one errors in cursor placement and wrapping);
-//! bold faces are 10% wider, and the `.monospace` family advances every glyph
-//! by one cell, so a run drawn with the wrong face or family measures
-//! differently.
-
 const std = @import("std");
 const types = @import("../../types.zig");
 const font_face_mod = @import("../../font_face.zig");
@@ -19,19 +11,15 @@ const SystemFont = types.SystemFont;
 const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
-/// Largest point size the face accepts, matching the text system's bound.
 const point_size_max: f32 = 1000;
 
 pub const SyntheticFace = struct {
     metrics: Metrics,
-    /// Multiplier on every advance: 1.1 for semibold and heavier, else 1.
     width_scale: f32,
-    /// Every glyph advances by `metrics.cell_width` (the `.monospace` family).
     monospace: bool,
 
     const Self = @This();
 
-    /// The family name is ignored: every family is the same synthetic face.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         assert(name.len > 0);
         assert(size > 0);
@@ -80,7 +68,6 @@ pub const SyntheticFace = struct {
         return font_face_mod.createFontFace(Self, self);
     }
 
-    /// The glyph id is the codepoint; codepoints past the BMP map to 0.
     pub fn glyphIndex(self: *const Self, codepoint: u21) u16 {
         assert(self.metrics.point_size > 0);
         if (codepoint <= std.math.maxInt(u16)) return @intCast(codepoint);
@@ -108,10 +95,6 @@ pub const SyntheticFace = struct {
         };
     }
 
-    /// Rasterize a solid box covering 80% of the advance and the cap height,
-    /// filled with `glyphShade(glyph_id)` so a golden can tell glyphs of equal
-    /// advance apart by their pixels. Subpixel offsets are ignored, so every
-    /// variant has the same pixels.
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
@@ -147,8 +130,6 @@ pub const SyntheticFace = struct {
     }
 };
 
-/// The coverage every pixel of `glyph_id` gets: 64 plus the id modulo 192, so
-/// all printable ASCII glyphs have distinct shades and none is blank.
 pub fn glyphShade(glyph_id: u16) u8 {
     const shade: u16 = 64 + glyph_id % 192;
     assert(shade >= 64);
@@ -156,8 +137,6 @@ pub fn glyphShade(glyph_id: u16) u8 {
     return @intCast(shade);
 }
 
-/// Advance in ems by character class. Whitespace and the glyph for a
-/// missing character still advance, so no input measures zero by accident.
 fn advanceEm(glyph_id: u16) f32 {
     if (glyph_id == ' ') return 0.25;
     if (glyph_id >= '0' and glyph_id <= '9') return 0.55;
@@ -171,8 +150,8 @@ fn advanceEm(glyph_id: u16) f32 {
         if (glyph_id == 'm' or glyph_id == 'w') return 0.8;
         return 0.5;
     }
-    if (glyph_id < 0x80) return 0.35; // Punctuation and symbols.
-    return 0.7; // Everything past ASCII.
+    if (glyph_id < 0x80) return 0.35;
+    return 0.7;
 }
 
 test "synthetic advances differ by class and bold is wider" {

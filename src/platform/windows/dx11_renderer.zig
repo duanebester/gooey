@@ -1,23 +1,3 @@
-//! Direct3D 11 renderer for Win32 windows; the shared Vulkan renderer stays
-//! the default.
-//!
-//! The renderer owns a device (hardware, or WARP without a driver; see
-//! `dx11_device.zig`), a flip-model swapchain on the window with a frame
-//! latency waitable (`dx11_swapchain.zig`), and every buffer, texture, shader,
-//! and state object it will ever use, created once in `initInPlace`
-//! (`dx11_resources.zig`). Shaders are precompiled DXBC embedded from
-//! `shaders/`; rebuild them with `zig build compile-hlsl` after editing HLSL.
-//!
-//! `draw` walks the packed frame's draws in order, sets each draw's scissor to
-//! its clip, binds its pipeline when it changes, and issues one instanced
-//! draw. A non-indexed draw's `SV_VertexID` and `SV_InstanceID` ignore the
-//! start location, so an immutable buffer of 0, 1, 2, ... is bound as
-//! per-instance vertex data and gives each shader the absolute index of its
-//! instance (`shaders/common.hlsl`).
-//!
-//! Threads: created on the main thread inside `Window.init`, then owned by the
-//! core host's render thread from `bindCore` on, like the Vulkan renderer.
-
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
 const win32 = @import("win32.zig");
@@ -39,24 +19,17 @@ const Pipeline = packed_mod.Pipeline;
 const Atlas = dx11_resources.Atlas;
 const InstanceBuffer = dx11_resources.InstanceBuffer;
 
-/// Most frames in flight any profile selects; sizes `frames`.
 pub const frame_count_max: u32 = limits_mod.MAX_FRAMES_IN_FLIGHT;
 
-/// Vertices one quad or sprite instance expands to: two triangles.
 const quad_vertex_count: u32 = 6;
-/// Vertices one triangle expands to: itself and a fringe quad per edge
-/// (`mesh_edges.triangle_draw_vertex_count`).
 const triangle_vertex_count: u32 = 21;
 
-/// The logical size the shaders map scene pixels through; matches the
-/// `Viewport` cbuffer in `shaders/common.hlsl`.
 const Uniforms = extern struct {
     viewport_width: f32,
     viewport_height: f32,
     pad: [2]f32 = .{ 0, 0 },
 };
 
-/// One frame in flight's GPU copies of the packed frame's arrays.
 pub const FrameBuffers = struct {
     uniforms: *d3d11.ID3D11Buffer,
     quads: InstanceBuffer,
@@ -78,7 +51,6 @@ const PixelStage = enum { quad, glyph, svg, image, mesh };
 const vertex_stage_count = @typeInfo(VertexStage).@"enum".field_names.len;
 const pixel_stage_count = @typeInfo(PixelStage).@"enum".field_names.len;
 
-/// The embedded DXBC of each stage, by the name `compile-hlsl` writes.
 const vertex_dxbc = [vertex_stage_count][]const u8{
     @embedFile("shaders/quad.vs_main.dxbc"),
     @embedFile("shaders/sprite.vs_main.dxbc"),
@@ -94,20 +66,15 @@ const pixel_dxbc = [pixel_stage_count][]const u8{
     @embedFile("shaders/mesh.ps_mesh.dxbc"),
 };
 
-/// Every shader and the input layout of each vertex shader: one
-/// per-instance `INSTANCE_INDEX` from the instance index buffer.
 pub const Shaders = struct {
     vertex: [vertex_stage_count]*d3d11.ID3D11VertexShader,
     layouts: [vertex_stage_count]*d3d11.ID3D11InputLayout,
     pixel: [pixel_stage_count]*d3d11.ID3D11PixelShader,
 };
 
-/// What one packed-frame pipeline binds.
 const PipelineState = struct {
     vertex: VertexStage,
     pixel: PixelStage,
-    /// Straight alpha (`SRC_ALPHA`) or premultiplied (`ONE`), matching the
-    /// Vulkan renderer's pipeline for the same shaders.
     premultiplied: bool,
 };
 
@@ -130,25 +97,18 @@ pub const InitError = dx11_device.Device.CreateError ||
 
 pub const Dx11Renderer = struct {
     device: dx11_device.Device,
-    /// Null for a headless renderer (`Surface.native == null`), which tests
-    /// render through `encode` into their own targets.
     swapchain: ?dx11_swapchain.Swapchain,
     states: dx11_resources.States,
     atlases: Atlases,
     shaders: Shaders,
     instance_indices: *d3d11.ID3D11Buffer,
     uploads: dx11_uploads.Uploads,
-    /// The framebuffer size of the last `resize` (or init), which every
-    /// `draw` must match; zero while the window is minimised.
     size_px: backend.SizePx,
     frames: [frame_count_max]FrameBuffers,
     frame_count: u32,
     frame_index: u32,
     limits: backend.RenderLimits,
-    /// Set once the device is removed; frames are skipped from then on.
     device_lost: bool,
-    /// Set while frames are skipped for want of a drawable, so the skip is
-    /// logged once.
     drawable_missing_logged: bool,
     initialized: bool,
 
@@ -156,7 +116,6 @@ pub const Dx11Renderer = struct {
 
     comptime {
         backend.verifyRenderer(Self);
-        // Inline in `Window`, which must stay under 16 KiB.
         assert(@sizeOf(Self) <= 2 * 1024);
     }
 
@@ -168,8 +127,6 @@ pub const Dx11Renderer = struct {
         return self.initInPlaceWithDriver(surface, limits, .hardware_then_warp);
     }
 
-    /// `initInPlace` with a chosen driver; tests pick WARP so pixels match on
-    /// every machine.
     pub fn initInPlaceWithDriver(
         self: *Self,
         surface: *const backend.Surface,
@@ -216,8 +173,6 @@ pub const Dx11Renderer = struct {
         });
     }
 
-    /// Every buffer, texture, shader, and state, created once at the budget's
-    /// sizes.
     fn initResources(self: *Self) InitError!void {
         assert(self.frame_count > 0);
         if (bufferPastBound(&self.limits)) |buffer| {
@@ -282,9 +237,6 @@ pub const Dx11Renderer = struct {
         return swapchain.usable();
     }
 
-    /// Size the back buffers to `size_px`, the window's client area. A zero
-    /// size (a minimised window) keeps the swapchain; draws at it present
-    /// nothing until a later resize.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.initialized);
         assert(size_px.width <= self.limits.window.framebuffer_width_max);
@@ -299,9 +251,6 @@ pub const Dx11Renderer = struct {
         _ = swapchain.resize(&self.device, size_px.width, size_px.height);
     }
 
-    /// Copy one journal record into this frame's staging buffer before
-    /// returning; the next `draw` lands it in its atlas on the GPU timeline
-    /// (`dx11_uploads.zig`).
     pub fn uploadAtlas(
         self: *Self,
         atlas: backend.AtlasKind,
@@ -316,8 +265,6 @@ pub const Dx11Renderer = struct {
             .glyph => .glyph,
             .svg => .svg,
             .image => .image,
-            // Nothing emits colour glyphs yet, so no journal record names
-            // this atlas and none is reserved.
             .glyph_color => std.debug.panic("dx11: no glyph_color atlas is reserved", .{}),
         };
         const side_px = self.atlasTargets()[@backingInt(slot)].side_px;
@@ -326,8 +273,6 @@ pub const Dx11Renderer = struct {
         }
     }
 
-    /// Render the packed frame, cleared to `clear`, and present it. Staged
-    /// atlas records land first, even when the frame itself is not drawn.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -336,7 +281,6 @@ pub const Dx11Renderer = struct {
     ) void {
         assert(self.initialized);
         assert(viewport.scale_factor > 0);
-        // `resize` precedes a draw at a new size.
         assert(viewport.size_px.width == self.size_px.width);
         assert(viewport.size_px.height == self.size_px.height);
         if (self.device_lost) return;
@@ -376,7 +320,6 @@ pub const Dx11Renderer = struct {
         };
     }
 
-    /// Whether a drawable exists; logs the first frame skipped without one.
     fn drawableReady(self: *Self, frame_number: u64) bool {
         if (self.swapchainUsable()) {
             self.drawable_missing_logged = false;
@@ -391,8 +334,6 @@ pub const Dx11Renderer = struct {
         return false;
     }
 
-    /// Everything `draw` does but wait and present, into `target`, which
-    /// spans `viewport.size_px`. Returns false when the device is lost.
     pub fn encode(
         self: *Self,
         target: *d3d11.ID3D11RenderTargetView,
@@ -417,8 +358,6 @@ pub const Dx11Renderer = struct {
         return true;
     }
 
-    /// State every draw of a frame shares: the instance index stream, the
-    /// viewport constants, and the atlas sampler.
     fn bindFrame(self: *const Self, buffers: *const FrameBuffers) void {
         const context = self.device.context;
         const streams = [_]?*d3d11.ID3D11Buffer{self.instance_indices};
@@ -431,8 +370,6 @@ pub const Dx11Renderer = struct {
         context.vtable.PSSetSamplers(context, 0, 1, &samplers);
     }
 
-    /// Walk the draws in order, changing the scissor and pipeline only when a
-    /// draw's differ from the previous one's.
     fn encodeDraws(
         self: *const Self,
         buffers: *const FrameBuffers,
@@ -449,11 +386,9 @@ pub const Dx11Renderer = struct {
             if (clip_bound != packed_draw.clip) {
                 assert(packed_draw.clip < clips.len);
                 const clip = clips[packed_draw.clip];
-                // Pack emits no draw whose clip has zero area.
                 assert(clip[2] > 0);
                 assert(clip[3] > 0);
                 const rect = scissorRect(clip, viewport);
-                // A clip thinner than a pixel may still hold no pixel centre.
                 clip_empty = rect.right <= rect.left or rect.bottom <= rect.top;
                 if (!clip_empty) context.vtable.RSSetScissorRects(context, 1, (&rect)[0..1]);
                 clip_bound = packed_draw.clip;
@@ -522,8 +457,6 @@ pub const Dx11Renderer = struct {
     }
 };
 
-/// One draw call per mesh, each with the mesh's index as its instance, so
-/// the shader finds the mesh and counts its expanded vertices from 0.
 fn drawMeshes(
     context: *d3d11.ID3D11DeviceContext,
     frame: *const PackedFrame,
@@ -538,7 +471,6 @@ fn drawMeshes(
     }
 }
 
-/// Vertices a mesh of `point_count` points expands to with `pipeline`.
 pub fn meshVertexCount(pipeline: Pipeline, point_count: u32) u32 {
     assert(point_count > 0);
     return switch (pipeline) {
@@ -546,17 +478,12 @@ pub fn meshVertexCount(pipeline: Pipeline, point_count: u32) u32 {
             assert(point_count % 3 == 0);
             break :blk @divExact(point_count, 3) * triangle_vertex_count;
         },
-        // A single point makes no segment.
         .strip_expanded => (point_count - 1) * quad_vertex_count,
         .point_instanced => point_count * quad_vertex_count,
         .quad, .glyph, .svg, .image => unreachable,
     };
 }
 
-/// The scissor rectangle holding exactly the device pixels whose centres lie
-/// in `clip`, edges included, clamped to the framebuffer. Pixel `i` has its
-/// centre at `i + 0.5`, so it is inside `[x0, x1]` when
-/// `ceil(x0 - 0.5) <= i <= floor(x1 - 0.5)`.
 pub fn scissorRect(clip: packed_mod.Rect, viewport: backend.Viewport) d3d11.D3D11_RECT {
     assert(clip[2] >= 0);
     assert(clip[3] >= 0);
@@ -578,8 +505,6 @@ pub fn scissorRect(clip: packed_mod.Rect, viewport: backend.Viewport) d3d11.D3D1
     return rect;
 }
 
-/// Copy the used prefix of each packed array into this frame's buffers, and
-/// the viewport into its constants. False when a map fails (device lost).
 fn writeFrame(
     context: *d3d11.ID3D11DeviceContext,
     buffers: *const FrameBuffers,
@@ -603,16 +528,12 @@ fn writeFrame(
         .{ .buffer = &buffers.edge_modes, .bytes = std.mem.sliceAsBytes(frame.edgeModeList()) },
     };
     for (arrays) |array| {
-        // The packed frame and these buffers are sized from the same
-        // reserved paint limits, so a frame always fits.
         assert(array.bytes.len <= @as(usize, array.buffer.count_max) * array.buffer.stride_bytes);
         if (!array.buffer.write(context, array.bytes)) return false;
     }
     return true;
 }
 
-/// Bind `view` as the only render target, covered by the viewport, with the
-/// scissor open over all of it, and the rasterizer state every pipeline uses.
 pub fn bindTarget(
     context: *d3d11.ID3D11DeviceContext,
     states: *const dx11_resources.States,
@@ -642,7 +563,6 @@ pub fn bindTarget(
     context.vtable.RSSetState(context, states.rasterizer);
 }
 
-/// A buffer `initResources` sizes from the budget, for `bufferPastBound`.
 pub const SizedBuffer = enum {
     quads,
     sprites,
@@ -652,7 +572,6 @@ pub const SizedBuffer = enum {
     instance_indices,
     upload_words,
 
-    /// The budget that sizes the buffer, to name in the failure.
     pub fn budget(self: SizedBuffer) []const u8 {
         return switch (self) {
             .quads, .sprites, .meshes, .mesh_points, .edge_modes => "paint",
@@ -662,8 +581,6 @@ pub const SizedBuffer = enum {
     }
 };
 
-/// Bytes of `buffer` at `limits`, as `createFrame`, `createIndexSequence` and
-/// `Uploads.init` create it.
 pub fn bufferBytes(limits: *const backend.RenderLimits, buffer: SizedBuffer) u64 {
     const paint = &limits.paint;
     const bytes: u64 = switch (buffer) {
@@ -681,9 +598,6 @@ pub fn bufferBytes(limits: *const backend.RenderLimits, buffer: SizedBuffer) u64
     return bytes;
 }
 
-/// The first buffer larger than `dx11_resources.buffer_bytes_max`, which a
-/// device need not accept, or null when every one fits: the named check
-/// before creation, as the Vulkan renderer's `bufferPastRange`.
 pub fn bufferPastBound(limits: *const backend.RenderLimits) ?SizedBuffer {
     assert(limits.paint.check() == null);
     for (std.enums.values(SizedBuffer)) |buffer| {
@@ -692,8 +606,6 @@ pub fn bufferPastBound(limits: *const backend.RenderLimits) ?SizedBuffer {
     return null;
 }
 
-/// The largest instance index a draw names: a quad, a sprite, a mesh, or a
-/// staged atlas record.
 fn instanceIndexCount(limits: *const backend.RenderLimits) u32 {
     const paint = &limits.paint;
     const count = @max(
@@ -757,8 +669,6 @@ pub fn releaseShaders(shaders: *Shaders) void {
     for (shaders.vertex) |shader| shader.release();
 }
 
-/// One frame in flight's buffers, each sized like the packed frame's array
-/// for the same paint limits.
 pub fn createFrame(
     device: *const dx11_device.Device,
     paint: *const limits_mod.PaintLimits,
@@ -815,8 +725,6 @@ pub fn releaseFrame(frame: *FrameBuffers) void {
 }
 
 comptime {
-    // The HLSL `Viewport` cbuffer is one 16-byte register.
     assert(@sizeOf(Uniforms) == 16);
-    // Every embedded stage is a DXBC container, which `compile_hlsl` checks.
     for (vertex_dxbc ++ pixel_dxbc) |bytecode| assert(std.mem.eql(u8, bytecode[0..4], "DXBC"));
 }

@@ -63,7 +63,6 @@ fn caption(text: []const u8) ui.Text.Element {
     return ui.text(text, .{ .size = 12, .color = .{ .rgba = muted } });
 }
 
-/// A coloured box with a white label, sized by `width`.
 const Block = struct {
     label: []const u8,
     color: Color,
@@ -301,8 +300,6 @@ const TextPanel = struct {
     }
 };
 
-/// Rows whose children do not fit: the widest give way first, none below its
-/// floor (decision 26).
 const OverflowPanel = struct {
     pub fn render(_: OverflowPanel, cx: *Cx) void {
         const outline: ui.Style = .{

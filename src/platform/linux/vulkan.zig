@@ -1,17 +1,7 @@
-//! Hand-written Vulkan bindings standing in for an `@cImport` of
-//! `vulkan/vulkan.h`, which Zig 0.17 does not support. Khronos never changes
-//! the layout of a released struct or the value of a released enumerant, so a
-//! binding that matches `vulkan.h` once matches it forever; the comptime
-//! block at the end pins the measured layouts. Handles are distinct nullable
-//! opaque pointers, so `null` is `VK_NULL_HANDLE`; enums and flags are `u32`
-//! aliases (`Result` is `i32`). Only 64-bit targets: 32-bit Vulkan
-//! non-dispatchable handles are `uint64_t`, not pointers.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
 comptime {
-    // Non-dispatchable handles are pointers only on 64-bit targets.
     assert(@sizeOf(usize) == 8);
 }
 
@@ -27,12 +17,7 @@ pub const WHOLE_SIZE: DeviceSize = ~@as(DeviceSize, 0);
 pub const QUEUE_FAMILY_IGNORED: u32 = ~@as(u32, 0);
 pub const SUBPASS_EXTERNAL: u32 = ~@as(u32, 0);
 
-/// `VK_MAKE_API_VERSION(0, 1, 0, 0)`: variant in bits 29..31, major in
-/// 22..28, minor in 12..21, patch in 0..11.
 pub const API_VERSION_1_0: u32 = (1 << 22) | (0 << 12) | 0;
-/// `VK_MAKE_API_VERSION(0, 1, 1, 0)`: the instance requests 1.1 so the
-/// renderer can read `maxMemoryAllocationSize` through
-/// `vkGetPhysicalDeviceProperties2` (core in 1.1).
 pub const API_VERSION_1_1: u32 = (1 << 22) | (1 << 12) | 0;
 
 pub const AccessFlagBits = u32;
@@ -171,7 +156,6 @@ pub const PipelineCache = ?*opaque {};
 pub const DebugUtilsMessengerEXT = ?*opaque {};
 pub const BufferView = ?*opaque {};
 
-/// Wayland objects, owned by `wayland.zig`; Vulkan only stores the pointers.
 pub const WlDisplay = opaque {};
 pub const WlSurface = opaque {};
 
@@ -191,7 +175,6 @@ pub fn succeeded(result: Result) bool {
     return result >= 0;
 }
 
-/// The specification's name for the results Gooey reports when it fails fast.
 pub fn resultName(result: Result) []const u8 {
     return switch (result) {
         SUCCESS => "VK_SUCCESS",
@@ -1093,9 +1076,6 @@ pub const VertexInputAttributeDescription = extern struct {
     offset: u32,
 };
 
-// Supporting types: reachable from the structs above but not used directly by
-// the renderer. Declared fully so every pointer target has a checked layout.
-
 pub const SpecializationInfo = extern struct {
     mapEntryCount: u32,
     pMapEntries: ?[*]const SpecializationMapEntry,
@@ -1378,8 +1358,6 @@ pub extern fn vkGetInstanceProcAddr(
     pName: [*:0]const u8,
 ) callconv(.c) PFN_vkVoidFunction;
 
-// Debug utils functions are not exported by the Vulkan loader. Load them with
-// `vkGetInstanceProcAddr` and cast to these types.
 pub const PFN_vkCreateDebugUtilsMessengerEXT = *const fn (
     instance: Instance,
     pCreateInfo: *const DebugUtilsMessengerCreateInfoEXT,
@@ -1894,12 +1872,6 @@ pub fn clearColor(r: f32, g: f32, b: f32, a: f32) ClearValue {
     return .{ .color = .{ .float32 = .{ r, g, b, a } } };
 }
 
-/// Make a full-framebuffer viewport.
-///
-/// Vulkan NDC and framebuffer space are Y-down, matching Gooey's scene pixel
-/// coordinates, so neither the viewport nor the shaders flip Y. The height
-/// stays positive, so the renderer does not depend on `VK_KHR_maintenance1`
-/// (core since 1.1, which the instance now requests) for a negative height.
 pub fn makeViewport(width: f32, height: f32) Viewport {
     assert(width > 0);
     assert(height > 0);
@@ -1914,7 +1886,6 @@ pub fn makeViewport(width: f32, height: f32) Viewport {
 }
 
 comptime {
-    // Guards against reintroducing a negative-height (Y-flipped) viewport.
     const viewport = makeViewport(1280, 800);
     assert(viewport.y == 0);
     assert(viewport.height == 800);
@@ -1927,13 +1898,6 @@ pub fn makeScissor(width: u32, height: u32) Rect2D {
     };
 }
 
-// Sizes and offsets below were measured once against translate-c output of
-// `vulkan.h` (Vulkan headers 1.3.239) on x86_64-linux and aarch64-linux, where
-// every struct also matched field by field. Khronos freezes released layouts,
-// so these are permanent facts: a failure here means this file was edited
-// incorrectly, never that Vulkan changed.
-
-// Every struct and union: catches a missing, extra, or resized field.
 comptime {
     assert(@sizeOf(ApplicationInfo) == 48);
     assert(@sizeOf(InstanceCreateInfo) == 64);
@@ -2034,9 +1998,6 @@ comptime {
     assert(@sizeOf(CopyDescriptorSet) == 56);
 }
 
-// Driver-written structs: the renderer reads these fields directly, so a
-// same-size transposition would silently read the wrong value. Pin every
-// field offset.
 comptime {
     assert(@offsetOf(MemoryRequirements, "size") == 0);
     assert(@offsetOf(MemoryRequirements, "alignment") == 8);

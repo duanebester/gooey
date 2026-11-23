@@ -1,22 +1,3 @@
-//! Grid layout (`docs/layout-grid.md`): a grid box places its children in
-//! cells, row-major, sizes its columns once from all of them, and stacks its
-//! rows, so every row shares the same column lines. A row box is a child that
-//! spans a whole row and lays its own children on the grid's columns.
-//!
-//! The passes call in here at four points: the minimum pass places the cells
-//! and takes each column's minimum (`measure`), the sizing pass resolves the
-//! columns and sizes every cell's width (`sizeCells`), the heights pass sizes
-//! the rows (`sizeRows`), and the position pass reads the columns' edges and
-//! the rows' heights. Placement is stored in each child's `cell_column` and
-//! `line_start`, so no later pass places a cell differently.
-//!
-//! Work per grid of C children and T columns, with no allocation: one
-//! placement walk and two minimum walks over C, at most 2 × T² steps to
-//! resolve the columns, one walk over C to size the cells, three to size the
-//! rows, and one per row start while placing. Storage is one `GridSlot` per
-//! grid, claimed from the engine's reservation of
-//! `build.grid_count_frame_max` slots.
-
 const std = @import("std");
 
 const engine_mod = @import("engine.zig");
@@ -30,9 +11,6 @@ const SizingAxis = types.SizingAxis;
 const track_count_max = types.grid_track_count_max;
 const UNCONSTRAINED_MAX = engine_mod.UNCONSTRAINED_MAX;
 
-/// One grid's tracks, copied when it opens, and its columns once resolved.
-/// Every field is written before it is read in a frame; `claim` zeroes the
-/// whole slot so no grid reads another's leftovers.
 pub const GridSlot = struct {
     columns: [track_count_max]Track,
     rows: [track_count_max]Track,
@@ -40,23 +18,15 @@ pub const GridSlot = struct {
     row_gap: f32,
     column_count: u8,
     row_count: u8,
-    /// Rows the placement made, set by `measure`.
     row_total: u32,
-    /// Each column's content minimum and floor, from its cells.
     column_min: [track_count_max]f32,
     column_floor: [track_count_max]f32,
-    /// Each column's left edge from the content box's left, and its width.
     column_left: [track_count_max]f32,
     column_width: [track_count_max]f32,
-    /// The position pass's place in the grid: the row it places next, how
-    /// the rows share the height, and the current row's alignment down it.
-    /// Kept here rather than in every `PositionFrame`, so a box that is not
-    /// a grid copies no grid state.
     position_row: u32,
     position_row_plan: RowPlan,
     position_row_alignment: types.TrackAlignment,
 
-    /// Copy `config`'s tracks into this slot, zeroed first.
     pub fn claim(self: *GridSlot, config: *const types.GridConfig) void {
         std.debug.assert(config.columns.len > 0);
         std.debug.assert(config.columns.len <= track_count_max);
@@ -76,7 +46,6 @@ pub const GridSlot = struct {
         return self.row_implicit;
     }
 
-    /// The width of `span` columns from `column`, with the gaps between them.
     pub fn cellWidth(self: *const GridSlot, column: u8, span: u8) f32 {
         std.debug.assert(span >= 1);
         std.debug.assert(@as(u32, column) + span <= self.column_count);
@@ -86,7 +55,6 @@ pub const GridSlot = struct {
         return width;
     }
 
-    /// The columns' extent: the last column's right edge.
     pub fn columnsWidth(self: *const GridSlot) f32 {
         std.debug.assert(self.column_count > 0);
         const last = self.column_count - 1;
@@ -94,14 +62,12 @@ pub const GridSlot = struct {
     }
 };
 
-/// The slot of grid box `grid`.
 pub fn slotOf(engine: *const LayoutEngine, grid: *const LayoutElement) *GridSlot {
     std.debug.assert(grid.config.layout.grid == .grid);
     std.debug.assert(grid.grid_slot < engine.grid_count);
     return &engine.grid_slots[grid.grid_slot];
 }
 
-/// The grid whose columns `child` sits on: its parent, or its row box's.
 pub fn gridOfCell(engine: *const LayoutEngine, child: *const LayoutElement) *const LayoutElement {
     const parent = engine.elements.getConst(child.parent_index.?);
     if (parent.config.layout.grid == .grid) return parent;
@@ -111,20 +77,14 @@ pub fn gridOfCell(engine: *const LayoutEngine, child: *const LayoutElement) *con
     return grid;
 }
 
-/// The width of the cell `child` was placed in.
 pub fn cellWidthOf(engine: *const LayoutEngine, child: *const LayoutElement) f32 {
     std.debug.assert(child.config.floating == null);
     const slot = slotOf(engine, gridOfCell(engine, child));
     return slot.cellWidth(child.cell_column, child.cell_span);
 }
 
-// Minimum pass.
-
 pub const Minimums = struct { width: f32, floor: f32, height: f32 };
 
-/// Place `grid_index`'s cells, then take its content minimums: its columns'
-/// minimums and gaps across, and its rows' down. Runs once its children's
-/// minimums are known, as `widestChildMin` runs for a wrapping row.
 pub fn measure(engine: *LayoutEngine, grid_index: u32) Minimums {
     const grid = engine.elements.getConst(grid_index);
     const slot = slotOf(engine, grid);
@@ -141,7 +101,7 @@ pub fn measure(engine: *LayoutEngine, grid_index: u32) Minimums {
                 width += mm.min;
                 floor += mm.min;
             },
-            .percent => {}, // Its width is a fraction of the grid's, not of its content.
+            .percent => {},
             .fit, .grow => {
                 width += slot.column_min[column];
                 floor += slot.column_floor[column];
@@ -152,11 +112,6 @@ pub fn measure(engine: *LayoutEngine, grid_index: u32) Minimums {
     return .{ .width = width, .floor = floor, .height = rowsMinHeight(engine, grid) };
 }
 
-/// Place each flow child in declaration order, row-major, as CSS
-/// `grid-auto-flow: row` without `dense`: a child takes the cursor's column
-/// when it fits there, else starts the next row; a row box takes a row of
-/// its own. Rows never hold a hole a later child fills, so visual, Tab and
-/// accessibility order stay the declaration order. Returns the row count.
 fn placeCells(engine: *LayoutEngine, grid_index: u32) u32 {
     const grid = engine.elements.getConst(grid_index);
     const column_count = slotOf(engine, grid).column_count;
@@ -166,7 +121,7 @@ fn placeCells(engine: *LayoutEngine, grid_index: u32) u32 {
     var cursor = grid.first_child_index;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const child = engine.elements.get(index);
         cursor = child.next_sibling_index;
         if (child.config.floating != null) continue;
@@ -187,8 +142,6 @@ fn placeCells(engine: *LayoutEngine, grid_index: u32) u32 {
     return row_total;
 }
 
-/// Place one cell at the cursor's `column` of the open row when it fits
-/// there, else at the start of a new row. Returns the column after it.
 fn placeCell(child: *LayoutElement, column: u32, row_open: bool, column_count: u8) u32 {
     const span: u32 = child.cell_span;
     std.debug.assert(span >= 1);
@@ -208,15 +161,13 @@ fn placeCell(child: *LayoutElement, column: u32, row_open: bool, column_count: u
     return child.cell_column + span;
 }
 
-/// Place a row box's cells on one row of the grid's columns, with the same
-/// rules; a cell that does not fit the row is a programming error.
 fn placeRowBoxCells(engine: *LayoutEngine, row_box: *const LayoutElement, column_count: u8) void {
     std.debug.assert(row_box.config.layout.grid == .row);
     var column: u32 = 0;
     var cursor = row_box.first_child_index;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const child = engine.elements.get(index);
         cursor = child.next_sibling_index;
         if (child.config.floating != null) continue;
@@ -237,11 +188,6 @@ fn placeRowBoxCells(engine: *LayoutEngine, row_box: *const LayoutElement, column
     }
 }
 
-/// Each column's minimum and floor: the widest of the cells that start in
-/// it with a span of 1, clamped to the track, then widened by one walk over
-/// the spanning cells, each giving what its columns lack to their `.fit`
-/// columns, else their `.grow` ones. Fixed columns hold their size, and a
-/// percent column has no content minimum.
 fn columnMinimums(engine: *const LayoutEngine, grid: *const LayoutElement, slot: *GridSlot) void {
     const count = slot.column_count;
     @memset(slot.column_min[0..count], 0);
@@ -264,7 +210,6 @@ fn columnMinimums(engine: *const LayoutEngine, grid: *const LayoutElement, slot:
     }
 }
 
-/// Call `visit` with every cell of `grid`, a row box's cells included.
 fn forEachCell(
     engine: *const LayoutEngine,
     grid: *const LayoutElement,
@@ -275,7 +220,7 @@ fn forEachCell(
     var cursor = grid.first_child_index;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const child = engine.elements.getConst(index);
         cursor = child.next_sibling_index;
         if (child.config.floating != null) continue;
@@ -286,7 +231,7 @@ fn forEachCell(
         var inner = child.first_child_index;
         var inner_visited: u32 = 0;
         while (inner) |cell_index| : (inner_visited += 1) {
-            std.debug.assert(inner_visited < engine.elements.len()); // Each sibling once.
+            std.debug.assert(inner_visited < engine.elements.len());
             const cell = engine.elements.getConst(cell_index);
             inner = cell.next_sibling_index;
             if (cell.config.floating == null) visit(slot, gap, cell);
@@ -303,9 +248,6 @@ fn addSingleColumn(slot: *GridSlot, gap: f32, cell: *const LayoutElement) void {
     slot.column_floor[column] = @max(slot.column_floor[column], cell.computed.floor_width);
 }
 
-/// Give a spanning cell what its columns and the gaps between them lack:
-/// equal parts to its `.fit` columns, or its `.grow` ones when it spans no
-/// `.fit` column; fixed and percent columns keep their size.
 fn widenSpanned(slot: *GridSlot, gap: f32, cell: *const LayoutElement) void {
     std.debug.assert(gap >= 0);
     if (cell.cell_span == 1) return;
@@ -329,7 +271,7 @@ fn widenSpanned(slot: *GridSlot, gap: f32, cell: *const LayoutElement) void {
     }
     const takes_fit = fit_count > 0;
     const taker_count = if (takes_fit) fit_count else grow_count;
-    if (taker_count == 0) return; // Fixed and percent columns only: it overflows them.
+    if (taker_count == 0) return;
     const takers: f32 = @floatFromInt(taker_count);
     const min_part = @max(0, cell.computed.min_width - min_total) / takers;
     const floor_part = @max(0, cell.computed.floor_width - floor_total) / takers;
@@ -344,8 +286,6 @@ fn widenSpanned(slot: *GridSlot, gap: f32, cell: *const LayoutElement) void {
     }
 }
 
-/// The grid's rows at their minimums, `row_gap` apart: each row as tall as
-/// its tallest child's minimum, clamped to its track, or its fixed size.
 pub fn rowsMinHeight(engine: *const LayoutEngine, grid: *const LayoutElement) f32 {
     const slot = slotOf(engine, grid);
     const plan: RowPlan = .{ .per_weight = 0, .percent_basis = 0, .definite = false };
@@ -353,7 +293,7 @@ pub fn rowsMinHeight(engine: *const LayoutEngine, grid: *const LayoutElement) f3
     var row: u32 = 0;
     var first = firstFlowChild(engine, grid);
     while (first) |row_first| : (row += 1) {
-        std.debug.assert(row < slot.row_total); // Placement counted every row.
+        std.debug.assert(row < slot.row_total);
         const extent = rowExtent(engine, row_first, .minimum);
         total += trackHeight(slot.rowTrack(row), extent.tallest, plan);
         first = extent.end;
@@ -363,13 +303,6 @@ pub fn rowsMinHeight(engine: *const LayoutEngine, grid: *const LayoutElement) f3
     return total;
 }
 
-// Sizing pass.
-
-/// Resolve `grid_index`'s columns in `width`, its content width, then size
-/// every cell's width: a row box takes the whole width, any other child its
-/// cell's. Heights stay provisional, from one-line text, until the heights
-/// pass sizes the rows (`sizeRows`): this marks the grid for it. Returns
-/// whether any flow child has children.
 pub fn sizeCells(engine: *LayoutEngine, parent_index: u32, width: f32, height: f32) bool {
     const parent = engine.elements.get(parent_index);
     std.debug.assert(parent.config.layout.grid != .none);
@@ -378,7 +311,6 @@ pub fn sizeCells(engine: *LayoutEngine, parent_index: u32, width: f32, height: f
         const gap: f32 = @floatFromInt(parent.config.layout.child_gap);
         resolveColumns(slotOf(engine, parent), width, gap);
     }
-    // The rows are sized once text has wrapped, as every height is.
     engine.heights_derived = true;
     parent.min_height_dirty = true;
     parent.heights_dirty = true;
@@ -387,7 +319,7 @@ pub fn sizeCells(engine: *LayoutEngine, parent_index: u32, width: f32, height: f
     var cursor = parent.first_child_index;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const child = engine.elements.get(index);
         cursor = child.next_sibling_index;
         if (child.config.floating != null) continue;
@@ -401,10 +333,6 @@ pub fn sizeCells(engine: *LayoutEngine, parent_index: u32, width: f32, height: f
     return has_grandchildren;
 }
 
-/// One child's width in its cell, and a provisional height. `.fit` and
-/// `.fixed` keep their width, cut to the cell when the columns shrank but
-/// never below its floor; `.grow` fills the cell; `.percent` is a fraction
-/// of it. A row box fills the grid's width.
 fn sizeCell(child: *LayoutElement, cell_width: f32, height: f32) void {
     std.debug.assert(cell_width >= 0);
     const sizing = child.config.layout.sizing;
@@ -431,18 +359,11 @@ fn sizeCell(child: *LayoutElement, cell_width: f32, height: f32) void {
     std.debug.assert(child.computed.sized_width >= 0);
 }
 
-/// Resolve the columns' widths and left edges in `width`, as
-/// `docs/layout-grid.md` "Column widths" orders them: fixed and percent
-/// columns take their size, fit columns their minimum, grow columns share
-/// the free width by weight from their floors up to their maximums, as CSS
-/// `1fr` grows from min-content, so equal weights give equal columns, and
-/// when the columns overflow, fit and grow columns shrink largest first,
-/// none below its floor or its track's minimum.
 fn resolveColumns(slot: *GridSlot, width: f32, gap: f32) void {
     std.debug.assert(width >= 0);
     std.debug.assert(gap >= 0);
     const count = slot.column_count;
-    const unbounded = width >= UNCONSTRAINED_MAX; // A horizontal scroll grid.
+    const unbounded = width >= UNCONSTRAINED_MAX;
     const gap_total = gap * @as(f32, @floatFromInt(count - 1));
     const basis = if (unbounded) 0 else @max(0, width - gap_total);
     var widths: [track_count_max]f32 = undefined;
@@ -472,11 +393,6 @@ fn resolveColumns(slot: *GridSlot, width: f32, gap: f32) void {
     }
 }
 
-/// Share `target` among the grow columns by weight, each between its
-/// floor and its track's maximum, as CSS flexbox resolves flexible
-/// lengths: size every unfrozen column at the common share per weight, then
-/// freeze the columns its bounds moved, in the direction they moved most,
-/// and repeat. Each round freezes a column, so at most T rounds of T steps.
 fn growColumns(slot: *const GridSlot, widths: *[track_count_max]f32, target: f32) void {
     const count = slot.column_count;
     var frozen: [track_count_max]bool = @splat(false);
@@ -505,8 +421,6 @@ fn growColumns(slot: *const GridSlot, widths: *[track_count_max]f32, target: f32
     }
 }
 
-/// Size each unfrozen grow column at `per_weight` times its weight, within
-/// its bounds; returns the bounds' total correction.
 fn shareGrowth(
     slot: *const GridSlot,
     widths: *[track_count_max]f32,
@@ -555,13 +469,9 @@ fn freezeViolations(
             else => {},
         }
     }
-    std.debug.assert(frozen_count > 0); // A nonzero correction moved a column.
+    std.debug.assert(frozen_count > 0);
 }
 
-/// Shrink the fit and grow columns to a common level, largest first, until
-/// the columns fit `target`, none below its floor: `sizing_pass.shrinkLevel`
-/// over columns. At most 2 × T rounds: each lowers the level to the next
-/// width or floor below it.
 fn shrinkColumns(slot: *const GridSlot, widths: *[track_count_max]f32, target: f32) void {
     std.debug.assert(target >= 0);
     const count = slot.column_count;
@@ -612,11 +522,6 @@ fn isShrinkable(slot: *const GridSlot, column: u8) bool {
     };
 }
 
-// Heights pass and position pass.
-
-/// How a grid's rows share its height: grow rows take `per_weight` times
-/// their weight, percent rows a fraction of `percent_basis`, both only when
-/// the grid's height is `definite`; otherwise they size as `.fit`.
 pub const RowPlan = struct { per_weight: f32, percent_basis: f32, definite: bool };
 
 pub fn rowPlan(engine: *const LayoutEngine, grid: *const LayoutElement, height: f32) RowPlan {
@@ -651,9 +556,6 @@ pub fn rowPlan(engine: *const LayoutEngine, grid: *const LayoutElement, height: 
     return plan;
 }
 
-/// Size `grid_index`'s rows in `height`, its content height, once text has
-/// wrapped, and each cell's height in its row. Three walks over the cells:
-/// the plan's, then each row's extent and its heights.
 pub fn sizeRows(engine: *LayoutEngine, grid_index: u32, height: f32) void {
     std.debug.assert(height >= 0);
     const grid = engine.elements.getConst(grid_index);
@@ -668,7 +570,7 @@ pub fn sizeRows(engine: *LayoutEngine, grid_index: u32, height: f32) void {
         var cursor: ?u32 = row_first;
         var visited: u32 = 0;
         while (cursor) |index| : (visited += 1) {
-            std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+            std.debug.assert(visited < engine.elements.len());
             if (extent.end) |end| if (index == end) break;
             const child = engine.elements.get(index);
             cursor = child.next_sibling_index;
@@ -681,7 +583,6 @@ pub fn sizeRows(engine: *LayoutEngine, grid_index: u32, height: f32) void {
     std.debug.assert(row == slot.row_total);
 }
 
-/// One row's height from its track and its tallest child.
 pub fn trackHeight(track: Track, tallest: f32, plan: RowPlan) f32 {
     std.debug.assert(tallest >= 0);
     const axis = track.axis;
@@ -701,12 +602,8 @@ pub fn trackHeight(track: Track, tallest: f32, plan: RowPlan) f32 {
 
 pub const RowExtent = struct { end: ?u32, tallest: f32 };
 
-/// Which height a row measures its children by: their minimums, before
-/// rows are sized, or the height each takes before stretching.
 pub const RowMeasure = enum { minimum, natural };
 
-/// The row starting at `first`: its tallest child and the next row's first
-/// child, or null for the last row.
 pub fn rowExtent(
     engine: *const LayoutEngine,
     first: u32,
@@ -717,7 +614,7 @@ pub fn rowExtent(
     var cursor: ?u32 = first;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const child = engine.elements.getConst(index);
         if (child.config.floating == null) {
             if (child.line_start and index != first) return .{ .end = index, .tallest = tallest };
@@ -732,8 +629,6 @@ pub fn rowExtent(
     return .{ .end = null, .tallest = tallest };
 }
 
-/// A cell's height before its row stretches it: its aspect height, its
-/// fixed size, or its minimum; a grow or percent height follows its row.
 pub fn naturalHeight(child: *const LayoutElement) f32 {
     std.debug.assert(child.config.floating == null);
     if (child.config.layout.aspect_ratio) |ratio| return child.computed.sized_width / ratio;
@@ -745,9 +640,6 @@ pub fn naturalHeight(child: *const LayoutElement) f32 {
     };
 }
 
-/// A cell's height in a row of `row_height`: a grow height fills the row,
-/// as CSS grid stretches its items, a percent height is a fraction of it,
-/// and a row box is the row.
 pub fn heightInRow(child: *const LayoutElement, row_height: f32) f32 {
     std.debug.assert(row_height >= 0);
     if (child.config.layout.grid == .row) return row_height;
@@ -764,7 +656,7 @@ pub fn firstFlowChild(engine: *const LayoutEngine, parent: *const LayoutElement)
     var cursor = parent.first_child_index;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const child = engine.elements.getConst(index);
         if (child.config.floating == null) return index;
         cursor = child.next_sibling_index;
@@ -772,8 +664,6 @@ pub fn firstFlowChild(engine: *const LayoutEngine, parent: *const LayoutElement)
     return null;
 }
 
-/// Where the row holding flow child `target` starts below the content top,
-/// and how tall it is; with `target` null, the height of all rows.
 pub fn rowSpan(
     engine: *const LayoutEngine,
     grid: *const LayoutElement,

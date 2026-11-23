@@ -1,23 +1,3 @@
-//! The VOPR's model of the text_area example: the field's text, caret,
-//! selection, remembered column, and composition after every drain, and the
-//! platform clipboard after every copy and cut. It catches what the
-//! model-free invariants cannot: a caret one byte off, a vertical move that
-//! forgets its column, a join past the line bound that goes through, a paste
-//! that drops a line. Each new frame is also checked structurally
-//! (`checkBuild`). The rules come from the text engine's documented
-//! behaviour, not from its code.
-//!
-//! An edit keeps the longest prefix that fits the field's bytes on a
-//! codepoint boundary, then the longest of that which leaves no line over
-//! `line_codepoint_count_max`; when even an empty insert would join lines
-//! past the bound, the edit is refused whole, unless the joined line is no
-//! longer than the longer of the two lines it joins. A refused edit changes
-//! nothing, not even the caret.
-//!
-//! Undo and redo are not modelled step by step: after one, the text and
-//! caret are adopted from the engine at the next drain, and the text must be
-//! one the field held since its history last started over.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const text_area = @import("text_area_example");
@@ -42,23 +22,16 @@ const findHit = vopr_frame.findHit;
 
 const app_limits = text_area.limits;
 const bytes_max: u32 = app_limits.text.area.bytes_max;
-/// The clipboard holds the largest text kind's bytes (`clipboardBytes`).
 const clipboard_bytes_max: u32 = @max(app_limits.text.input.bytes_max, bytes_max);
 const preedit_bytes_max: u32 = app_limits.text.preedit_bytes_max;
 const line_codepoint_count_max: u32 = internals.limits.run_codepoint_count_max;
 const pending_count_max: u32 = app_limits.events.queue_count_max;
 const pending_text_bytes_max: u32 = app_limits.events.text_bytes_max;
 const press_path_len_max: u32 = internals.window.box_depth_ceiling;
-/// Texts the field held since its history started over, by hash. Undo can
-/// reach back at most `undo_depth_max` edits, but one edit can be a long
-/// typed run, so the ring keeps many more states than edits.
 const history_text_count_max: u32 = 8192;
 
-/// A word no line can break at any window width the VOPR draws.
 const long_word = "Pneumonoultramicroscopic";
 
-/// What the harness's platform clipboard holds before the first copy:
-/// several lines, a tab, and a long word, so a paste is multi-line.
 pub const clipboard_seed = "Pasted line one\n\tpasted, indented\n" ++ long_word ++ "\nend";
 
 comptime {
@@ -69,24 +42,15 @@ comptime {
 pub const TextAreaModel = struct {
     field: Field,
     focus: ElementId,
-    /// The ids the last left press landed in, innermost first.
     press_path: [press_path_len_max]ElementId,
     press_len: u32,
-    /// A left click in the field whose caret move waits for a build.
     click_pending: bool,
-    /// The value Sample or Clear assigned that the field has not adopted.
     assigned: ?[]const u8,
-    /// The platform clipboard: the storage behind the window's clipboard
-    /// service, which the harness provides in place of a platform's.
     platform: Clip,
-    /// What a paste reads now: the platform's text, or this drain's copy.
     clipboard: Clip,
     clipboard_known: bool,
     history: HistoryTexts,
-    /// The caret or text changed since the last build, so that build
-    /// scrolls the caret's line into view (`TextArea` calls `follow`).
     moved: bool,
-    /// An undo or redo ran since the field was last adopted.
     undone: bool,
     pending: [pending_count_max]Action,
     pending_on_scrollbar: [pending_count_max]bool,
@@ -96,16 +60,11 @@ pub const TextAreaModel = struct {
     counts: Stats,
     step_last: u64,
 
-    /// The kinds text_area's swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key,       .text,    .compose, .scroll,
         .wait_ns, .tick_main, .present, .resize,  .cancel,
     };
 
-    /// Keys that move across lines and pages, edit at line ends, and run the
-    /// edit commands, with Tab, Escape, and Space, which the field leaves.
-    /// Up and Down appear three times each so runs of vertical moves, which
-    /// are what use the remembered column, are common.
     pub const key_choices: []const input.KeyCode = &.{
         .up,     .down,           .up,        .down,      .up,     .down,
         .home,   .end,            .page_up,   .page_down, .left,   .right,
@@ -113,8 +72,6 @@ pub const TextAreaModel = struct {
         .a,      .c,              .x,         .v,         .z,
     };
 
-    /// Short units that repeat and collide, a newline, a tab, and a word
-    /// longer than any line the preview can wrap it to.
     pub const text_alphabet: []const []const u8 = &.{
         "a", "b", "Z", "1", " ", "\u{e9}", "\n", "\t", long_word,
     };
@@ -122,19 +79,15 @@ pub const TextAreaModel = struct {
     pub const Stats = struct {
         newlines: u32,
         vertical_moves: u32,
-        /// Vertical moves that used a column remembered from an earlier one.
         columns_remembered: u32,
-        /// Edits the line bound cut short, and joins it refused whole.
         line_cuts: u32,
         joins_refused: u32,
         multiline_pastes: u32,
         commits_on_blur: u32,
         undos: u32,
-        /// Undos and redos whose text was checked against the history.
         undos_checked: u32,
         resizes_selecting: u32,
         resizes_composing: u32,
-        /// The most lines the field held.
         lines_max: u32,
         checks: build_checks.Counts,
 
@@ -173,18 +126,11 @@ pub const TextAreaModel = struct {
         len: u32,
         cursor: u32,
         anchor: u32,
-        /// The byte column Up and Down aim for; null after any other move.
         preferred_column: ?u32,
         preedit: [preedit_bytes_max]u8,
         preedit_len: u32,
-        /// False when the field adopted an assigned value while its text
-        /// was unknown: an equal text keeps the composition, another drops
-        /// it. Adopted at the next drain.
         preedit_known: bool,
-        /// False after an undo or redo until the next drain adopts the
-        /// engine's text; the caret is unknown then too.
         text_known: bool,
-        /// False after a click resolves at a build, until the next drain.
         caret_known: bool,
 
         fn text(self: *const Field) []const u8 {
@@ -214,7 +160,6 @@ pub const TextAreaModel = struct {
             return self.bytes[0..self.len];
         }
 
-        /// Keep what fits, cut at a codepoint boundary, as the clipboard does.
         fn set(self: *Clip, value: []const u8) void {
             const kept = prefixFitting(value, clipboard_bytes_max);
             @memcpy(self.bytes[0..kept], value[0..kept]);
@@ -222,9 +167,6 @@ pub const TextAreaModel = struct {
         }
     };
 
-    /// Hashes of every text the field held since its history started over,
-    /// and whether that list is whole: an edit the model could not follow
-    /// (after an undo, before the next adoption) leaves a state out.
     const HistoryTexts = struct {
         hashes: [history_text_count_max]u64,
         count: u32,
@@ -277,8 +219,6 @@ pub const TextAreaModel = struct {
         assert(self.field.known());
     }
 
-    /// Bind the window's clipboard to `platform`, as a host binds the
-    /// system clipboard, so a cut in one drain pastes in a later one.
     pub fn attach(self: *TextAreaModel, window: *Window) void {
         assert(window.clipboard.service == null);
         window.clipboard.service = .{
@@ -312,7 +252,6 @@ pub const TextAreaModel = struct {
         return pending_count_max - self.pending_count;
     }
 
-    /// Record an input action for the next drain, copying its text.
     pub fn queue(self: *TextAreaModel, action: Action) void {
         assert(self.pending_count < pending_count_max);
         var copy = action;
@@ -331,8 +270,6 @@ pub const TextAreaModel = struct {
         assert(self.pending_text_len <= pending_text_bytes_max);
     }
 
-    /// Before `tickMain`: focus, the platform clipboard, and anything the
-    /// last drain left unknown are read from the window.
     pub fn beginDrain(self: *TextAreaModel, window: *Window) void {
         assert(window.phase == .idle);
         self.focus = window.focus;
@@ -353,14 +290,9 @@ pub const TextAreaModel = struct {
         assert(self.field.preedit_known);
     }
 
-    /// After `tickMain`: apply the drained actions in order against the
-    /// frame the drain routed against, then the field's part of the build,
-    /// then require the engine and the platform clipboard to match.
     pub fn endDrain(self: *TextAreaModel, window: *Window, published: bool) void {
         assert(window.phase == .idle);
         const frame = window.rendered();
-        // Before the first frame there is nothing to route against, and
-        // nothing was queued.
         const area_id = areaIdIn(frame) orelse {
             assert(self.pending_count == 0);
             if (published) self.moved = false;
@@ -368,9 +300,6 @@ pub const TextAreaModel = struct {
         };
         const actions = self.pending[0..self.pending_count];
         for (actions, 0..) |*action, index| {
-            // The queue folds a scroll into the one before it, keeping the
-            // later position: a run of scrolls is one wheel event at the
-            // last one's point.
             const folds = action.* == .scroll and index + 1 < actions.len and
                 actions[index + 1] == .scroll;
             if (folds) continue;
@@ -393,7 +322,6 @@ pub const TextAreaModel = struct {
                 .moved = self.moved,
                 .counts = &self.counts.checks,
             });
-            // The build's blink commits after `follow` and ends the move.
             self.commitOnBlur(area_id);
             self.moved = false;
         }
@@ -404,8 +332,6 @@ pub const TextAreaModel = struct {
         }
     }
 
-    /// After every step: the app's bound value is the field's text, or the
-    /// value Sample or Clear assigned that the field has not adopted yet.
     pub fn check(self: *TextAreaModel, state: *const text_area.State, step: u64) void {
         self.step_last = step;
         if (!self.field.text_known) return;
@@ -414,7 +340,6 @@ pub const TextAreaModel = struct {
         self.fail("the app's notes differ from the field's text", state.notes, expected);
     }
 
-    /// Where the generator aims half its pointer and wheel actions: the field.
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         const index = findHit(frame, areaId(frame)) orelse return null;
@@ -432,7 +357,6 @@ pub const TextAreaModel = struct {
             .pointer => |pointer_action| self.pointer(frame, area_id, pointer_action, on_scrollbar),
             .key => |chord| {
                 self.keyDown(frame, area_id, chord);
-                // The release goes to whatever has focus after the press.
                 if (self.focus == area_id) self.sync();
             },
             .text => |value| if (self.focus == area_id) {
@@ -455,8 +379,6 @@ pub const TextAreaModel = struct {
             },
             .cancel => |cancel| {
                 if (cancel.kind != .focus_lost) self.press_len = 0;
-                // A key a focus loss reports held is released to focus
-                // (`pointer_cancelled` reports no keys).
                 const releases = cancel.kind != .pointer_cancelled and cancel.key_held != null;
                 if (releases and self.focus == area_id) self.sync();
             },
@@ -473,7 +395,6 @@ pub const TextAreaModel = struct {
     ) void {
         const point: Point = .{ .x = action.x, .y = action.y };
         const left = action.button == .left;
-        // Only a left press takes a scrollbar; it lands in nothing.
         const scrollbar = on_scrollbar and left;
         if (action.releases_held and left) self.release(frame, area_id, point);
         switch (action.kind) {
@@ -487,8 +408,6 @@ pub const TextAreaModel = struct {
         }
     }
 
-    /// A press of any button focuses the innermost focusable record under
-    /// it, or nothing; only a left press records the path a release clicks.
     fn press(
         self: *TextAreaModel,
         frame: *const records.Frame,
@@ -513,8 +432,6 @@ pub const TextAreaModel = struct {
         self.focus = focus_id;
     }
 
-    /// A left release clicks the innermost `on_click` under it that the
-    /// left press also landed in, and forgets that press.
     fn release(
         self: *TextAreaModel,
         frame: *const records.Frame,
@@ -542,9 +459,6 @@ pub const TextAreaModel = struct {
         }
     }
 
-    /// A key to the focused record: the field's own keys when it has focus;
-    /// otherwise, or when it leaves the key, Tab moves focus and Enter or
-    /// Space clicks a focused button.
     fn keyDown(
         self: *TextAreaModel,
         frame: *const records.Frame,
@@ -571,7 +485,6 @@ pub const TextAreaModel = struct {
         self.activate(frame, self.focus);
     }
 
-    /// Sample and Clear assign the bound value; the field adopts it later.
     fn activate(self: *TextAreaModel, frame: *const records.Frame, id: ElementId) void {
         const node = findA11y(frame, id) orelse
             std.debug.panic("vopr text_area: clicked element has no accessibility node", .{});
@@ -587,13 +500,8 @@ pub const TextAreaModel = struct {
         }
     }
 
-    /// The field's key handler: whether it took the key, and its effect.
     fn applyKey(self: *TextAreaModel, chord: Action.Chord) bool {
         if (!self.field.preedit_known and self.field.preedit_len > 0) {
-            // A sync with the text unknown dropped the composition if the
-            // value differed and kept it otherwise, so a key the field
-            // takes went to the IME or edited: the field is unknown, and
-            // whether its caret moves is too, so this build checks no move.
             if (takesKey(chord)) {
                 if (chord.key == .c or chord.key == .x) self.clipboard_known = false;
                 self.field.text_known = false;
@@ -607,7 +515,6 @@ pub const TextAreaModel = struct {
         if (self.field.preedit_len > 0) return false;
         if (!takesKey(chord)) return false;
         if (!self.field.known()) {
-            // After an undo in this drain, edits cannot be followed.
             if (chord.key == .c or chord.key == .x) self.clipboard_known = false;
             self.field.text_known = false;
             self.field.caret_known = false;
@@ -649,7 +556,7 @@ pub const TextAreaModel = struct {
             .forward_delete => self.deleteForward(),
             .left => self.moveHorizontal(false, mods),
             .right => self.moveHorizontal(true, mods),
-            else => unreachable, // `takesKey` lists the keys.
+            else => unreachable,
         }
         return true;
     }
@@ -683,21 +590,16 @@ pub const TextAreaModel = struct {
                 self.counts.undos += 1;
                 field.text_known = false;
                 field.caret_known = false;
-                // Whether it moved the caret depends on the history, so
-                // `moved` (a lower bound) is left alone.
                 self.undone = true;
             },
             else => unreachable,
         }
     }
 
-    /// Committed text: the composition ends, then the selection is replaced.
     fn insert(self: *TextAreaModel, value: []const u8) void {
         self.field.preedit_len = 0;
         self.field.preedit_known = true;
         if (!self.field.known()) {
-            // At a caret the model does not know (a click resolved at this
-            // build, or an undo), the text is unknown too.
             self.field.text_known = false;
             self.field.caret_known = false;
             self.history.complete = false;
@@ -731,9 +633,6 @@ pub const TextAreaModel = struct {
         self.replace(field.cursor, nextBoundary(field.text(), field.cursor), "");
     }
 
-    /// Replace `start..end` with what fits of `value` (the field's bytes,
-    /// then the line bound), leaving the caret after it. A refused edit
-    /// changes nothing.
     fn replace(self: *TextAreaModel, start: u32, end: u32, value: []const u8) void {
         const field = &self.field;
         assert(field.known());
@@ -797,8 +696,6 @@ pub const TextAreaModel = struct {
         self.moveTo(target, mods.shift);
     }
 
-    /// Up or Down at the remembered column (or the caret's), clamped to the
-    /// target line and moved back to a codepoint start.
     fn moveLine(self: *TextAreaModel, down: bool, extend: bool) void {
         const field = &self.field;
         const text = field.text();
@@ -822,14 +719,11 @@ pub const TextAreaModel = struct {
         field.preferred_column = column;
     }
 
-    /// The field adopts what Sample or Clear assigned, if anything.
     fn sync(self: *TextAreaModel) void {
         const value = self.assigned orelse return;
         self.assigned = null;
         const field = &self.field;
         if (field.text_known and std.mem.eql(u8, value, field.text())) return;
-        // An unknown text equal to the value keeps the composition and the
-        // history; another is replaced. Either way the text is the value.
         if (field.text_known) {
             field.preedit_len = 0;
         } else {
@@ -842,10 +736,6 @@ pub const TextAreaModel = struct {
             field.cursor = boundaryAtOrBefore(field.text(), @min(field.cursor, field.len));
             field.anchor = boundaryAtOrBefore(field.text(), @min(field.anchor, field.len));
         }
-        // An unknown text that equalled the value would have kept its
-        // history and caret, and its view would not follow the caret; so
-        // only a text known to differ counts as a move. Either way the text
-        // is now the value.
         if (field.text_known) {
             self.history.reset(field.text());
             self.moved = true;
@@ -855,8 +745,6 @@ pub const TextAreaModel = struct {
         field.text_known = true;
     }
 
-    /// The field's render at a build, up to scrolling the caret into view:
-    /// it adopts an assigned value and moves the caret to a pending click.
     fn build(self: *TextAreaModel) void {
         self.sync();
         if (self.click_pending) {
@@ -866,12 +754,9 @@ pub const TextAreaModel = struct {
         }
     }
 
-    /// The rest of the field's render: a composition commits when focus
-    /// has left the field.
     fn commitOnBlur(self: *TextAreaModel, area_id: ElementId) void {
         if (self.focus == area_id) return;
         if (!self.field.preedit_known) {
-            // A composition may commit: the text and caret are unknown.
             self.field.text_known = false;
             self.field.caret_known = false;
             self.history.complete = false;
@@ -886,9 +771,6 @@ pub const TextAreaModel = struct {
         }
     }
 
-    /// Take what the engine holds where the model lost track, after
-    /// checking it is text the generator could have produced and, after an
-    /// undo, a text the field held before.
     fn adopt(self: *TextAreaModel, window: *Window) void {
         const engine = findEngine(window);
         const text = engine.text();
@@ -926,8 +808,6 @@ pub const TextAreaModel = struct {
         self.undone = false;
     }
 
-    /// The engine must hold what the model predicts, and the platform
-    /// clipboard what the last copy or cut wrote.
     fn compare(self: *TextAreaModel, window: *Window, area_id: ElementId) void {
         _ = area_id;
         const engine = findEngine(window);
@@ -982,7 +862,6 @@ pub const TextAreaModel = struct {
     }
 };
 
-/// The keys the field takes, whatever its state (`applyKey`).
 fn takesKey(chord: Action.Chord) bool {
     if (commandModifier(chord.modifiers)) {
         switch (chord.key) {
@@ -997,13 +876,10 @@ fn takesKey(chord: Action.Chord) bool {
     };
 }
 
-/// Edit commands use Ctrl without Alt: the harness pins `uses_cmd` false.
 fn commandModifier(mods: input.Modifiers) bool {
     return mods.ctrl and !mods.alt;
 }
 
-/// The wheel goes to the innermost scrollable under the point: the field
-/// when the point is in it (it holds no other scrollable).
 fn wheelReaches(frame: *const records.Frame, area_id: ElementId, scroll: Action.Scroll) bool {
     var index = hitIndex(frame, scroll.x, scroll.y) orelse return false;
     var depth: u32 = 0;
@@ -1015,7 +891,6 @@ fn wheelReaches(frame: *const records.Frame, area_id: ElementId, scroll: Action.
     return false;
 }
 
-/// The field's id: its accessibility node is the frame's only text area.
 fn areaId(frame: *const records.Frame) ElementId {
     return areaIdIn(frame) orelse
         std.debug.panic("vopr text_area: frame {d} has no text area", .{frame.frame_number});
@@ -1036,7 +911,6 @@ pub fn findEngine(window: *Window) *const AreaEngine {
     return @ptrCast(@alignCast(window.areas.slab.slotBytes(slot).ptr));
 }
 
-/// The longest prefix of `value` of whole codepoints within `room` bytes.
 fn prefixFitting(value: []const u8, room: u32) u32 {
     if (value.len <= room) return @intCast(value.len);
     var end = room;
@@ -1044,14 +918,10 @@ fn prefixFitting(value: []const u8, room: u32) u32 {
     return end;
 }
 
-/// The bytes of `value` an edit replacing `text[start..end]` keeps under
-/// the line bound, or null when it is refused.
 pub fn lineFit(text: []const u8, start: u32, end: u32, value: []const u8) ?u32 {
     const line_max = line_codepoint_count_max;
     const head = codepointCount(text[lineStart(text, start)..start]);
     const tail = codepointCount(text[end..lineEnd(text, end)]);
-    // Codepoints on the line the kept prefix ends on, and how many of
-    // them it added.
     var current = head;
     var added: u32 = 0;
     var kept: u32 = 0;
@@ -1079,8 +949,6 @@ pub fn lineFit(text: []const u8, start: u32, end: u32, value: []const u8) ?u32 {
     return kept;
 }
 
-/// Valid UTF-8 made of codepoints the generator, Sample, or the seeded
-/// clipboard can put in the field.
 fn validText(text: []const u8) bool {
     if (!std.unicode.utf8ValidateSlice(text)) return false;
     var view = std.unicode.Utf8View.initUnchecked(text).iterator();
@@ -1147,7 +1015,6 @@ fn isSpace(byte: u8) bool {
     return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r';
 }
 
-/// The start of the word before `index`, past the spaces before it.
 fn previousWordStart(text: []const u8, index: u32) u32 {
     var position = index;
     while (position > 0 and isSpace(text[position - 1])) position -= 1;
@@ -1155,7 +1022,6 @@ fn previousWordStart(text: []const u8, index: u32) u32 {
     return position;
 }
 
-/// The start of the word after `index`: past this word, then its spaces.
 fn nextWordStart(text: []const u8, index: u32) u32 {
     var position = index;
     while (position < text.len and !isSpace(text[position])) position += 1;

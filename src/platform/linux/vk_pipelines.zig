@@ -1,13 +1,8 @@
-//! One generic helper creates every pipeline (one per packed-frame pipeline),
-//! parameterized by shader SPV and blend mode, so the pipelines cannot drift apart.
-
 const std = @import("std");
 const vk = @import("vulkan.zig");
 
 pub const BlendMode = enum {
-    /// srcAlpha / oneMinusSrcAlpha — used by the quad, glyph, and image pipelines.
     standard,
-    /// one / oneMinusSrcAlpha — SVG and mesh shaders output pre-multiplied RGB.
     premultiplied,
 };
 
@@ -25,7 +20,6 @@ pub const PipelineError = error{
     PipelineCreationFailed,
 };
 
-/// Caller owns the returned handle and must destroy it.
 pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorSetLayout) PipelineError!vk.PipelineLayout {
     std.debug.assert(device != null);
     std.debug.assert(descriptor_layout != null);
@@ -54,8 +48,6 @@ pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorS
     return layout;
 }
 
-/// If `initial_data` is missing, corrupt, or from an incompatible driver,
-/// Vulkan silently ignores it and creates an empty cache — zero risk.
 pub fn createPipelineCache(
     device: vk.Device,
     initial_data: ?[]const u8,
@@ -78,8 +70,6 @@ pub fn createPipelineCache(
     return cache;
 }
 
-/// The caller owns the layout and cache; this function only creates and
-/// returns the `VkPipeline` handle.
 pub fn createGraphicsPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
@@ -129,7 +119,6 @@ pub fn createGraphicsPipeline(
     return pipeline;
 }
 
-/// Does NOT destroy the pipeline layout — the caller owns that separately.
 pub fn destroyPipeline(device: vk.Device, pipeline: vk.Pipeline) void {
     std.debug.assert(device != null);
     if (pipeline) |p| vk.vkDestroyPipeline(device, p, null);
@@ -137,7 +126,7 @@ pub fn destroyPipeline(device: vk.Device, pipeline: vk.Pipeline) void {
 
 fn createShaderModule(device: vk.Device, code: []align(4) const u8) PipelineError!vk.ShaderModule {
     std.debug.assert(device != null);
-    std.debug.assert(code.len >= 4); // SPIR-V minimum: magic number is 4 bytes
+    std.debug.assert(code.len >= 4);
 
     const create_info = vk.ShaderModuleCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -195,7 +184,6 @@ fn createPipeline(
     };
 
     var pipeline: vk.Pipeline = null;
-    // pipeline_cache may be null — Vulkan handles this gracefully (no caching).
     const result = vk.vkCreateGraphicsPipelines(
         device,
         pipeline_cache,
@@ -240,7 +228,6 @@ fn shaderStages(
 }
 
 fn vertexInputState() vk.PipelineVertexInputStateCreateInfo {
-    // No vertex input — all geometry is generated in the vertex shader
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .pNext = null,
@@ -263,7 +250,6 @@ fn inputAssemblyState() vk.PipelineInputAssemblyStateCreateInfo {
 }
 
 fn viewportState() vk.PipelineViewportStateCreateInfo {
-    // Viewport and scissor are dynamic state — no static values needed
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .pNext = null,
@@ -293,9 +279,6 @@ fn rasterizationState() vk.PipelineRasterizationStateCreateInfo {
     };
 }
 
-/// One sample per pixel at every profile: quads, text, SVGs and images
-/// anti-alias in their fragment shaders, and the mesh shaders compute analytic
-/// edge coverage (see `shaders/mesh.frag`), so no pipeline needs a multisampled target.
 fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -310,11 +293,6 @@ fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     };
 }
 
-/// The only difference between modes is srcColorBlendFactor:
-///   standard:      SRC_ALPHA (straight alpha from shader)
-///   premultiplied: ONE       (shader pre-multiplies RGB by alpha)
-///
-/// All other blend factors, ops, and write mask are identical.
 fn blendAttachment(mode: BlendMode) vk.PipelineColorBlendAttachmentState {
     const src_color_factor: vk.BlendFactor = switch (mode) {
         .standard => vk.VK_BLEND_FACTOR_SRC_ALPHA,
@@ -333,8 +311,6 @@ fn blendAttachment(mode: BlendMode) vk.PipelineColorBlendAttachmentState {
     };
 }
 
-/// Wraps a blend attachment pointer into the color blend state create info.
-/// The caller must ensure `attachment` outlives the returned struct.
 fn colorBlendState(
     attachment: *const vk.PipelineColorBlendAttachmentState,
 ) vk.PipelineColorBlendStateCreateInfo {
@@ -350,8 +326,6 @@ fn colorBlendState(
     };
 }
 
-/// Wraps a dynamic state array pointer into the dynamic state create info.
-/// The caller must ensure `states` outlives the returned struct.
 fn dynamicState(states: *const [2]vk.DynamicState) vk.PipelineDynamicStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,

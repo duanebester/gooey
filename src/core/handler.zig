@@ -1,15 +1,3 @@
-//! Handler and Effects.
-//!
-//! A handler is a type-erased method call: `invoke` is generated per method
-//! by `bind`, `target` names the state it runs on (the app's root state or an
-//! entity), and `arg` is the method's argument packed into 8 bytes. The router
-//! invokes handlers from the drain phase on the main thread, so the number of
-//! calls per tick is bounded by the number of drained events.
-//!
-//! `Effects` is the narrow command context a handler may use. It records
-//! requests (focus, blur, render, file dialog, quit) that the tick applies
-//! after the handler returns; it never exposes window internals.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const id_mod = @import("id.zig");
@@ -29,13 +17,10 @@ const assert = std.debug.assert;
 
 pub const ElementId = id_mod.ElementId;
 
-/// A type's identity at runtime: the address of its name. Stable for the
-/// program's lifetime and unique per type.
 pub fn typeId(comptime T: type) usize {
     return @intFromPtr(@typeName(T).ptr);
 }
 
-/// The name behind a `typeId`, for safety messages.
 pub fn typeName(type_id: usize) []const u8 {
     assert(type_id != 0);
     const name: [*:0]const u8 = @ptrFromInt(type_id);
@@ -43,9 +28,7 @@ pub fn typeName(type_id: usize) []const u8 {
 }
 
 pub const Target = struct {
-    /// `typeId` of the state the method takes.
     type_id: usize,
-    /// `slot_root` selects the root state; anything else is an entity slot.
     slot: u32,
     generation: u32,
 
@@ -61,7 +44,6 @@ pub const Handler = struct {
     target: Target,
     arg: u64,
 
-    /// Run the handler against `store`. Called by the router only.
     pub fn call(self: Handler, store: *Store, effects: *Effects) void {
         assert(self.target.type_id != 0);
         self.invoke(@ptrCast(store), self.target, self.arg, effects);
@@ -69,12 +51,9 @@ pub const Handler = struct {
 };
 
 comptime {
-    // Three words plus the target's type id: handlers are copied into every
-    // frame's handler table, so their size is part of the records budget.
     assert(@sizeOf(Handler) <= 4 * @sizeOf(u64));
 }
 
-/// A typed handle into an entity pool. Generation-checked on every access.
 pub fn Entity(comptime T: type) type {
     return struct {
         slot: u32,
@@ -84,19 +63,14 @@ pub fn Entity(comptime T: type) type {
     };
 }
 
-/// One fixed pool of entities of one type, registered with the store.
 pub const EntityPool = struct {
     type_id: usize,
     name: []const u8,
     base: [*]u8,
     stride: u32,
     generations: []const u32,
-    /// An app pool from `Config.entities`, which `Effects.create` and
-    /// `remove` manage; null for a text-engine pool, whose slab claims slots.
     app_pool: ?*entities.Pool = null,
 
-    /// The value a handle names, after checking it in every build mode:
-    /// `operation` names the caller in the panic.
     pub fn checkedValue(
         self: *const EntityPool,
         slot: u32,
@@ -121,24 +95,15 @@ pub const EntityPool = struct {
     }
 };
 
-/// Framework ceiling on the entity pools one store holds: the framework's
-/// text-engine pools plus the app's `config.entities`. Each app's store holds
-/// exactly its own count, in storage `gooey.App` specializes at comptime.
 pub const entity_pool_count_max: u32 = 16;
 
-/// What a handler's `app` pointer points at: the root state, the entity
-/// pools, and the window's retained store, without the app's generic type.
 pub const Store = struct {
     root_state: *anyopaque,
     root_type_id: usize,
-    /// Storage the app reserves for its pools; `pool_count` are registered.
     pools: []EntityPool,
     pool_count: u32,
-    /// The window's retained store, set when the window initializes, so a
-    /// component's handler can target state it retained (`cx.retain`).
     retained: ?*retained_mod.Retained,
 
-    /// `pools` is the app's pool storage, one entry per pool it registers.
     pub fn init(comptime State: type, state: *State, pools: []EntityPool) Store {
         assert(pools.len <= entity_pool_count_max);
         return .{
@@ -165,7 +130,6 @@ pub const Store = struct {
         return null;
     }
 
-    /// The app pool for `T`, a type from `Config.entities`.
     pub fn appPool(self: *const Store, comptime T: type) *const EntityPool {
         const pool = self.findPool(typeId(T)) orelse std.debug.panic(
             "{s} is not in Config.entities",
@@ -178,8 +142,6 @@ pub const Store = struct {
         return pool;
     }
 
-    /// Free every app-pool slot removed during the drain. The tick calls it
-    /// after the drain's last handler and before the build.
     pub fn freeRemoved(self: *Store) void {
         assert(self.pool_count <= self.pools.len);
         for (self.pools[0..self.pool_count]) |*pool| {
@@ -187,9 +149,6 @@ pub const Store = struct {
         }
     }
 
-    /// The state a target names: the root state, an entity, or state a
-    /// component retained. A stale generation or wrong type is a programmer
-    /// error: handlers are rebuilt every frame from live state.
     pub fn resolve(self: *const Store, comptime State: type, target: Target) *State {
         assert(target.type_id == typeId(State));
         if (target.isRoot()) {
@@ -201,7 +160,6 @@ pub const Store = struct {
                 "handler targets {s}, which is neither an entity nor retained state",
                 .{@typeName(State)},
             );
-            // The window sets `retained` at init, before any handler runs.
             const handle = Entity(State){ .slot = target.slot, .generation = target.generation };
             return self.retained.?.get(State, handle);
         };
@@ -216,23 +174,17 @@ pub const Store = struct {
     }
 };
 
-/// File dialog requests a handler can make. The result arrives as a
-/// completion event with an explicit outcome. An open dialog selects files,
-/// directories, or both, one or several; a save dialog may start in a folder
-/// with a name.
 pub const FileDialogRequest = struct {
     kind: union(enum) {
         open: PathPromptOptions,
         save: SavePromptOptions,
     },
-    /// Invoked with the completion (`Effects.completionEvent`).
     on_complete: Handler,
 };
 
 pub const PathPromptOptions = platform_interface.PathPromptOptions;
 pub const SavePromptOptions = platform_interface.SavePromptOptions;
 
-/// Requests a handler makes. The tick applies them after the handler returns.
 pub const Effects = struct {
     event: ?*const input.InputEvent,
     completion: ?*const events.Completion,
@@ -245,59 +197,33 @@ pub const Effects = struct {
     theme_request: ?*const Theme,
     announcement: ?Announcement,
     click_request: ?ElementId,
-    /// The text engines' clipboard, set by the router. Not an app API:
-    /// only `text_engine.zig` reads it.
     clipboard: ?*Clipboard,
-    /// The entity pools `create` and `remove` reach, set by the router and
-    /// by `App` for `on_init`.
     store: ?*Store,
-    /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
-    /// The gesture being delivered to `Box.on_pointer_drag`, set by the router.
     pointer_drag: ?PointerDrag,
-    /// The frame on screen, for `bounds`; set by the router.
     rendered: ?*const records.Frame,
-    /// The element holding keyboard focus, for `focusedElement`; set by the
-    /// router, `.root` for none.
     focused_id: ElementId,
-    /// The payload being dropped, while delivering to `DropTarget.on_drop`.
     drop: ?Drop,
-    /// A keyboard drag to start (`startDrag`), applied after the handler.
     drag_start: ?DragStart,
-    /// No pointer drag, keyboard drag, or pointer capture holds the gesture,
-    /// set by the router before the handler runs; `startDrag` reads it.
     gesture_idle: bool,
-    /// The job pool `spawn` and `cancelJob` reach, set by the router and by
-    /// `App` for `on_init`.
     jobs: ?*jobs.Pool,
-    /// The job result or end being delivered, set by the router.
     job: ?jobs.Delivery,
-    /// A scroll box to move (`scrollTo`), applied after the handler.
     scroll_request: ?ScrollRequest,
-    /// The window's dialog state, read by `openFileDialog`; set by the
-    /// router, null outside a router call (`on_init`).
     dialogs: ?DialogView,
 
     pub const JobId = jobs.JobId;
     pub const JobHandlers = jobs.Handlers;
     pub const JobDone = jobs.Done;
     pub const JobOutcome = jobs.Outcome;
-    /// `spawn`'s refusal: an expected outcome, not a fault.
     pub const SpawnError = jobs.SpawnError;
     pub const ScrollRequest = struct { id: ElementId, target: ScrollTarget };
 
     pub const Drop = struct { type_id: usize, payload: u64 };
 
-    /// A read-only view of the window's file dialogs: the request waiting
-    /// for the tick to open it, and the slots of the dialogs open now. The
-    /// router applies each handler's effects before the next runs, so a
-    /// later handler in the same drain sees an earlier one's request.
     pub const DialogView = struct {
         pending: *const ?FileDialogRequest,
         slots: []const ?Handler,
 
-        /// Whether a request now would be refused: one already waits for
-        /// the tick, which opens one per drain, or every slot is in use.
         fn busy(self: *const DialogView) bool {
             assert(self.slots.len > 0);
             if (self.pending.* != null) return true;
@@ -308,39 +234,26 @@ pub const Effects = struct {
         }
     };
 
-    /// `openFileDialog`'s refusal: an expected outcome, not a fault.
     pub const DialogError = error{DialogBusy};
 
-    /// A `startDrag` request and what it promised the handler, which the
-    /// router checks against what it then does.
     pub const DragStart = struct { id: ElementId, started: bool };
 
-    /// One step of a pointer capture (`Box.on_pointer_drag`). Positions are
-    /// window coordinates in logical pixels; while the button is held the
-    /// pointer may be outside the window, so they may be negative or past
-    /// its size. A handler that resizes from a drag keeps the size it had
-    /// at `begin` and applies `x - start_x`, so a `cancel` can restore it.
     pub const PointerDrag = struct {
         phase: Phase,
         x: f32,
         y: f32,
-        /// Where the press landed.
         start_x: f32,
         start_y: f32,
         button: input.MouseButton,
         modifiers: input.Modifiers,
 
-        /// `begin` on the press, `move` per coalesced pointer move, `end`
-        /// on the release, `cancel` on Escape or `pointer_cancelled`.
         pub const Phase = enum { begin, move, end, cancel };
     };
 
     pub const FocusRequest = union(enum) { none, focus: ElementId, blur };
 
-    /// A font change: the family name is copied when the handler returns.
     pub const FontRequest = struct { name: []const u8, size: f32 };
 
-    /// Text is copied when the handler returns.
     pub const Announcement = struct { text: []const u8, politeness: Live };
 
     pub fn init(event: ?*const input.InputEvent, current: ElementId) Effects {
@@ -376,17 +289,12 @@ pub const Effects = struct {
         return self.event;
     }
 
-    /// The element holding keyboard focus when the handler runs, or null
-    /// when none does: for a component that returns focus where it was, or
-    /// opens a context menu from the keyboard beside it (`effects.bounds`).
     pub fn focusedElement(self: *const Effects) ?ElementId {
         if (self.focused_id == .root) return null;
         assert(self.focused_id.isKeyed());
         return self.focused_id;
     }
 
-    /// The payload dropped on a `DropTarget`, inside its `on_drop`; null in
-    /// any other handler or when the payload is not a `T`.
     pub fn dropPayload(self: *const Effects, comptime T: type) ?T {
         const dropped = self.drop orelse return null;
         assert(dropped.type_id != 0);
@@ -394,8 +302,6 @@ pub const Effects = struct {
         return unpackArg(T, dropped.payload);
     }
 
-    /// The pointer capture step being delivered, inside `Box.on_pointer_drag`;
-    /// null in any other handler.
     pub fn pointerDrag(self: *const Effects) ?PointerDrag {
         const drag = self.pointer_drag orelse return null;
         assert(std.math.isFinite(drag.x));
@@ -403,10 +309,6 @@ pub const Effects = struct {
         return drag;
     }
 
-    /// A keyed element's bounds in the frame on screen, as hit testing sees
-    /// them (clipped by the scroll and clip boxes around it), in window
-    /// coordinates; null when it was not rendered. A splitter reads its
-    /// container's size here to turn a drag in pixels into grow weights.
     pub fn bounds(self: *const Effects, id: ElementId) ?records.Rect {
         assert(id.isKeyed());
         const frame = self.rendered orelse return null;
@@ -417,18 +319,6 @@ pub const Effects = struct {
         return null;
     }
 
-    /// Pick up keyed draggable `id` (`Box.draggable`) for a keyboard drag,
-    /// after this handler returns; at most one per handler. The app binds
-    /// the key, typically Space on the focused source. While the drag is
-    /// on, the router takes every key: Tab and the arrows move `over` and
-    /// focus through the drop targets of the payload's type in tree order,
-    /// Enter or Space drops there, and Escape cancels. A drop leaves focus
-    /// on a focusable target; otherwise, and on a cancel, focus returns to
-    /// the source. Returns whether the drag starts: false, and nothing
-    /// starts, when a drag or pointer capture already holds the gesture or
-    /// `id` is not on screen (outside a router call, such as `on_init`,
-    /// nothing is on screen). A handler that announces the pick-up should
-    /// announce only on true. An `id` on screen that is not draggable panics.
     pub fn startDrag(self: *Effects, id: ElementId) bool {
         assert(id.isKeyed());
         assert(self.drag_start == null);
@@ -438,9 +328,6 @@ pub const Effects = struct {
         return started;
     }
 
-    /// The router's conditions for a keyboard drag (`startKeyboardDrag`),
-    /// read from the facts it set: the gesture is idle and `id` is in the
-    /// frame on screen.
     fn dragStarts(self: *const Effects, id: ElementId) bool {
         const frame = self.rendered orelse return false;
         assert(frame.hit_count <= frame.hits.len);
@@ -456,16 +343,6 @@ pub const Effects = struct {
         return false;
     }
 
-    /// Start background job `Job`, a type in `Config.jobs`, with a copy of
-    /// `input`. `run` executes off the main thread (on the web, after this
-    /// drain); each result it posts arrives at `handlers.on_result` in a
-    /// later drain, then `handlers.on_done` once. The slot is claimed at
-    /// once and freed just before `on_done` runs, so `on_done` may spawn a
-    /// chained job or a retry into it. Returns `error.JobBusy`, and starts
-    /// nothing, when every slot (`ResourceLimits.events.job_count_max`)
-    /// holds a job whose `on_done` has not started: clicks can
-    /// ask for more jobs than there are slots, so the caller handles the
-    /// refusal here, as by showing that the app is busy.
     pub fn spawn(
         self: *Effects,
         comptime Job: type,
@@ -486,23 +363,11 @@ pub const Effects = struct {
         );
     }
 
-    /// Cancel job `id`: its posts return false, results it posted that were
-    /// not delivered yet are dropped, and its `on_done` reports `.cancelled`.
-    /// A job that has not started never runs. Natively, a running job's Io
-    /// cancellation points (sleeps, socket and file reads, a blocked post)
-    /// return `error.Canceled` at once; a `run` computing without Io stops
-    /// when it next checks `job.cancelled()` or posts. On the web and in
-    /// single-threaded builds a job runs whole after the drain that spawned
-    /// it, so a cancel only reaches one that has not run. Never waits. A
-    /// finished job's id, including the one its own `on_done` receives,
-    /// does nothing, even once a later job holds its slot.
     pub fn cancelJob(self: *Effects, id: JobId) void {
         const pool = self.jobs orelse std.debug.panic("effects.cancelJob outside a handler", .{});
         pool.cancel(id);
     }
 
-    /// The result being delivered to `on_result`, when it is `Job`'s; valid
-    /// until the handler returns.
     pub fn jobResult(self: *const Effects, comptime Job: type) ?*const Job.Result {
         comptime jobs.checkSpec(Job);
         const delivery = self.job orelse return null;
@@ -511,7 +376,6 @@ pub const Effects = struct {
         return @ptrCast(bytes);
     }
 
-    /// The job ending, inside its `on_done`; null in any other handler.
     pub fn jobDone(self: *const Effects) ?JobDone {
         const delivery = self.job orelse return null;
         const done = delivery.done orelse return null;
@@ -524,13 +388,6 @@ pub const Effects = struct {
         return delivery.id;
     }
 
-    /// Move keyed scroll box `id` (`Style.scroll`) to `target`, after this
-    /// handler returns; at most one per handler. The next layout resolves it
-    /// against that frame's content, so `.end` reaches content this handler
-    /// added, and clamps it to the content. A wheel or scrollbar press before
-    /// that build wins over it. An `id` that is not a scroll box on screen
-    /// moves nothing. A `.child` that the next build does not render under
-    /// the box is dropped.
     pub fn scrollTo(self: *Effects, id: ElementId, target: ScrollTarget) void {
         assert(id.isKeyed());
         assert(self.scroll_request == null);
@@ -544,7 +401,6 @@ pub const Effects = struct {
         self.scroll_request = .{ .id = id, .target = target };
     }
 
-    /// The completion being delivered, for `FileDialogRequest.on_complete`.
     pub fn completionEvent(self: *const Effects) ?*const events.Completion {
         return self.completion;
     }
@@ -566,13 +422,6 @@ pub const Effects = struct {
         self.focus_request = .blur;
     }
 
-    /// Run keyed element `id`'s `on_click` in the frame on screen, with this
-    /// handler's event, after this handler's own requests are applied; at
-    /// most one per handler. A component's key handler uses it to press its
-    /// own parts, whose `on_click` the app supplied. An element that is not
-    /// on screen or has no `on_click` is not clicked. The clicked handler
-    /// cannot request another click, so one event runs at most two handlers
-    /// this way.
     pub fn click(self: *Effects, id: ElementId) void {
         assert(id.isKeyed());
         assert(self.click_request == null);
@@ -583,16 +432,6 @@ pub const Effects = struct {
         self.quit_requested = true;
     }
 
-    /// Ask for a file dialog. The tick opens it on the main thread after the
-    /// drain, so it never runs inside the router; at most one per handler.
-    /// A save request's folder and name are copied as the handler returns,
-    /// as `setFont`'s name is, so a later handler may change their source.
-    /// Returns `error.DialogBusy`, and asks for nothing, when another
-    /// request already waits for this tick (two clicks on Open in one
-    /// drain) or every dialog slot (`ResourceLimits.events.dialog_count_max`)
-    /// holds an open dialog. A refusal claims no storage and completes
-    /// nothing: the caller handles it here, as by showing that a dialog is
-    /// already open.
     pub fn openFileDialog(self: *Effects, request: FileDialogRequest) DialogError!void {
         assert(self.file_dialog == null);
         const view = self.dialogs orelse std.debug.panic(
@@ -611,25 +450,17 @@ pub const Effects = struct {
         assert(view.pending.* == null);
     }
 
-    /// Replace the app family (`Config.font`) with `name` at `size` points.
-    /// The tick reloads it after the drain, once no frame is in
-    /// flight, into the same face slots, so it claims no storage. A family
-    /// that fails to load is logged and the previous one stays.
     pub fn setFont(self: *Effects, name: []const u8, size: f32) void {
         assert(name.len > 0);
         assert(size > 0 and size < 1000);
         self.font_request = .{ .name = name, .size = size };
     }
 
-    /// Switch every element's theme tokens to `theme`. The next build
-    /// resolves against it; the clear colour follows `bg`.
     pub fn setTheme(self: *Effects, theme: *const Theme) void {
         self.theme_request = theme;
         assert(self.theme_request.? == theme);
     }
 
-    /// Ask the screen reader to speak `text`. The next
-    /// frame carries it to the platform; at most one per handler.
     pub fn announce(self: *Effects, text: []const u8, politeness: Live) void {
         assert(text.len > 0);
         assert(politeness != .off);
@@ -637,9 +468,6 @@ pub const Effects = struct {
         self.announcement = .{ .text = text, .politeness = politeness };
     }
 
-    /// Create an entity of `T`, a type from `Config.entities`.
-    /// The slot is claimed at once, so the handler can keep the handle; a
-    /// full pool panics with its name and capacity.
     pub fn create(self: *Effects, comptime T: type, value: T) Entity(T) {
         comptime assert(@typeInfo(T) == .@"struct");
         const pool = self.store.?.appPool(T);
@@ -658,10 +486,6 @@ pub const Effects = struct {
         return handle;
     }
 
-    /// Remove an entity of `T`. The tick frees it after the drain, so
-    /// handlers later in this drain still reach it; removing it twice in
-    /// one drain, or through a stale handle, panics. The app releases any
-    /// `.owned` handles kept in the entity first.
     pub fn remove(self: *Effects, comptime T: type, handle: Entity(T)) void {
         const pool = self.store.?.appPool(T);
         _ = pool.checkedValue(handle.slot, handle.generation, "effects.remove");
@@ -671,10 +495,6 @@ pub const Effects = struct {
         );
     }
 
-    /// A handler for `method` on the root state, for a request's completion
-    /// (`.on_complete = effects.handler(State.onPicked)`), so completion
-    /// handlers need not be built during render. The router
-    /// checks the state type when the request is applied.
     pub fn handler(_: *const Effects, comptime method: anytype) Handler {
         const built = bind(method, .{});
         assert(built.target.isRoot());
@@ -682,11 +502,9 @@ pub const Effects = struct {
     }
 };
 
-/// What `bind` learned from a method's signature.
 pub const Shape = struct {
     name: []const u8,
     State: type,
-    /// `void` when the method takes no argument.
     Arg: type,
     takes_effects: bool,
 };
@@ -725,7 +543,6 @@ pub fn shapeOf(comptime method: anytype) Shape {
     return .{ .name = name, .State = State, .Arg = params[1].?, .takes_effects = true };
 }
 
-/// The method's declared name, recovered from a generic type's rendered name.
 fn methodLabel(comptime method: anytype) []const u8 {
     comptime {
         const rendered = @typeName(NameProbe(method));
@@ -766,7 +583,6 @@ fn checkArgType(comptime Arg: type, comptime label: []const u8) void {
     }
 }
 
-/// Validate `cx.on`'s options at comptime: only `.arg` and `.entity`.
 pub fn checkOptions(comptime Options: type, comptime shape: Shape) void {
     const label = "cx.on(" ++ shape.name ++ "): ";
     if (@typeInfo(Options) != .@"struct") {
@@ -792,7 +608,6 @@ pub fn checkOptions(comptime Options: type, comptime shape: Shape) void {
     }
 }
 
-/// Build a handler. `Cx.on` adds the safety-mode state check around this.
 pub fn bind(comptime method: anytype, options: anytype) Handler {
     const shape = comptime shapeOf(method);
     const Options = @TypeOf(options);
@@ -837,8 +652,6 @@ fn Invoker(comptime method: anytype, comptime shape: Shape) type {
     };
 }
 
-/// Pack an argument of at most 8 bytes. Unused bytes stay zero, so equal
-/// arguments pack to equal values.
 pub fn packArg(comptime Arg: type, arg: Arg) u64 {
     comptime assert(@sizeOf(Arg) <= @sizeOf(u64));
     var storage: u64 = 0;

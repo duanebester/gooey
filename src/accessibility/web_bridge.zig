@@ -7,10 +7,8 @@ const Fingerprint = fingerprint_mod.Fingerprint;
 const constants = @import("constants.zig");
 const reservation = @import("../core/reservation.zig");
 
-// Enable verbose init logging for debugging stack overflow issues
 const verbose_init_logging = false;
 
-// Direct extern for debug logging (avoid circular import)
 extern "env" fn consoleLog(ptr: [*]const u8, len: u32) void;
 
 fn wasmLog(comptime fmt: []const u8, args: anytype) void {
@@ -51,41 +49,26 @@ extern "a11y" fn js_beginBatch() void;
 extern "a11y" fn js_endBatch() void;
 
 pub const WebBridge = struct {
-    /// Hidden root div's DOM id; 0 = not initialized.
     container_id: u32 = 0,
 
-    /// Pool of DOM element IDs (0 = unused), `a11y.element_count_max` slots
-    /// reserved at init from fresh pages, so an unused slot reads zero.
     dom_ids: []u32 = &.{},
 
-    /// Map fingerprint -> slot for stable identity; meaningful below
-    /// `slot_count` only.
     fingerprint_to_slot: []fingerprint_mod.Fingerprint = &.{},
 
-    /// Slot usage tracking (false on fresh pages)
     slot_active: []bool = &.{},
 
-    /// Slots ever taken; every slot at or past it is untouched.
     slot_count: u16 = 0,
 
-    /// Currently focused slot (to prevent focus loops)
     focused_slot: ?u16 = null,
 
-    /// Assume screen reader might be active (conservative default)
-    /// Web can't reliably detect screen readers, so we default to true
     assumed_active: bool = true,
 
     check_counter: u32 = 0,
 
     const Self = @This();
 
-    /// In-place initialization; noinline prevents stack accumulation in WASM.
-    /// `element_count_max` is the tree's (`a11y.element_count_max`): stale
-    /// slots are reclaimed before a new one is taken, so the frame's elements
-    /// always fit. A failed reservation leaves the bridge inert and logged, as
-    /// the Windows bridge does.
     pub noinline fn init(self: *Self, element_count_max: u16) void {
-        std.debug.assert(self.container_id == 0); // Must be zero-initialized
+        std.debug.assert(self.container_id == 0);
         std.debug.assert(element_count_max > 0);
         self.reserveSlots(element_count_max) catch {
             std.log.err("accessibility: web bridge slot reservation failed", .{});
@@ -124,10 +107,6 @@ pub const WebBridge = struct {
         .deinit = deinit_,
     };
 
-    /// The slot for `fingerprint`, claimed when it has none. When every slot
-    /// is taken, some hold elements that left the tree in frames the bridge
-    /// skipped; reclaiming them leaves at most the tree's elements, which the
-    /// pool always holds.
     fn claimSlot(self: *Self, tree: *const tree_mod.Tree, fingerprint: Fingerprint) u16 {
         std.debug.assert(self.slot_count <= self.dom_ids.len);
         std.debug.assert(tree.count() <= self.dom_ids.len);
@@ -162,7 +141,7 @@ pub const WebBridge = struct {
             }
 
             const dom_id = self.dom_ids[slot];
-            if (dom_id == 0) continue; // Failed to create
+            if (dom_id == 0) continue;
 
             if (elem.name) |name| {
                 js_setAttribute(
@@ -187,7 +166,6 @@ pub const WebBridge = struct {
             const parent_dom = self.resolveParentDomId(tree, elem.parent);
             js_setParent(dom_id, parent_dom);
 
-            // Bounds enable touch exploration on mobile.
             if (elem.bounds.width > 0 and elem.bounds.height > 0) {
                 js_setBounds(
                     dom_id,
@@ -280,7 +258,7 @@ pub const WebBridge = struct {
                 .combobox => "listbox",
                 .menu, .menubar => "menu",
                 .tree => "tree",
-                else => "true", // Generic popup
+                else => "true",
             };
             js_setAttribute(dom_id, "aria-haspopup", 12, popup_type.ptr, @intCast(popup_type.len));
         } else {
@@ -310,7 +288,6 @@ pub const WebBridge = struct {
             js_setAttribute(dom_id, "aria-valuenow", 13, str.ptr, @intCast(str.len));
         }
 
-        // A separator is horizontal unless it says otherwise (ARIA).
         if (elem.orientation) |orientation| {
             const axis = @tagName(orientation);
             js_setAttribute(dom_id, "aria-orientation", 16, axis.ptr, @intCast(axis.len));
@@ -370,7 +347,7 @@ pub const WebBridge = struct {
     }
 
     fn resolveParentDomId(self: *Self, tree: *const tree_mod.Tree, parent_idx: ?u16) u32 {
-        std.debug.assert(self.container_id != 0xFFFFFFFF); // Sentinel for error
+        std.debug.assert(self.container_id != 0xFFFFFFFF);
         std.debug.assert(tree.count() <= tree.elements.len);
 
         if (parent_idx) |pi| {
@@ -447,15 +424,12 @@ pub const WebBridge = struct {
         self.check_counter += 1;
         if (self.check_counter >= constants.SCREEN_READER_CHECK_INTERVAL) {
             self.check_counter = 0;
-            // An inert bridge (its reservation failed) never syncs.
             self.assumed_active = self.dom_ids.len > 0 and js_isScreenReaderHinted();
         }
 
         return self.assumed_active;
     }
 
-    /// DOM elements are cleaned up by the browser when the page unloads; the
-    /// slots any frame took are zeroed before their pages go back.
     fn deinit_(ptr: *anyopaque) void {
         const self = castSelf(ptr);
         if (self.dom_ids.len == 0) return;
@@ -491,19 +465,15 @@ pub const WebBridge = struct {
         }
         if (self.slot_count < self.dom_ids.len) {
             const slot = self.slot_count;
-            std.debug.assert(self.dom_ids[slot] == 0); // Fresh pages.
+            std.debug.assert(self.dom_ids[slot] == 0);
             self.fingerprint_to_slot[slot] = fp;
             self.slot_count += 1;
             return slot;
         }
 
-        // Every slot is taken; the caller reclaims stale ones.
         return null;
     }
 
-    /// Remove every slot's element that is not in `tree`'s current frame.
-    /// One pass with an O(1) lookup each; it runs only when the pool is full,
-    /// which needs a frame the bridge skipped.
     fn reclaimStale(self: *Self, tree: *const tree_mod.Tree) void {
         std.debug.assert(self.slot_count == self.dom_ids.len);
         std.debug.assert(tree.count() <= self.dom_ids.len);
@@ -523,15 +493,10 @@ pub const WebBridge = struct {
 };
 
 comptime {
-    // The slots are reserved slices, so the bridge itself stays a few dozen
-    // bytes and needs no in-place initialization on the WASM stack.
     std.debug.assert(@sizeOf(WebBridge) < 256);
 }
 
-// Tests (run on non-WASM targets).
-
 test "web bridge slot management" {
-    // Can't test actual JS calls, only slot logic.
     const fp1 = fingerprint_mod.compute(.button, "Test1", null, 0);
     const fp2 = fingerprint_mod.compute(.button, "Test2", null, 1);
 
@@ -561,7 +526,6 @@ test "state flag combinations" {
 }
 
 test "has_popup state for combobox" {
-    // Used by the Select component.
     const combobox_state = types.State{ .expanded = true, .has_popup = true };
 
     try std.testing.expect(combobox_state.has_popup);

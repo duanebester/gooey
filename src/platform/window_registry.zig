@@ -14,18 +14,13 @@ pub const WindowId = enum(u32) {
     }
 
     pub fn fromRaw(value: u32) WindowId {
-        std.debug.assert(value != 0); // Cannot create invalid ID via fromRaw
+        std.debug.assert(value != 0);
         return @fromBackingInt(@intCast(value));
     }
 };
 
-// Holds `window_count_max` slots in place, so registration never allocates.
-// Not thread-safe: all access must be from the main thread, where window
-// operations occur.
 pub const WindowRegistry = struct {
-    /// Registered windows; `.invalid` marks a free slot.
     ids: [window_count_max]WindowId,
-    /// Window pointers, stored as opaque for platform independence.
     pointers: [window_count_max]*anyopaque,
     window_count: u32,
 
@@ -54,20 +49,12 @@ pub const WindowRegistry = struct {
         const slot = self.slotOf(.invalid).?;
         const id: WindowId = @fromBackingInt(self.next_id);
         std.debug.assert(id.isValid());
-        // Skip the invalid sentinel on wraparound (billions of creations).
         self.next_id +%= 1;
         if (self.next_id == 0) self.next_id = 1;
         self.ids[slot] = id;
         self.pointers[slot] = window_ptr;
         self.window_count += 1;
 
-        // Registration deliberately does NOT elect an active window:
-        // auto-activating the first registered window would make focus policy
-        // an invisible side effect of registration, and backends that also
-        // publish focus explicitly would disagree about which window
-        // `getActiveWindowId` names. Each backend calls `setActiveWindowId`
-        // itself, so the policy is one readable line per backend and the
-        // registry stays a pure map.
         return id;
     }
 
@@ -84,7 +71,6 @@ pub const WindowRegistry = struct {
         return self.pointers[slot];
     }
 
-    /// The slot holding `id`, or the first free slot for `.invalid`.
     fn slotOf(self: *const Self, id: WindowId) ?u32 {
         for (self.ids, 0..) |slot_id, slot| {
             if (slot_id == id) return @intCast(slot);
@@ -205,8 +191,6 @@ test "WindowRegistry - registration does not elect an active window" {
 }
 
 test "WindowRegistry - unregistering the active window clears the slot" {
-    // A stale active id must never outlive its window, or a later lookup
-    // would resolve focus to a freed pointer.
     var registry: WindowRegistry = .init();
     var dummy: u32 = 7;
     const id = try registry.register(&dummy);

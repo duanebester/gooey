@@ -1,19 +1,3 @@
-//! WebGPU renderer: draws the packed frame into the page's canvas through
-//! `imports.zig`. JavaScript owns the device, its queue, and every GPU
-//! object; WASM holds their handles. One shader module (`shaders/packed.wgsl`)
-//! holds a vertex and fragment entry point per `packed_frame.Pipeline`, and
-//! one bind group holds every buffer and atlas, so a frame binds it once.
-//!
-//! A frame is one command encoder and one render pass. `draw` writes the used
-//! prefix of each packed array into its storage buffer with
-//! `queue.writeBuffer`, records the draws in order, and submits; each draw's
-//! clip is its scissor rectangle (`scissor.zig`). `uploadAtlas` writes the
-//! atlas with `queue.writeTexture`. Both copy before they return and land on
-//! the queue after every earlier submit and before the next, so an upload
-//! lands after the draws of every frame submitted before it and before the
-//! frame that samples it. The queue keeps that order, so neither path needs
-//! staging or frame slots on the WASM side.
-
 const std = @import("std");
 const imports = @import("imports.zig");
 const backend = @import("../../core/backend.zig");
@@ -29,26 +13,20 @@ const Pipeline = packed_mod.Pipeline;
 
 const pipeline_count: u32 = @typeInfo(Pipeline).@"enum".field_names.len;
 
-/// The GPU buffers, in bind group order (`packed.wgsl` bindings 0 to 5): one
-/// storage buffer per packed array, then the viewport uniform.
 const FrameBuffer = enum(u8) { quads, sprites, meshes, mesh_points, edge_modes, viewport };
 
 const frame_buffer_count: u32 = @typeInfo(FrameBuffer).@"enum".field_names.len;
 
-/// The atlas textures, in bind group order (bindings 6 to 8).
 const Atlas = enum(u8) { glyph, svg, image };
 
 const atlas_count: u32 = @typeInfo(Atlas).@"enum".field_names.len;
 
-/// Vertices per quad or sprite instance, and per strip segment or point.
 const instance_vertex_count: u32 = 6;
 
-/// `GPUBufferUsage` flags.
 const usage_copy_dst: u32 = 0x0008;
 const usage_uniform: u32 = 0x0040;
 const usage_storage: u32 = 0x0080;
 
-/// The framebuffer in logical pixels (binding 5). 16 bytes, one vec4.
 const Viewport = extern struct {
     width: f32,
     height: f32,
@@ -60,7 +38,6 @@ const shader_source = @embedFile("packed_wgsl");
 const EntryPoints = struct {
     vertex: []const u8,
     fragment: []const u8,
-    /// The fragment shader already multiplies colour by alpha.
     premultiplied: bool,
 };
 
@@ -87,7 +64,6 @@ const entry_points = std.EnumArray(Pipeline, EntryPoints).init(.{
 });
 
 comptime {
-    // `packed.wgsl` declares these layouts and hard-codes the triangle's draw layout.
     assert(@sizeOf(packed_mod.Quad) == 96);
     assert(@offsetOf(packed_mod.Quad, "offset") == 80);
     assert(@sizeOf(packed_mod.Sprite) == 96);
@@ -100,20 +76,14 @@ comptime {
 }
 
 pub const WebRenderer = struct {
-    /// Indexed by `Pipeline`.
     pipelines: [pipeline_count]u32,
     bind_group: u32,
-    /// Indexed by `FrameBuffer`.
     buffers: [frame_buffer_count]u32,
-    /// Elements each buffer holds: what a packed frame at the same paint
-    /// limits can hold, so a frame within the budget always fits.
     capacity: [frame_buffer_count]u32,
-    /// Indexed by `Atlas`.
     atlases: [atlas_count]u32,
     atlas_sizes: [atlas_count]u32,
     size_px: backend.SizePx,
     limits: backend.RenderLimits,
-    /// The last frame drawn; names it in failures.
     frame_number: u64,
     frame_skip_logged: bool,
 
@@ -123,10 +93,6 @@ pub const WebRenderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// Create every buffer, texture, and pipeline at `render_limits` and size
-    /// the canvas to `surface.size_px`. The canvas is the page's one canvas,
-    /// which JavaScript holds, so `surface.native` is unused. A device whose
-    /// limits cannot hold the budget is an init error.
     pub noinline fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -201,8 +167,6 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// WebGPU zero-initializes new textures, and pixels arrive only through
-    /// `uploadAtlas`, so the atlases are never recreated.
     fn initAtlases(self: *Self) void {
         for (std.enums.values(Atlas)) |atlas| {
             const size = self.atlas_sizes[@backingInt(atlas)];
@@ -213,7 +177,6 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// JavaScript releases the GPU objects with the page.
     pub fn deinit(self: *Self) void {
         assert(self.bind_group != 0);
         assert(self.buffers[0] != 0);
@@ -226,8 +189,6 @@ pub const WebRenderer = struct {
         return .{ .meshes = true };
     }
 
-    /// Size the canvas's drawing buffer, within the window budget. A
-    /// zero-size canvas keeps its buffer; `draw` presents nothing at zero.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.bind_group != 0);
         assertFits(size_px, &self.limits.window);
@@ -239,8 +200,6 @@ pub const WebRenderer = struct {
         self.size_px = size_px;
     }
 
-    /// Write `pixels`, tightly packed rows of `dirty`, into the atlas on the
-    /// queue, after every frame submitted so far.
     pub fn uploadAtlas(
         self: *Self,
         kind: backend.AtlasKind,
@@ -275,11 +234,6 @@ pub const WebRenderer = struct {
         );
     }
 
-    /// Render every draw of `frame` into the canvas, cleared to `clear`, and
-    /// submit it. `viewport.size_px / viewport.scale_factor` is the frame's
-    /// logical size. A zero-size viewport draws and presents nothing; atlas
-    /// uploads are already on the queue. A canvas without a current texture
-    /// skips the frame, logged once.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -316,10 +270,6 @@ pub const WebRenderer = struct {
         imports.endFrame();
     }
 
-    /// Copy each packed array's used prefix and the viewport into the GPU
-    /// buffers. A frame is packed at the budget the buffers were sized from,
-    /// so a count past capacity is a programmer error, stopped before it can
-    /// write past a buffer in any build mode.
     fn writeFrame(self: *const Self, frame: *const PackedFrame, logical: *const Viewport) void {
         assert(logical.width > 0);
         assert(logical.height > 0);
@@ -347,16 +297,12 @@ pub const WebRenderer = struct {
     }
 };
 
-/// Where one frame's draws land: the framebuffer and its device pixels per
-/// logical pixel on each axis.
 const Target = struct {
     size_px: backend.SizePx,
     scale_x: f32,
     scale_y: f32,
 };
 
-/// Record every draw of `frame` in order into the open render pass: set the
-/// scissor when the clip changes, the pipeline when it changes, and draw.
 fn recordDraws(
     pipelines: *const [pipeline_count]u32,
     frame: *const PackedFrame,
@@ -366,16 +312,12 @@ fn recordDraws(
     assert(target.scale_y > 0);
     var bound_pipeline: ?Pipeline = null;
     var bound_clip: ?u32 = null;
-    // One iteration per draw; the draw list is bounded by the paint records.
     for (frame.drawList()) |*packed_draw| {
         assert(packed_draw.count > 0);
         assert(packed_draw.clip < frame.clip_count);
         const clip = frame.clips[packed_draw.clip];
-        // Pack emits no draw under a zero-area clip.
         assert(clip[2] > 0);
         assert(clip[3] > 0);
-        // A clip that covers no pixel centre (off the canvas, or between
-        // centres) draws nothing.
         const rect = scissor.clipRect(clip, target.scale_x, target.scale_y, target.size_px) orelse
             continue;
         if (bound_clip != packed_draw.clip) {
@@ -387,7 +329,6 @@ fn recordDraws(
             bound_pipeline = packed_draw.pipeline;
         }
         switch (packed_draw.pipeline.kind()) {
-            // Instance `first + i` is `instance_index` in the shader.
             .quad, .sprite => imports.draw(
                 instance_vertex_count,
                 packed_draw.count,
@@ -399,8 +340,6 @@ fn recordDraws(
     }
 }
 
-/// One draw call per mesh, with the mesh's index as its first instance; the
-/// topology's vertex shader expands it from the vertex index.
 fn recordMeshes(frame: *const PackedFrame, packed_draw: *const packed_mod.Draw) void {
     const meshes = frame.drawRange(packed_draw, .mesh);
     assert(meshes.len == packed_draw.count);
@@ -417,14 +356,12 @@ fn recordMeshes(frame: *const PackedFrame, packed_draw: *const packed_mod.Draw) 
                 break :count instance_vertex_count * (mesh.count - 1);
             },
             .point_instanced => instance_vertex_count * mesh.count,
-            .quad, .glyph, .svg, .image => unreachable, // `drawRange` asserted a mesh draw.
+            .quad, .glyph, .svg, .image => unreachable,
         };
         imports.draw(vertex_count, 1, 0, @intCast(index));
     }
 }
 
-/// Element counts of the frame buffers at `paint` (`packed_frame.zig`
-/// capacities). A zero-sized buffer is invalid; one unused point costs 8 B.
 fn frameCapacity(paint: *const limits_mod.PaintLimits) [frame_buffer_count]u32 {
     assert(paint.check() == null);
     const capacity = [frame_buffer_count]u32{
@@ -450,11 +387,10 @@ fn elementBytes(buffer: FrameBuffer) u32 {
     };
 }
 
-/// Bytes of one buffer.
 fn bufferBytes(capacity: *const [frame_buffer_count]u32, buffer: FrameBuffer) u64 {
     const bytes = @as(u64, capacity[@backingInt(buffer)]) * elementBytes(buffer);
     assert(bytes > 0);
-    assert(bytes % 4 == 0); // `writeBuffer` copies whole 4-byte words.
+    assert(bytes % 4 == 0);
     return bytes;
 }
 
@@ -465,9 +401,6 @@ fn atlasBytesPerPixel(atlas: Atlas) u32 {
     };
 }
 
-/// Fail init when the device cannot hold the budget: the canvas and atlases
-/// past `maxTextureDimension2D`, or a buffer past
-/// `maxStorageBufferBindingSize`, which one binding could not cover whole.
 fn checkDevice(
     capacity: *const [frame_buffer_count]u32,
     atlas_sizes: *const [atlas_count]u32,
@@ -498,7 +431,6 @@ fn checkDevice(
     }
 }
 
-/// A framebuffer size the window budget allows.
 fn assertFits(size_px: backend.SizePx, window: *const limits_mod.WindowLimits) void {
     assert(window.framebuffer_width_max > 0);
     assert(size_px.width <= window.framebuffer_width_max);

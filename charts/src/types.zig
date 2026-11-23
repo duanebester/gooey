@@ -1,6 +1,3 @@
-//! Series capacities are comptime parameters the app declares, each checked
-//! against its framework ceiling in `constants.zig`.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const constants = @import("constants.zig");
@@ -73,7 +70,6 @@ pub const PointCapacity = struct {
     point_count_max: u32,
     series_count_max: u32,
 
-    /// Fail compilation when a capacity is zero or past its framework ceiling.
     pub fn check(comptime capacity: PointCapacity) void {
         checkCapacity("point_count_max", capacity.point_count_max, point_count_ceiling);
         checkCapacity("series_count_max", capacity.series_count_max, series_count_ceiling);
@@ -84,7 +80,6 @@ pub const CategoryCapacity = struct {
     category_count_max: u32,
     series_count_max: u32,
 
-    /// Fail compilation when a capacity is zero or past its framework ceiling.
     pub fn check(comptime capacity: CategoryCapacity) void {
         checkCapacity("category_count_max", capacity.category_count_max, category_count_ceiling);
         checkCapacity("series_count_max", capacity.series_count_max, series_count_ceiling);
@@ -94,15 +89,11 @@ pub const CategoryCapacity = struct {
 pub const SliceCapacity = struct {
     slice_count_max: u32,
 
-    /// Fail compilation when the capacity is zero or past its framework ceiling.
     pub fn check(comptime capacity: SliceCapacity) void {
         checkCapacity("slice_count_max", capacity.slice_count_max, slice_count_ceiling);
     }
 };
 
-/// Every capacity is at least one, so empty storage never compiles, and at most
-/// its framework ceiling, so no app can size a chart past what the framework
-/// was designed and tested for.
 fn checkCapacity(comptime field: []const u8, comptime value: u32, comptime ceiling: u32) void {
     if (value < 1) {
         @compileError("chart capacity " ++ field ++ " must be at least 1");
@@ -115,9 +106,6 @@ fn checkCapacity(comptime field: []const u8, comptime value: u32, comptime ceili
     }
 }
 
-/// A full series is a capacity-planning error, not an operating error: the app
-/// declared too small a capacity for its data. Fail fast and name the capacity
-/// to raise rather than silently drop data.
 fn panicSeriesFull(
     name: []const u8,
     capacity: u32,
@@ -152,8 +140,6 @@ pub fn Series(comptime point_count_max: u32) type {
 
         pub const capacity: u32 = point_count_max;
 
-        /// The whole series is copied on return; prefer initInPlace() when
-        /// `@sizeOf(Self)` is large.
         pub fn init(name: []const u8, color: ?Color) Self {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
             var series = Self{ .color = color };
@@ -165,7 +151,6 @@ pub fn Series(comptime point_count_max: u32) type {
         pub noinline fn initInPlace(self: *Self, name: []const u8, color: ?Color) void {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
 
-            // Field by field, no struct literal: a literal can build a stack temporary.
             self.name = @splat(0);
             self.data = undefined;
             self.data_len = 0;
@@ -256,8 +241,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
 
         pub const capacity: u32 = category_count_max;
 
-        /// The whole series is copied on return; prefer initInPlace() when
-        /// `@sizeOf(Self)` is large.
         pub fn init(name: []const u8, color: ?Color) Self {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
             var series = Self{ .color = color };
@@ -269,7 +252,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
         pub noinline fn initInPlace(self: *Self, name: []const u8, color: ?Color) void {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
 
-            // Field by field, no struct literal: a literal can build a stack temporary.
             self.name = @splat(0);
             self.data = undefined;
             self.data_len = 0;
@@ -379,9 +361,6 @@ test "Series addPoint" {
 }
 
 test "Series fills exactly its capacity" {
-    // Goal: the last slot below the capacity is usable, by both fromSlice and
-    // addPoint. One more point panics: the `chart-points` mode of
-    // src/testing/fail_fast_check.zig checks that in a child process.
     const Small = Series(4);
     const full = Small.fromSlice("Full", &.{
         .{ .x = 0, .y = 1 }, .{ .x = 1, .y = 2 }, .{ .x = 2, .y = 3 }, .{ .x = 3, .y = 4 },
@@ -413,7 +392,6 @@ test "CategorySeries addPoint" {
 }
 
 test "CategorySeries fills exactly its capacity" {
-    // Goal: the last category below the capacity is usable, by fromSlice and addPoint.
     const Small = CategorySeries(2);
     const full = Small.fromSlice("Full", &.{
         .{ .label = "A", .value = 1 }, .{ .label = "B", .value = 2 },
@@ -429,9 +407,6 @@ test "CategorySeries fills exactly its capacity" {
 }
 
 test "series sizes follow their capacity" {
-    // Goal: storage scales with the app's capacity, not a global constant.
-    // Methodology: the data array dominates, so a series is its capacity times
-    // the point size plus a small fixed header (name, lengths, color).
     const header_bytes_max = 128;
     try std.testing.expect(@sizeOf(DataPoint) <= 80);
     try std.testing.expect(@sizeOf(CategoryPoint) <= 96);
@@ -446,7 +421,6 @@ test "series sizes follow their capacity" {
         try std.testing.expect(@sizeOf(CategorySeries(capacity)) >= data_bytes);
         try std.testing.expect(@sizeOf(CategorySeries(capacity)) <= data_bytes + header_bytes_max);
     }
-    // The ceiling series is the ~300 KiB the capacities exist to avoid.
     try std.testing.expect(@sizeOf(Series(point_count_ceiling)) > 300_000);
     try std.testing.expect(@sizeOf(Series(8)) < 1_024);
 }

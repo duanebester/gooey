@@ -1,6 +1,3 @@
-//! Render statistics: text shaping work per build, which the debugger's
-//! profiler shows.
-
 const std = @import("std");
 
 pub const RenderStats = struct {
@@ -24,8 +21,6 @@ pub const RenderStats = struct {
     }
 };
 
-/// The current build's counts. Shaping and the reset both run on the thread
-/// that builds frames.
 pub var frame_stats: RenderStats = .{};
 
 pub fn beginFrame() void {
@@ -35,8 +30,8 @@ pub fn beginFrame() void {
 test "RenderStats shape tracking" {
     var stats = RenderStats{};
 
-    stats.recordShapeMiss(1_000_000); // 1ms
-    stats.recordShapeMiss(500_000); // 0.5ms
+    stats.recordShapeMiss(1_000_000);
+    stats.recordShapeMiss(500_000);
     stats.recordShapeCacheHit();
     stats.recordShapeCacheHit();
 

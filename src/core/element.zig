@@ -1,6 +1,3 @@
-//! Elements are plain values built in a render function and consumed by
-//! `Cx.render` in the same call.
-
 const std = @import("std");
 const id_mod = @import("id.zig");
 const records = @import("records.zig");
@@ -27,14 +24,6 @@ pub const TextSelection = @import("../accessibility/element.zig").TextSelection;
 
 pub const Direction = enum { row, column };
 
-/// Main- or cross-axis sizing. `grow` takes a weight: grow siblings share a
-/// parent's free main-axis space in proportion to their weights, so a weight-2
-/// box gets twice a weight-1 sibling's share. Each still keeps at least its
-/// content's floor (a wrapping text's widest word) and at most `width_max` or
-/// `height_max`. Children that overflow shrink largest first, `.fit` and
-/// `.grow` alike, never below their floors. On the cross axis a grow box
-/// fills its parent whatever its weight. A weight must be finite and greater
-/// than 0.
 pub const Sizing = union(enum) { fit, grow: f32, fixed: f32, percent: f32 };
 
 pub const Edges = struct {
@@ -57,7 +46,6 @@ pub const Edges = struct {
     }
 };
 
-/// Main-axis distribution and cross-axis placement of a box's children.
 pub const Alignment = struct {
     main: Main = .start,
     cross: Cross = .start,
@@ -70,40 +58,21 @@ pub const Alignment = struct {
     pub const center_cross: Alignment = .{ .cross = .center };
 };
 
-/// The most columns a grid has, and the most rows it lists: every grid's
-/// tracks fit in one fixed slot (`docs/layout-grid.md`).
 pub const grid_track_count_max: u8 = 32;
 
-/// `Style.grid`: the box places its children in cells on these columns,
-/// row-major in declaration order, so every row shares the same column lines.
-/// The core copies the tracks when the box is declared, so the slices need
-/// only live until `ui.box` returns. A grid ignores `Style.direction`;
-/// `alignment.main` places a child across its cell and `alignment.cross`
-/// down it, unless its track says otherwise.
 pub const Grid = struct {
-    /// 1 to `track_count_max`.
     columns: []const Track,
-    /// The first rows, at most `grid_track_count_max`; every later row is
-    /// `row_implicit`.
     rows: []const Track = &.{},
     row_implicit: Track = .fit,
-    /// Between rows; null takes `Style.gap`. Columns are `Style.gap` apart.
     row_gap: ?f32 = null,
 
     pub const track_count_max = grid_track_count_max;
 };
 
-/// One column or row. `sizing` means what it means for a child: `.fixed`
-/// pixels, `.fit` its widest (or tallest) cell, `.grow` a weighted share of
-/// the free space, never below its content, and `.percent` a fraction of the
-/// grid's content size less its gaps. A grow or percent row needs a grid
-/// whose height is not `.fit`; otherwise it sizes as `.fit`.
 pub const Track = struct {
     sizing: Sizing = .fit,
     min: f32 = 0,
     max: f32 = std.math.floatMax(f32),
-    /// Where a child that does not fill its cell sits: along a column, or
-    /// down a row. Null takes the grid's `alignment`.
     cell_alignment: ?Alignment.Cross = null,
 
     pub const fit: Track = .{};
@@ -121,21 +90,12 @@ pub const Track = struct {
     }
 };
 
-/// `Style.cell`: where a child of a grid sits. A row box (`row`) spans
-/// every column of one row and lays its own children on the grid's columns,
-/// as SwiftUI's `GridRow`: a table row that keeps a key, a hover background,
-/// and a click handler while its cells line up with the header's.
 pub const Cell = struct {
-    /// The first column, from 0; null takes the next free one. A column
-    /// before the cursor starts the next row.
     column: ?u8 = null,
-    /// 1 to the grid's column count.
     column_span: u8 = 1,
     row: bool = false,
 };
 
-/// A theme token or a literal colour. Tokens resolve against the app's
-/// `Theme` when the element is built, so one style serves every theme.
 pub const ColorToken = union(enum) {
     bg,
     surface,
@@ -180,31 +140,18 @@ pub const Shadow = struct {
 };
 
 pub const ClipPolicy = enum { none, clip };
-/// `Style.scroll`: the axes the box scrolls along, and where it rests.
 pub const Scroll = struct {
     x: bool = false,
     y: bool = true,
-    /// `.end` keeps the box at the end of its content while it is there, as
-    /// a chat transcript or a log follows new lines: content that grows
-    /// scrolls into view in the frame it appears. Moving away from the end
-    /// (the wheel, the scrollbar, keyboard focus, `Effects.scrollTo`)
-    /// releases it, and coming back to the end pins it again. It starts
-    /// pinned.
     anchor: ScrollAnchor = .start,
 };
 
 pub const ScrollAnchor = enum { start, end };
 
-/// Where `Effects.scrollTo` moves a scroll box. The next layout resolves it
-/// against that frame's content, so `.end` reaches content added in the
-/// same handler, and clamps it to the content.
 pub const ScrollTarget = union(enum) {
     start,
     end,
-    /// Logical pixels from the content's start.
     offset: ScrollOffset,
-    /// The box's direct child with this key, placed by `alignment`. A
-    /// `List`'s rows are its children keyed by index (`List.scrollTo`).
     child: ScrollChild,
 };
 
@@ -215,23 +162,10 @@ pub const ScrollChild = struct {
     alignment: ScrollAlignment = .nearest,
 };
 
-/// `.nearest` moves as little as shows the child whole, or its start when
-/// it is taller than the box; the others put its start, centre, or end at
-/// the box's.
 pub const ScrollAlignment = enum { start, center, end, nearest };
-/// The platform's shape, so hosts apply a resolved cursor without a mapping.
 pub const CursorShape = @import("../platform/interface.zig").CursorShape;
-/// `.none` makes the box itself transparent to the pointer, as CSS
-/// `pointer-events: none`: a press, release,
-/// hover, cursor, or wheel over it goes to the box below or around it instead.
-/// Its children still take the pointer, and their events still bubble through
-/// its handlers. Keyboard focus, Tab, keys, and actions are unchanged. A box
-/// with no handler, key, focus, scroll, or cursor never takes the pointer, so
-/// `.none` changes only boxes that would.
 pub const PointerEvents = enum { auto, none };
 
-/// Layout and appearance: plain data with no per-element arguments, so a
-/// `Style` can be a shared constant, chosen per state, and compared.
 pub const Style = struct {
     direction: Direction = .column,
     width: Sizing = .fit,
@@ -243,49 +177,22 @@ pub const Style = struct {
     padding: Edges = .zero,
     gap: f32 = 0,
     alignment: Alignment = .start,
-    /// Break a `.row` into lines at its content width, as CSS
-    /// `flex-wrap: wrap`. Children keep their widths; one wider than the row
-    /// takes a line to itself, cut to the row's width unless its width is
-    /// fixed or its `width_min` is wider. Grow children share each
-    /// line's free width by weight, `alignment.main` places each line, and
-    /// `alignment.cross` aligns children within their line, which is as tall
-    /// as its tallest child and fills cross-axis grow children. Lines stack
-    /// `gap` apart. A wrapping row is at least as wide as its widest child,
-    /// so a `.fit` width is that narrow: give it `.grow`, a fixed or percent
-    /// width, or `width_max`. A `.fit` height follows its lines. Rows only.
     wrap: bool = false,
-    /// Width divided by height: the height follows the width, as CSS
-    /// `aspect-ratio` with `height: auto`, so `height` must stay `.fit` with
-    /// no bounds. Finite and greater than 0.
     aspect_ratio: ?f32 = null,
-    /// Lay the children out on a grid (`Grid`, decision 28).
     grid: ?Grid = null,
-    /// Where this box sits in its parent's grid; a box outside one keeps
-    /// the default.
     cell: Cell = .{},
     background: ?ColorToken = null,
     border: ?Border = null,
     corner_radius: Corners = .zero,
     shadow: ?Shadow = null,
-    /// Multiplies the alpha of everything the element and its subtree draw,
-    /// layers it opens included, from 0 (invisible) to 1. Nested opacities
-    /// multiply. Each record fades on its own, so overlapping
-    /// children show through one another rather than fading as one image.
-    /// Hit testing and accessibility ignore it: an invisible box still takes
-    /// the pointer unless `pointer_events` is `.none`.
     opacity: f32 = 1,
     clip: ClipPolicy = .none,
     scroll: ?Scroll = null,
     cursor: ?CursorShape = null,
     pointer_events: PointerEvents = .auto,
-    /// Where the element was built, `.source = @src()`, for the debugger's
-    /// inspector. Debug and ReleaseSafe store it; ReleaseFast and
-    /// ReleaseSmall accept and drop it.
     source: ?std.builtin.SourceLocation = null,
 };
 
-/// A comptime-hashed key context name: keymap bindings with
-/// this context match only while the box is on the focus path.
 pub const KeyContext = struct {
     hash: u64,
 
@@ -295,12 +202,8 @@ pub const KeyContext = struct {
     }
 };
 
-/// Handle `action` (see `action`) when a keymap binding names it and this
-/// box is on the focus path.
 pub const ActionBinding = struct { action: u64, handler: Handler };
 
-/// The id of action type `Action` (`const Undo = struct {};`), for keymap
-/// bindings and `Box.actions`. Hashed at compile time; never 0.
 pub fn action(comptime Action: type) u64 {
     comptime assert(@typeInfo(Action) == .@"struct");
     return comptime nonZeroHash(@typeName(Action));
@@ -311,81 +214,40 @@ fn nonZeroHash(comptime name: []const u8) u64 {
     return if (hash == 0) 1 else hash;
 }
 
-/// Accessibility annotation. Strings are copied when the box is built.
 pub const A11y = struct {
     role: Role,
     label: ?[]const u8 = null,
     value: ?[]const u8 = null,
     checked: bool = false,
-    /// Chosen in a collection, such as a listbox's chosen option or the
-    /// current tab; `checked` is for checkboxes, radios, and switches.
     selected: bool = false,
     disabled: bool = false,
     heading_level: HeadingLevel = .none,
-    /// How a screen reader reports changes inside this element.
     live: Live = .off,
     href: ?[]const u8 = null,
-    /// Help text a screen reader reads after the name.
     description: ?[]const u8 = null,
-    /// A disclosure such as a combobox is open.
     expanded: bool = false,
-    /// Activating the element opens a popup (a listbox or menu).
     has_popup: bool = false,
-    /// One-based position among `set_size` siblings, as in a radio group.
     pos_in_set: ?u16 = null,
     set_size: ?u16 = null,
-    /// The position of a focusable separator (a splitter) or a slider within
-    /// its range, which screen readers report beside `value`.
     range: ?Range = null,
-    /// A text field's selection in `value`, at code point boundaries. The
-    /// frame keeps at most `ResourceLimits.a11y.value_bytes_max` bytes of a
-    /// value: a longer one is cut to the whole lines around the selection,
-    /// or to its start without one, and the selection moves with the cut.
-    /// While the box is focused, the screen reader reports it as the caret.
     selection: ?TextSelection = null,
 
-    /// `orientation` is the axis the control divides or moves along: a
-    /// `vertical` splitter stands between left and right panes. VoiceOver
-    /// calls a splitter without one horizontal, so it has no default.
     pub const Range = struct { min: f32, max: f32, now: f32, orientation: Orientation };
 };
 
-/// Per-instance identity and behaviour.
 pub const Box = struct {
     key: ?Key = null,
     style: Style = .{},
     layer: ?Layer = null,
     focusable: bool = false,
-    /// Whether Tab and Shift+Tab stop on this focusable box. False leaves it
-    /// to the keys of the control around it, as a listbox's arrow keys move
-    /// between its options, while a click or `effects.focus` still focuses it.
     tab_stop: bool = true,
     key_context: ?KeyContext = null,
     on_click: ?Handler = null,
     on_click_outside: ?Handler = null,
-    /// Open a context menu (contract §5): a right-button press on this box,
-    /// or on a child without one of its own, a Ctrl+press on macOS, or
-    /// Shift+F10 while focus is on it or inside it. The press focuses and
-    /// runs click-outside handlers first, as any press does, and clicks
-    /// nothing. The handler reads the press's position from
-    /// `effects.inputEvent()`; for the key, `effects.focusedElement()` names
-    /// the element to open beside.
     on_context_menu: ?Handler = null,
     on_key: ?Handler = null,
-    /// Pointer capture (contract §5): a press on this box, or on a child
-    /// that sets none of its own, calls it with `begin`, then `move` for
-    /// every pointer move until the button is released (`end`) or Escape or
-    /// the platform takes the gesture away (`cancel`), wherever the pointer
-    /// goes. `effects.pointerDrag()` reads the phase and position. A press
-    /// that moves more than 2 px clicks nothing. Requires `key`.
     on_pointer_drag: ?Handler = null,
-    /// Drag and drop (contract §5): a press here, or on a child without its
-    /// own, arms a drag carrying this payload, which starts once the
-    /// pointer moves more than 2 px and then clicks nothing. Requires `key`;
-    /// a box cannot also have `on_pointer_drag`.
     draggable: ?DragSource = null,
-    /// Accepts drops of one payload type: a release over it calls `on_drop`,
-    /// which reads the payload with `effects.dropPayload`. Requires `key`.
     drop_target: ?DropTarget = null,
     actions: []const ActionBinding = &.{},
     a11y: ?A11y = null,
@@ -400,9 +262,6 @@ pub const Box = struct {
     }
 };
 
-/// What a `Box.draggable` carries: a value of at most 8 bytes, such as an
-/// id or an index, packed as handler arguments are. Pointers are not
-/// payloads, since what they point to may not outlive the frame.
 pub const DragSource = struct {
     type_id: usize,
     payload: u64,
@@ -434,39 +293,16 @@ pub const DropTarget = struct {
 pub const FontWeight = @import("../text/types.zig").FontWeight;
 pub const FontFamily = @import("../text/types.zig").FontFamily;
 
-/// Text appearance. `size` and `color` default to the theme's base size and
-/// `text` token.
 pub const Text = struct {
     size: ?u16 = null,
     color: ?ColorToken = null,
     weight: FontWeight = .regular,
     italic: bool = false,
-    /// `.mono` draws with `Config.fonts.mono`; using it
-    /// with no second family loaded panics on the first frame.
     family: FontFamily = .app,
-    /// Wrapping against the parent's content width:
-    /// `.words` breaks between words and at newlines, `.newlines` only at
-    /// newlines. Wrapped lines count against the frame's glyph and record limits.
     wrap: enum { none, words, newlines } = .none,
-    /// Line pitch in percent of the font's line height; null keeps the font's.
     line_height: ?u16 = null,
-    /// Line placement. `.left` starts each line at the text's
-    /// own box, which the parent's alignment places; `.center` and `.right`
-    /// place each line within the parent's content width, whatever the
-    /// parent's alignment.
     alignment: enum { left, center, right } = .left,
-    /// The most lines a wrapping text shows; the rest is dropped and takes no
-    /// height. null: every line. 1 to 255, and `wrap` other than `.none`
-    /// (`docs/text-truncation.md`).
     line_count_max: ?u8 = null,
-    /// What marks a line cut short: one wider than the text's width (a
-    /// `.none` text, a `.newlines` paragraph, or a word longer than a
-    /// `.words` line), or the last line `line_count_max` kept with text
-    /// after it. `.clip` cuts with no mark: lines past the limit are dropped
-    /// and a too-wide line is cut at the text's width, so no text draws past
-    /// it (unless its parent scrolls along x). `.ellipsis` cuts the same way
-    /// and ends the line in "…"; the text then shrinks in an overflowing row
-    /// down to the ellipsis alone, where a `.clip` text keeps its floor.
     overflow: enum { clip, ellipsis } = .clip,
 
     pub const Element = struct {
@@ -487,8 +323,6 @@ pub fn text(content: []const u8, style: Text) Text.Element {
     return .{ .content = content, .style = style };
 }
 
-/// A painted leaf. `data` must stay valid until the tick's emit phase ends,
-/// so it points at app state, retained state, or a constant.
 pub fn Paint(comptime Data: type) type {
     return struct {
         data: *const Data,
@@ -520,7 +354,6 @@ pub fn when(condition: bool, comptime render_fn: fn (cx: *Cx) void) When {
     return .{ .condition = condition, .render_fn = render_fn };
 }
 
-// Declared after use: Cx and Painter live with the code that drives them.
 pub const Cx = @import("cx.zig").Cx;
 pub const Painter = @import("emit.zig").Painter;
 

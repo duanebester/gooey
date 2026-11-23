@@ -1,7 +1,3 @@
-//! Inspector and profiler overlay toggled with Cmd/Ctrl+Shift+I. Compiled out
-//! of ReleaseFast and ReleaseSmall: `State` and `NodeSource` are `void` there.
-//! A safe build reserves the overlay's worst case on top of the app's limits.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const records = @import("records.zig");
@@ -22,49 +18,34 @@ const Color = records.Color;
 const Painter = emit_mod.Painter;
 const ResourceLimits = limits_mod.ResourceLimits;
 
-/// The one switch for the whole debugger.
 pub const enabled = switch (builtin.mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
 };
 
-/// The overlay's headroom, reserved on top of the app's limits in safe
-/// builds. The overlay writes only quads and glyph sprites, one paint record
-/// each, so its records are its quads plus its glyphs.
 pub const overlay_quad_count_max: u32 = 193;
 pub const overlay_glyph_count_max: u32 = 300;
 pub const overlay_paint_record_count_max: u32 = 493;
 
-/// The limits a window reserves storage for: the app's, plus the overlay's
-/// headroom when the debugger is compiled in. The window still holds the app
-/// to `limits`; only the overlay paints into the headroom.
 pub fn reservedLimits(limits: *const ResourceLimits) ResourceLimits {
     if (comptime !enabled) return limits.*;
     return withHeadroom(limits);
 }
 
-/// `limits` plus the overlay's headroom, in any build mode. `App` checks it
-/// is valid in every mode, so a budget that builds in one mode builds in all.
 pub fn withHeadroom(limits: *const ResourceLimits) ResourceLimits {
     var reserved = limits.*;
     reserved.paint.quad_count_frame_max += overlay_quad_count_max;
     reserved.paint.glyph_count_frame_max += overlay_glyph_count_max;
     reserved.records.paint_record_count_frame_max += overlay_paint_record_count_max;
-    // Every overlay glyph sprite may be a distinct cache key in the frame the
-    // app fills its own glyph cache, and a frame's keys cannot be evicted.
     reserved.text.glyph_cache_count_max += overlay_glyph_count_max;
     assert(reserved.paint.quad_count_frame_max > limits.paint.quad_count_frame_max);
     assert(reserved.paint.glyph_count_frame_max > limits.paint.glyph_count_frame_max);
     return reserved;
 }
 
-/// Where a frame's overlay starts, or `paint_mark_none` for a frame without
-/// one: nothing in release builds.
 pub const PaintMark = if (enabled) u32 else void;
 pub const paint_mark_none: PaintMark = if (enabled) std.math.maxInt(u32) else {};
 
-/// The paint records before the overlay: the app's. Every record of a frame
-/// without an overlay, and of every frame in a release build.
 pub fn appPaintCount(frame: *const records.Frame) u32 {
     assert(frame.paint_count <= frame.paint.len);
     if (comptime !enabled) return frame.paint_count;
@@ -73,9 +54,6 @@ pub fn appPaintCount(frame: *const records.Frame) u32 {
     return frame.overlay_start;
 }
 
-/// After pack has packed the app's records, before the overlay's: the app
-/// stays within the paint limits it declared, which the packed frame's
-/// reserved headroom would otherwise hide. The panic matches pack's own.
 pub fn checkAppPacked(target: *const packed_mod.PackedFrame) void {
     if (comptime !enabled) return;
     assert(target.limits.quad_count_frame_max > overlay_quad_count_max);
@@ -94,7 +72,6 @@ pub fn checkAppPacked(target: *const packed_mod.PackedFrame) void {
     }
 }
 
-/// An app past a limit it declared, found once its frame is complete.
 fn appExhausted(
     pool: []const u8,
     budget: []const u8,
@@ -114,7 +91,6 @@ fn appExhausted(
     });
 }
 
-/// Where an element was built: `Style.source`, kept as a pointer and a line.
 pub const Source = struct {
     file: [*:0]const u8,
     line: u32,
@@ -124,11 +100,9 @@ pub const Source = struct {
     }
 };
 
-/// What a node stores of `Style.source`: nothing in release builds.
 pub const NodeSource = if (enabled) ?Source else void;
 pub const node_source_none: NodeSource = if (enabled) null else {};
 
-/// The window's debugger state: nothing in release builds.
 pub const State = if (enabled) Debugger else void;
 
 pub fn nodeSource(source: ?std.builtin.SourceLocation) NodeSource {
@@ -141,7 +115,6 @@ pub fn nodeSource(source: ?std.builtin.SourceLocation) NodeSource {
 
 pub const Mode = enum { disabled, inspector, profiler };
 
-/// The selected element, as the last overlay saw it.
 pub const ElementInfo = struct {
     kind: window_mod.NodeKind,
     id: ElementId,
@@ -155,18 +128,11 @@ pub const ElementInfo = struct {
 
 pub const Debugger = struct {
     mode: Mode,
-    /// `.root` when nothing is selected.
     selected: ElementId,
-    /// The selection at the last overlay, or null when it did not render.
     info: ?ElementInfo,
-    // Main-thread stage times of the last build.
     build_ns: u64,
     layout_ns: u64,
     emit_ns: u64,
-    // Render-side stage times of the last presented frame. Only the render
-    // side writes them, while the frame is in flight; the main thread reads
-    // them once `frame_in_flight` is clear, ordered by its release and
-    // acquire exactly as the frame's contents are.
     pack_ns: u64,
     draw_ns: u64,
     history_ns: [history_count]u64,
@@ -219,8 +185,6 @@ pub fn isToggle(key: *const input.KeyEvent) bool {
     return key.modifiers.cmd or key.modifiers.ctrl;
 }
 
-/// Cmd/Ctrl+Shift+I cycles off → inspector → profiler → off. Returns
-/// whether it consumed the key, before focus and keymap see it.
 pub fn routeKey(window: *Window, event: *const input.InputEvent) bool {
     if (comptime !enabled) return false;
     if (event.* != .key_down) return false;
@@ -239,8 +203,6 @@ pub fn routeKey(window: *Window, event: *const input.InputEvent) bool {
     return true;
 }
 
-/// A press selects the element under it, or clears a repeated selection.
-/// The router still routes the press.
 pub fn press(window: *Window, x: f32, y: f32) void {
     if (comptime !enabled) return;
     const state = &window.debugger;
@@ -252,14 +214,12 @@ pub fn press(window: *Window, x: f32, y: f32) void {
     window.render_requested = true;
 }
 
-/// The hover outline follows the pointer.
 pub fn pointerMoved(window: *Window) void {
     if (comptime !enabled) return;
     if (window.debugger.mode == .disabled) return;
     window.render_requested = true;
 }
 
-/// A monotonic stamp for stage timing; 0 in release builds.
 pub fn stamp(window: *const Window) u64 {
     if (comptime !enabled) return 0;
     const ns = std.Io.Timestamp.now(window.resources.io, .awake).toNanoseconds();
@@ -267,7 +227,6 @@ pub fn stamp(window: *const Window) u64 {
     return @intCast(ns);
 }
 
-/// Shaping statistics count from the start of each build.
 pub fn beginBuild() void {
     if (comptime !enabled) return;
     render_stats.beginFrame();
@@ -275,7 +234,6 @@ pub fn beginBuild() void {
 
 pub const BuildStamps = struct { build: u64, layout: u64, emit: u64 };
 
-/// After emit: record the build's stage times and append the overlay.
 pub fn finishBuild(window: *Window, stamps: BuildStamps) void {
     if (comptime !enabled) return;
     window.assertPhase(.emit);
@@ -302,7 +260,6 @@ pub fn finishBuild(window: *Window, stamps: BuildStamps) void {
     if (state.mode == .profiler) window.render_requested = true;
 }
 
-/// On the render side, after draw: the presented frame's pack and draw.
 pub fn notePresent(window: *Window, pack_start_ns: u64, draw_start_ns: u64) void {
     if (comptime !enabled) return;
     assert(pack_start_ns <= draw_start_ns);
@@ -339,7 +296,6 @@ fn recordFrame(window: *Window, state: *Debugger) void {
     assert(state.history_len <= Debugger.history_count);
 }
 
-/// The app's quads and glyph sprites, counted before the overlay is added.
 fn countPaint(frame: *const records.Frame, state: *Debugger) void {
     assert(frame.paint_count <= frame.paint.len);
     var quads: u32 = 0;
@@ -411,7 +367,6 @@ fn elementInfo(window: *const Window, index: u32) ElementInfo {
     };
 }
 
-/// Wide enough for a 64-bit id at the app's font size.
 const panel_width: f32 = 320;
 const panel_padding: f32 = 12;
 const panel_margin: f32 = 16;
@@ -419,10 +374,7 @@ const profiler_width: f32 = 320;
 const profiler_height: f32 = 296;
 const graph_height: f32 = 80;
 const outline_width: f32 = 2;
-/// Panel text size, whatever the app's font size: a 64-bit id fits the
-/// value column at 14 px.
 const text_size: u16 = 14;
-/// 30 FPS fills the graph; the line marks 60 FPS.
 const graph_frame_ms_max: f32 = 33.33;
 const graph_target_ms: f32 = 16.67;
 
@@ -472,16 +424,12 @@ fn paintOverlay(window: *Window, state: *Debugger) void {
     }
 }
 
-/// Ancestors of the hovered element faintly, the hovered element, then the
-/// selection on top.
 fn paintOutlines(window: *Window, painter: *Painter, hovered: ?u32, selected: ?u32) void {
     const elements = window.layout.elements.items();
     if (hovered) |hovered_index| {
         var index = window.nodes[hovered_index].parent;
         var steps: u32 = 0;
         while (index != records.index_none and index != 0) : (steps += 1) {
-            // The root is at depth 0, so a node has fewer non-root
-            // ancestors than the deepest depth (`outline_count_max`).
             assert(steps < window.limits.build.box_depth_max);
             if (index != selected) {
                 outline(painter, boundsOf(elements[index]), color_ancestor, color_ancestor_border);
@@ -517,7 +465,6 @@ fn panel(painter: *Painter, bounds: Rect) void {
     });
 }
 
-/// Panel text, one line per call.
 const Text = struct {
     painter: *Painter,
     size: u16,
@@ -528,16 +475,12 @@ const Text = struct {
     }
 };
 
-/// Formatted inspector values, each in a buffer sized for its widest form.
 const InspectorText = struct {
     id: [18]u8,
-    /// Four values clamped to ±1e9, whole pixels: 4 × 11 bytes and separators.
     bounds: [48]u8,
-    /// "percent (" with two clamped values: at most 32 bytes.
     width: [40]u8,
     height: [40]u8,
     children: [10]u8,
-    /// The basename, cut to leave room for ':' and a u32.
     source: [64]u8,
 };
 
@@ -571,13 +514,12 @@ fn paintInspector(text: Text, window_width: f32, info: ?ElementInfo) void {
 
 const Row = struct { label: []const u8, value: []const u8, color: Color };
 
-/// The eight rows under the title.
 fn inspectorRows(info: *const ElementInfo, scratch: *InspectorText) [8]Row {
     const id: u64 = @backingInt(info.id);
     const id_text = std.fmt.bufPrint(&scratch.id, "0x{X:0>16}", .{id}) catch
-        unreachable; // Exactly 18 bytes.
+        unreachable;
     const children = std.fmt.bufPrint(&scratch.children, "{d}", .{info.child_count}) catch
-        unreachable; // A u32 has at most 10 digits.
+        unreachable;
     const source = sourceText(&scratch.source, info.source);
     const labels = inspector_labels;
     return .{
@@ -617,7 +559,6 @@ fn directionName(direction: layout_types.LayoutDirection) []const u8 {
     };
 }
 
-/// Values past ±1e9 are clamped so each formats in at most 11 bytes.
 const value_limit: f32 = 1e9;
 
 fn boundsText(buffer: *[48]u8, bounds: Rect) []const u8 {
@@ -626,7 +567,7 @@ fn boundsText(buffer: *[48]u8, bounds: Rect) []const u8 {
         std.math.clamp(bounds.y, -value_limit, value_limit),
         @min(bounds.width, value_limit),
         @min(bounds.height, value_limit),
-    }) catch unreachable; // 4 × 11 bytes and 3 separators.
+    }) catch unreachable;
 }
 
 fn sizingText(buffer: *[40]u8, axis: layout_types.SizingAxis) []const u8 {
@@ -641,7 +582,6 @@ fn sizingText(buffer: *[40]u8, axis: layout_types.SizingAxis) []const u8 {
     const shown_max = @min(max, value_limit);
     const has_min = min > 0;
     const has_max = max < std.math.floatMax(f32);
-    // At most "percent (" + 10 + "-" + 10 + ")": 31 bytes.
     if (has_min and has_max) {
         return std.fmt.bufPrint(buffer, "{s} ({d:.0}-{d:.0})", .{ kind, min, shown_max }) catch
             unreachable;
@@ -661,7 +601,7 @@ fn sourceText(buffer: *[64]u8, source: ?Source) []const u8 {
     const name = value.basename();
     const name_len = @min(name.len, buffer.len - 11);
     return std.fmt.bufPrint(buffer, "{s}:{d}", .{ name[0..name_len], value.line }) catch
-        unreachable; // The name leaves 11 bytes for ':' and a u32.
+        unreachable;
 }
 
 fn msText(buffer: *[16]u8, ns: u64) []const u8 {
@@ -670,7 +610,7 @@ fn msText(buffer: *[16]u8, ns: u64) []const u8 {
 }
 
 fn countText(buffer: *[16]u8, count: u32) []const u8 {
-    return std.fmt.bufPrint(buffer, "{d}", .{count}) catch unreachable; // 10 digits.
+    return std.fmt.bufPrint(buffer, "{d}", .{count}) catch unreachable;
 }
 
 fn fpsColor(fps: f32) Color {
@@ -700,7 +640,7 @@ fn paintProfiler(text: Text, window_width: f32, state: *const Debugger) void {
     const top = y + panel_padding;
     var buffer: [16]u8 = undefined;
     const fps = std.fmt.bufPrint(&buffer, "{d:.1}", .{@min(state.fps, 1e6)}) catch
-        unreachable; // At most 9 bytes.
+        unreachable;
     text.line(fps, left, top, fpsColor(state.fps));
     text.line(" FPS", left + 50, top, text_secondary);
     const frame_ns = state.build_ns + state.layout_ns + state.emit_ns + state.pack_ns +
@@ -734,7 +674,6 @@ fn paintCounts(text: Text, left: f32, y: f32, state: *const Debugger) void {
     text.line(countText(&buffer, state.glyph_count), left + 206, y, text_value);
 }
 
-/// Shape misses, cache hits, and shaping time, which dominate text cost.
 fn paintShaping(text: Text, left: f32, y: f32, state: *const Debugger) void {
     var buffer: [16]u8 = undefined;
     const shape_ms = @as(f32, @floatFromInt(state.shape_ns)) / std.time.ns_per_ms;
@@ -749,7 +688,6 @@ fn paintShaping(text: Text, left: f32, y: f32, state: *const Debugger) void {
     text.line("ms", left + 230, y, text_secondary);
 }
 
-/// The last 60 frame times, oldest on the left, against the 60 FPS line.
 fn paintGraph(painter: *Painter, left: f32, top: f32, state: *const Debugger) void {
     const width = profiler_width - panel_padding * 2;
     painter.fill(.{ .x = left, .y = top, .width = width, .height = graph_height }, color_graph);
@@ -776,22 +714,16 @@ const profiler_stage_labels = [6][]const u8{
     "Frame:", "Build:", "Layout:", "Emit:", "Pack:", "Draw:",
 };
 
-/// Outlines: the hovered element's non-root ancestors, it, and the selection.
 const outline_count_max: u32 = window_mod.box_depth_ceiling + 2;
-/// The panel, the graph's background and target line, and one bar per frame.
 const profiler_quad_count_max: u32 = 3 + Debugger.history_count;
 const inspector_quad_count_max: u32 = 1;
 
-/// A line places at most one glyph sprite per byte (the text is ASCII but
-/// for a file name, whose multi-byte characters place fewer glyphs).
 fn byteCount(lines: []const []const u8) u32 {
     var count: u32 = 0;
     for (lines) |line| count += @intCast(line.len);
     return count;
 }
 
-/// The title, the labels, and each value at its buffer's size or its longest
-/// name. Wider than the "No element selected" panel.
 fn inspectorGlyphCountMax() u32 {
     var kind_len_max: u32 = 0;
     for (std.enums.values(window_mod.NodeKind)) |kind| {
@@ -802,13 +734,11 @@ fn inspectorGlyphCountMax() u32 {
         const len: u32 = @intCast(directionName(direction).len);
         direction_len_max = @max(direction_len_max, len);
     }
-    comptime assert(std.meta.hasUniqueRepresentation(InspectorText)); // All bytes, no padding.
+    comptime assert(std.meta.hasUniqueRepresentation(InspectorText));
     return inspector_title.len + byteCount(&inspector_labels) + @sizeOf(InspectorText) +
         kind_len_max + direction_len_max;
 }
 
-/// The FPS line, six stage lines, the counts, and the shaping line, with every
-/// number at its widest: 9 bytes for a clamped float, 10 for a u32.
 fn profilerGlyphCountMax() u32 {
     const float_len_max = 9;
     const count_len_max = 10;

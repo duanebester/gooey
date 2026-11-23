@@ -47,7 +47,6 @@ pub const LayoutCapacity = engine.LayoutCapacity;
 pub const MeasureTextFn = engine.MeasureTextFn;
 pub const OpenOptions = engine.OpenOptions;
 
-// refAllDecls walks the `pub const`s above, reaching the per-pass test bodies.
 test {
     std.testing.refAllDecls(@This());
     _ = @import("engine_tests.zig");

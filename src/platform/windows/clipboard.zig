@@ -1,28 +1,3 @@
-//! Windows clipboard: text through `CF_UNICODETEXT`.
-//!
-//! ## Line endings
-//!
-//! Windows text uses CR LF. Copy expands every LF not already preceded by CR
-//! into CR LF, and paste collapses CR LF into LF, so other applications see
-//! the line breaks a text area holds and a paste never inserts CR into a
-//! buffer. A lone CR passes through unchanged in both directions.
-//!
-//! ## Ownership
-//!
-//! `SetClipboardData` needs an owner window: with a null owner,
-//! `EmptyClipboard` leaves the clipboard ownerless and `SetClipboardData`
-//! fails. `WindowsPlatform.initInPlace` calls `init`, which creates a
-//! message-only owner, and `WindowsPlatform.deinit` calls `deinit`, which
-//! destroys it, so copying does not depend on any application window staying
-//! open.
-//!
-//! The system clipboard takes ownership of a movable global block the copying
-//! process allocates and hands over; Win32 has no way to publish storage
-//! reserved at init. Copy therefore makes one `GlobalAlloc` of at most
-//! `copy_block_bytes_max` per call, owned by the system once
-//! `SetClipboardData` succeeds and freed here on every failure path. Paste
-//! decodes into the caller's buffer and allocates nothing.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const win32 = @import("win32.zig");
@@ -30,16 +5,12 @@ const limits = @import("../../core/limits.zig");
 
 const assert = std.debug.assert;
 
-/// Largest text the core can copy, in UTF-8 bytes: its clipboard size at the
-/// text ceiling. The app's own size is at most this.
 pub const text_bytes_max: u32 = @max(
     limits.TextLimits.ceiling.input.bytes_max,
     limits.TextLimits.ceiling.area.bytes_max,
     limits.TextLimits.ceiling.editor.bytes_max,
 );
 
-/// Copy expands a lone LF to two units; every other UTF-8 sequence becomes no
-/// more UTF-16 units than it has bytes (1→1, 2→1, 3→1, 4→2).
 const copy_unit_count_max: u32 = 2 * text_bytes_max;
 
 const copy_block_bytes_max: u32 = (copy_unit_count_max + 1) * @sizeOf(u16);
@@ -47,20 +18,14 @@ const copy_block_bytes_max: u32 = (copy_unit_count_max + 1) * @sizeOf(u16);
 const open_attempt_count_max: u32 = 5;
 const open_retry_delay_ms: u32 = 5;
 
-/// UTF-16 name of the system class used for the owner window. Its window
-/// procedure ignores clipboard messages, which is all an owner of immediately
-/// rendered data receives.
 const owner_class_name = std.unicode.utf8ToUtf16LeStringLiteral("STATIC");
 
-/// The message-only window that owns what Gooey copies, or null outside
-/// `init`..`deinit`.
 var owner_hwnd: ?win32.HWND = null;
 
 comptime {
-    // `CF_UNICODETEXT` is UTF-16LE, read and written here as native `u16`.
     assert(builtin.cpu.arch.endian() == .little);
     assert(copy_block_bytes_max == 4 * text_bytes_max + 2);
-    assert(text_bytes_max == 16 * 1024 * 1024); // The editor ceiling.
+    assert(text_bytes_max == 16 * 1024 * 1024);
 }
 
 pub fn init(hinstance: win32.HINSTANCE) !void {
@@ -89,10 +54,8 @@ pub fn init(hinstance: win32.HINSTANCE) !void {
     assert(owner_hwnd != null);
 }
 
-/// Destroy the owner window. Text already copied stays on the clipboard: the
-/// system owns the data block, and only the owner becomes null.
 pub fn deinit() void {
-    const hwnd = owner_hwnd orelse unreachable; // `deinit` without `init`.
+    const hwnd = owner_hwnd orelse unreachable;
     if (win32.DestroyWindow(hwnd) == win32.FALSE) {
         std.log.warn("windows: clipboard owner destruction failed (error {d})", .{
             win32.GetLastError(),
@@ -102,10 +65,6 @@ pub fn deinit() void {
     assert(owner_hwnd == null);
 }
 
-/// Read the clipboard text into `out`, cut at a codepoint boundary, and
-/// return its length (0 for none or a busy clipboard). Claims no storage
-/// (core hosts). Every output byte consumes at most two units, so at most
-/// `2 * out.len + 1` units are scanned, the extra one completing a CR LF.
 pub fn readText(out: []u8) u32 {
     assert(out.len > 0);
     assert(owner_hwnd != null);
@@ -119,7 +78,7 @@ pub fn readText(out: []u8) u32 {
         });
         return 0;
     };
-    defer _ = win32.GlobalUnlock(block); // FALSE is the expected final unlock.
+    defer _ = win32.GlobalUnlock(block);
 
     const unit_capacity = win32.GlobalSize(block) / @sizeOf(u16);
     const scan_count = @min(unit_capacity, 2 * out.len + 1);
@@ -130,22 +89,14 @@ pub fn readText(out: []u8) u32 {
     return written;
 }
 
-/// Replace the clipboard text, which fits the core's clipboard. Returns false,
-/// leaving the clipboard as it was, when the text is not UTF-8, the copy
-/// block cannot be allocated, or the clipboard is busy. Returns false with the
-/// clipboard left empty when `SetClipboardData` fails after `EmptyClipboard`;
-/// see `clipboardPublish`.
 pub fn setText(text: []const u8) bool {
-    const owner = owner_hwnd orelse unreachable; // Copy before `init`.
-    // The core never copies more than its clipboard (`ResourceLimits.text`).
+    const owner = owner_hwnd orelse unreachable;
     assert(text.len <= text_bytes_max);
     if (!std.unicode.utf8ValidateSlice(text)) {
         std.log.warn("windows: copy of invalid UTF-8 refused", .{});
         return false;
     }
 
-    // Fill the block before opening the clipboard, so other processes are
-    // locked out only for the hand-over.
     const block = copyBlockCreate(text) orelse return false;
     if (clipboardPublish(owner, block)) return true;
 
@@ -153,9 +104,6 @@ pub fn setText(text: []const u8) bool {
     return false;
 }
 
-/// Allocate a movable block and encode `text` into it as terminated UTF-16.
-/// The block is zero-initialized because `GlobalSize` may round it up and
-/// readers may scan to its end.
 fn copyBlockCreate(text: []const u8) ?win32.HGLOBAL {
     assert(text.len <= text_bytes_max);
     const unit_count = copyUnitCount(text);
@@ -182,14 +130,11 @@ fn copyBlockCreate(text: []const u8) ?win32.HGLOBAL {
     const units: [*]u16 = @ptrCast(@alignCast(pointer));
     const written = copyEncode(text, units[0..unit_count]);
     assert(written == unit_count);
-    assert(units[unit_count] == 0); // Zero-initialized terminator.
-    _ = win32.GlobalUnlock(block); // FALSE is the expected final unlock; see `readText`.
+    assert(units[unit_count] == 0);
+    _ = win32.GlobalUnlock(block);
     return block;
 }
 
-/// Hand `block` to the system clipboard. On success the system owns it; on
-/// failure the caller still does. A failure after `EmptyClipboard` leaves the
-/// clipboard empty: the previous contents are gone and cannot be restored.
 fn clipboardPublish(owner: win32.HWND, block: win32.HGLOBAL) bool {
     if (!clipboardOpenAs(owner)) return false;
     defer clipboardClose();
@@ -206,12 +151,10 @@ fn clipboardPublish(owner: win32.HWND, block: win32.HGLOBAL) bool {
 }
 
 fn clipboardOpen() bool {
-    const owner = owner_hwnd orelse unreachable; // Checked by both entry points.
+    const owner = owner_hwnd orelse unreachable;
     return clipboardOpenAs(owner);
 }
 
-/// Open the clipboard, retrying a bounded number of times while another
-/// process holds it.
 fn clipboardOpenAs(owner: win32.HWND) bool {
     var attempt: u32 = 0;
     while (attempt < open_attempt_count_max) : (attempt += 1) {
@@ -232,7 +175,6 @@ fn clipboardClose() void {
     }
 }
 
-/// `GlobalFree` returns null on success and the handle on failure.
 fn globalFree(block: win32.HGLOBAL) void {
     if (win32.GlobalFree(block) != null) {
         std.log.warn("windows: clipboard GlobalFree failed (error {d})", .{
@@ -241,7 +183,6 @@ fn globalFree(block: win32.HGLOBAL) void {
     }
 }
 
-/// UTF-16 units `copyEncode` writes for `text`, excluding the terminator.
 fn copyUnitCount(text: []const u8) u32 {
     assert(text.len <= text_bytes_max);
     assert(std.unicode.utf8ValidateSlice(text));
@@ -261,8 +202,6 @@ fn copyUnitCount(text: []const u8) u32 {
     return count;
 }
 
-/// Encode `text` into `target`, which holds exactly `copyUnitCount(text)`
-/// units. Returns the units written.
 fn copyEncode(text: []const u8, target: []u16) u32 {
     assert(text.len <= text_bytes_max);
     assert(target.len <= copy_unit_count_max);
@@ -300,15 +239,12 @@ fn utf16Length(code_point: u21) u32 {
     return if (code_point < 0x1_0000) 1 else 2;
 }
 
-/// Decode the longest prefix of `units` whose UTF-8 fits in `target`, so a
-/// cut never splits a codepoint. Returns the bytes written.
 fn pasteDecodePrefix(units: []const u16, target: []u8) u32 {
     var count: u32 = 0;
     var decoder: PasteDecoder = .{ .units = units };
     while (decoder.next()) |code_point| {
         assert(decoder.index <= units.len);
         if (utf8Length(code_point) > target.len - count) break;
-        // The decoder yields only scalar values: surrogates become U+FFFD.
         const length = std.unicode.utf8Encode(code_point, target[count..]) catch unreachable;
         count += length;
     }
@@ -324,9 +260,6 @@ fn utf8Length(code_point: u21) u32 {
     return 4;
 }
 
-/// Walks clipboard UTF-16 as Unicode scalar values. CR LF becomes LF and an
-/// unpaired surrogate becomes U+FFFD, because other applications may place
-/// ill-formed UTF-16 on the clipboard and a paste must still yield UTF-8.
 const PasteDecoder = struct {
     units: []const u16,
     index: usize = 0,
@@ -366,15 +299,12 @@ fn isLowSurrogate(unit: u16) bool {
 
 const testing = std.testing;
 
-/// Encode `text` the way `setText` does, into a test-owned buffer.
 fn testCopy(buffer: []u16, text: []const u8) []const u16 {
     const unit_count = copyUnitCount(text);
     const written = copyEncode(text, buffer[0..unit_count]);
     return buffer[0..written];
 }
 
-/// Decode `units` the way `readText` does, into a test-owned buffer large
-/// enough for all of them.
 fn testPaste(buffer: []u8, units: []const u16) []const u8 {
     assert(buffer.len >= 3 * units.len);
     const written = pasteDecodePrefix(units, buffer);
@@ -407,8 +337,6 @@ test "paste collapses CR LF, keeps lone CR, and replaces unpaired surrogates" {
     const pair = std.unicode.utf8ToUtf16LeStringLiteral("\u{1F389}");
     try testing.expectEqualStrings("\u{1F389}", testPaste(&buffer, pair));
 
-    // A lone high surrogate at the end, a lone low surrogate, and a high
-    // surrogate followed by a non-surrogate each become one U+FFFD.
     const ill_formed = [_]u16{ 0xDC00, 'x', 0xD800, 'y', 0xD800 };
     try testing.expectEqualStrings(
         "\u{FFFD}x\u{FFFD}y\u{FFFD}",
@@ -433,8 +361,6 @@ test "a paste into a short buffer keeps whole codepoints and collapses CR LF" {
     try testing.expectEqualStrings("a\nb", buffer[0..3]);
 }
 
-/// Owner window for the system clipboard tests. These tests replace the
-/// developer's clipboard contents, as the macOS clipboard test does.
 fn testOwnerInit() !void {
     const hinstance = win32.GetModuleHandleW(null) orelse return error.NoModuleHandle;
     try init(hinstance);
@@ -463,7 +389,7 @@ test "system clipboard copies text_bytes_max whole and keeps it on a refused cop
     @memset(text, '\n');
 
     try testing.expect(setText(text));
-    try testing.expect(!setText("\xFF")); // Invalid UTF-8.
+    try testing.expect(!setText("\xFF"));
 
     const out = try testing.allocator.alloc(u8, text_bytes_max + 1);
     defer testing.allocator.free(out);

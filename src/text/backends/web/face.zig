@@ -57,25 +57,15 @@ extern "env" fn rasterizeGlyphSubpixel(
 ) void;
 
 pub const WebFontFace = struct {
-    /// Font spec stored inline (no allocation needed): `"<style> <weight>
-    /// <family>"`, such as `"italic 700 Inter"`. The JS `getFont` inserts the
-    /// pixel size between weight and family, as the CSS `font` shorthand
-    /// requires. Style and weight never contain spaces, so the split is exact.
     font_name_buf: [128]u8,
     font_name_len: u8,
     metrics: Metrics,
 
-    /// Direct-mapped cache for codepoints 0-255 (ASCII + Latin-1)
     advance_cache: [256]f32,
     advance_cache_valid: [256]u8,
 
     const Self = @This();
 
-    /// Load one variant of a font by name (CSS font-family).
-    ///
-    /// Fallback policy: the browser matches the CSS weight and style. When the
-    /// family has no such face, the browser synthesizes bold and oblique (its
-    /// default `font-synthesis`), which canvas text cannot opt out of.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0);
@@ -125,7 +115,6 @@ pub const WebFontFace = struct {
         return self;
     }
 
-    /// Load one variant of a system font, with the same policy as `init`.
     pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         const font_name = switch (style) {
             .monospace => "monospace",
@@ -148,7 +137,6 @@ pub const WebFontFace = struct {
         return self.font_name_buf[0..self.font_name_len];
     }
 
-    /// On web the glyph id is the codepoint.
     pub fn glyphIndex(_: *const Self, codepoint: u21) u16 {
         return @truncate(codepoint);
     }
@@ -241,7 +229,6 @@ pub const WebFontFace = struct {
             &advance,
         );
 
-        // advance from JS is at scaled size (font_size * scale), convert to logical units
         return .{
             .width = width,
             .height = height,

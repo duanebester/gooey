@@ -1,14 +1,3 @@
-//! One Win32 top-level window rendered with the shared renderer.
-//!
-//! The process is per-monitor DPI aware (v2), so Windows reports the client
-//! area in device pixels. `size` is that area in logical pixels, divided by
-//! `scale_factor` (the monitor's DPI over 96). The host's render thread sizes
-//! the swapchain to each frame's viewport, fitted to `ResourceLimits.window`.
-//!
-//! `init` allocates the window and its renderer storage, sized from the app's
-//! `ResourceLimits`, before the event loop starts; nothing is allocated
-//! afterwards.
-
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
 const geometry = @import("../../geometry/geometry.zig");
@@ -32,10 +21,8 @@ const Allocator = std.mem.Allocator;
 const WindowId = interface_mod.WindowId;
 const WindowOptions = interface_mod.WindowOptions;
 
-/// NUL-terminated UTF-16 title storage; see `Window.title_buffer`.
 const TitleBuffer = [Window.title_bytes_max + 1]u16;
 
-/// Caret rectangle the IME is placed against before a text widget reports one.
 const ime_cursor_rect_initial = geometry.RectF{
     .origin = .{ .x = 0, .y = 0 },
     .size = .{ .width = 1, .height = 20 },
@@ -44,39 +31,21 @@ const ime_cursor_rect_initial = geometry.RectF{
 const window_style: u32 = win32.WS_OVERLAPPEDWINDOW;
 const window_style_extended: u32 = win32.WS_EX_APPWINDOW;
 
-/// `SetTimer` id of the loop turns run while a move or resize holds the
-/// thread in `DefWindowProcW`'s modal loop; see `handleEnterSizeMove`.
 const modal_turn_timer_id: usize = 1;
-/// Period of those turns. Windows rounds a timer up to the system tick
-/// (15.6 ms by default), so this asks for one turn per tick.
 const modal_turn_period_ms: u32 = 10;
 
-/// The most events one dispatched message pushes into the core's queue: an
-/// IME composition update reports its committed text, then its new preedit
-/// (`handleImeComposition`); every other input message translates to at
-/// most `windows_input.message_event_count_max`. The core host dispatches a
-/// message only while the queue has this much room.
 pub const input_burst_count_max: u32 = 2;
 
 comptime {
     assert(input_burst_count_max >= windows_input.message_event_count_max);
 }
 
-/// How the core host drives this window, as on macOS and Linux: the window
-/// pushes input into the core's queue and asks the host for a tick. The
-/// window never draws, and its renderer belongs to the host's render thread.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
     context: *anyopaque,
-    /// Ask the host for a main-thread tick. Called on this thread after every
-    /// push and whenever the client area or the minimized state changes.
     schedule_tick: *const fn (context: *anyopaque) void,
-    /// One host loop turn from inside a modal move or resize loop, which
-    /// holds the thread in `DefWindowProcW` below the host's own loop.
     modal_turn: *const fn (context: *anyopaque) void,
-    /// A UI Automation client asked for the root provider for the first
-    /// time: the host polls for a screen reader at its next rendered frame.
     screen_reader_requested: *const fn (context: *anyopaque) void,
 };
 
@@ -91,31 +60,20 @@ pub const Window = struct {
     window_id: WindowId = .invalid,
     hwnd: ?win32.HWND = null,
 
-    /// Logical size: the client area over `scale_factor`.
     size: geometry.Size(f64),
-    /// Device pixels per logical pixel.
     scale_factor: f64,
-    /// The client area in device pixels, as `WM_SIZE` last reported it.
     client_width_px: u32 = 0,
     client_height_px: u32 = 0,
     minimized: bool = false,
     min_size: ?geometry.Size(f64),
     max_size: ?geometry.Size(f64),
-    /// `ResourceLimits.window`. A Win32 swapchain's extent is the client
-    /// area, whatever extent the renderer asks for, so `WM_GETMINMAXINFO`
-    /// caps the client area at this budget instead.
     window_limits: limits_mod.WindowLimits,
-    /// Set between `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE` while the modal
-    /// turn timer runs.
     modal_turn_active: bool = false,
 
     renderer: Renderer,
     cursor_shape: interface_mod.CursorShape = .default,
     closed: bool = false,
 
-    /// `CreateWindowExW` takes a NUL-terminated UTF-16 string. UTF-8 never
-    /// needs more UTF-16 units than bytes, so the payload fits. Always holds
-    /// a terminator once `initInPlace` has run.
     title_buffer: TitleBuffer = undefined,
 
     mouse_x: f64 = 0,
@@ -123,8 +81,6 @@ pub const Window = struct {
     mouse_inside: bool = false,
     translator: windows_input.Translator,
 
-    // IME state; see `ime.zig`. `WM_IME_COMPOSITION` reads into `ime_units`
-    // and encodes into the marked (preedit) and inserted (committed) buffers.
     ime_units: [ime.units_max]u16 = undefined,
     marked_text_buffer: [ime_bytes_max]u8 = undefined,
     marked_text_len: usize = 0,
@@ -132,16 +88,12 @@ pub const Window = struct {
     inserted_text_len: usize = 0,
     ime_cursor_rect: geometry.RectF = ime_cursor_rect_initial,
 
-    /// The accessibility bridge's root provider, published by
-    /// `accessibility/windows_bridge.zig` and served on `WM_GETOBJECT`.
     uia_host: uia.Host = .{},
 
     on_close: ?CloseCallback = null,
     user_data: ?*anyopaque = null,
-    /// Set once the core host binds the window; see `CoreBinding`.
     core: ?CoreBinding = null,
 
-    // Written only by the legacy calls below.
     dark_appearance: bool = false,
     needs_redraw: bool = false,
     render_deadline_ms: ?i64 = null,
@@ -169,7 +121,6 @@ pub const Window = struct {
         errdefer allocator.destroy(self);
 
         self.initInPlace(allocator, plat, options);
-        // A rejected title leaves the empty one `initInPlace` established.
         if (!self.storeTitle(options.title)) {
             std.log.err("windows: window title is not valid UTF-8; opening untitled", .{});
         }
@@ -185,8 +136,6 @@ pub const Window = struct {
 
         self.adoptWindowDpi(options);
         self.readClientSize();
-        // Vulkan borrows the instance and window to create its surface;
-        // Direct3D 11 builds its swapchain on the window handle alone.
         const native = switch (renderer_choice.selected) {
             .vulkan => vk_renderer.NativeSurface{
                 .hinstance = plat.hinstance,
@@ -206,9 +155,6 @@ pub const Window = struct {
         }, &render_limits);
         assert(rendererSwapchainUsable(&self.renderer));
 
-        // Shown only once the renderer exists. The host's first frame sizes
-        // the swapchain to the client area this leaves, whatever `WM_SIZE`
-        // showing sends.
         _ = win32.ShowWindow(self.hwnd.?, win32.SW_SHOW);
         _ = win32.SetForegroundWindow(self.hwnd.?);
         plat.setActiveWindowId(self.window_id);
@@ -218,16 +164,12 @@ pub const Window = struct {
         return self;
     }
 
-    /// Establish every field before the window can be observed. Assigned field
-    /// by field: one struct literal for the whole window, renderer included,
-    /// may be built in a stack temporary and copied.
     noinline fn initInPlace(
         self: *Self,
         allocator: Allocator,
         plat: *WindowsPlatform,
         options: *const WindowOptions,
     ) void {
-        // A field added to `Window` must be initialized here too.
         comptime assert(@typeInfo(Self).@"struct".field_names.len == 34);
         self.allocator = allocator;
         self.platform = plat;
@@ -244,20 +186,15 @@ pub const Window = struct {
         self.modal_turn_active = false;
         switch (renderer_choice.selected) {
             .vulkan => self.renderer = .{},
-            // Every field is set by `initInPlace` in `init`.
             .dx11 => self.renderer.initialized = false,
         }
         self.cursor_shape = .default;
         self.closed = false;
-        // Empty and terminated, so `CreateWindowExW` reads a valid string even
-        // when `options.title` is rejected. Units past the NUL are never read.
         self.title_buffer[0] = 0;
         self.mouse_x = 0;
         self.mouse_y = 0;
         self.mouse_inside = false;
         self.translator = windows_input.Translator.init(plat.click_settings);
-        // `ime_units` and the two text buffers are scratch, read only below
-        // the lengths set here, so they stay unwritten.
         self.marked_text_len = 0;
         self.inserted_text_len = 0;
         self.ime_cursor_rect = ime_cursor_rect_initial;
@@ -276,10 +213,6 @@ pub const Window = struct {
         assert(self.window_limits.framebuffer_width_max > 0);
     }
 
-    /// Create the `HWND` with an outer size that gives the requested logical
-    /// client size at the system DPI, within the window's limits and the
-    /// primary work area (see `openingOuterSize`). `adoptWindowDpi` corrects
-    /// it when the window opens on a monitor with a different DPI.
     fn createNativeWindow(self: *Self, options: *const WindowOptions) !void {
         assert(self.hwnd == null);
         assert(self.scale_factor > 0);
@@ -293,7 +226,6 @@ pub const Window = struct {
             .y = win32.CW_USEDEFAULT,
         };
 
-        // `WM_NCCREATE` binds the new `HWND` to `self` (see `windowProc`).
         const hwnd = win32.CreateWindowExW(
             window_style_extended,
             windows_platform.class_name,
@@ -314,15 +246,10 @@ pub const Window = struct {
         assert(self.hwnd == hwnd);
     }
 
-    /// Unbind and destroy the `HWND`. Unbinding first means the messages
-    /// `DestroyWindow` sends reach `DefWindowProcW` rather than a window that
-    /// is being torn down.
     fn destroyNativeWindow(self: *Self) void {
-        // The accessibility bridge withdraws its root before the window goes.
         assert(self.uia_host.root == null);
         assert(!self.modal_turn_active);
         const hwnd = self.hwnd orelse return;
-        // `bindWindow` logs a failure; teardown continues regardless.
         _ = bindWindow(hwnd, 0);
         if (win32.DestroyWindow(hwnd) == win32.FALSE) {
             std.log.warn("windows: DestroyWindow failed (error {d})", .{win32.GetLastError()});
@@ -331,9 +258,6 @@ pub const Window = struct {
         assert(self.hwnd == null);
     }
 
-    /// Resize the new window for its monitor's DPI when that differs from the
-    /// system DPI it was sized for, keeping the requested logical size within
-    /// the limits and that monitor's work area.
     fn adoptWindowDpi(self: *Self, options: *const WindowOptions) void {
         const hwnd = self.hwnd.?;
         const scale = scaleFromDpi(win32.GetDpiForWindow(hwnd));
@@ -352,11 +276,6 @@ pub const Window = struct {
         assert(self.scale_factor == scale);
     }
 
-    /// The outer size a new window opens at: the requested logical client
-    /// size within `min_size` and `max_size`, fitted to the work area, and
-    /// never past the budget (`trackLimits`). `WM_GETMINMAXINFO` cannot apply
-    /// these limits at creation, because Windows sends it before
-    /// `WM_NCCREATE` binds the window, so `DefWindowProcW` answers it.
     fn openingOuterSize(
         self: *const Self,
         options: *const WindowOptions,
@@ -382,9 +301,6 @@ pub const Window = struct {
         return outer;
     }
 
-    /// Outer track sizes at `dpi`: `min_size`, and the smaller of `max_size`
-    /// and the client area `ResourceLimits.window` allows. The minimum never
-    /// exceeds the maximum, so a `min_size` beyond the budget yields to it.
     fn trackLimits(self: *const Self, dpi: u32) TrackLimits {
         assert(dpi > 0);
         assert(self.window_limits.framebuffer_height_max > 0);
@@ -409,23 +325,17 @@ pub const Window = struct {
 
     pub fn deinit(self: *Self) void {
         assert(@intFromPtr(self) != 0);
-        // The accessibility bridge withdraws its root before the window goes.
         assert(self.uia_host.root == null);
         if (self.window_id.isValid()) {
             self.platform.unregisterWindow(self.window_id);
             self.window_id = .invalid;
         }
-        // The renderer's surface borrows the `HWND`, so it goes first.
         self.renderer.deinit();
         self.destroyNativeWindow();
         assert(self.hwnd == null);
         self.allocator.destroy(self);
     }
 
-    /// Whether a frame can be shown: the window is open, not minimized, and
-    /// has a client area. A zero-area client is not reported as minimized
-    /// (a restore animation, a shell that collapses the window), and the
-    /// renderer cannot build a swapchain with a zero extent.
     pub fn isPresentable(self: *const Self) bool {
         assert(self.client_width_px <= client_px_max_u32);
         assert(self.client_height_px <= client_px_max_u32);
@@ -433,17 +343,12 @@ pub const Window = struct {
         return self.client_width_px > 0 and self.client_height_px > 0;
     }
 
-    /// Adopt the client size `WM_SIZE` reported. The core host reads the new
-    /// size at its next tick, and its render thread rebuilds the swapchain
-    /// for the frame built at it.
     fn applyClientSize(self: *Self, client: ClientSize) void {
         assert(self.scale_factor > 0);
         assert(client.width_px <= client_px_max_u32);
         assert(client.height_px <= client_px_max_u32);
         self.client_width_px = client.width_px;
         self.client_height_px = client.height_px;
-        // No area: `isPresentable` keeps frames off the stale swapchain, and
-        // `size` keeps the last real size until the client grows again.
         if (client.width_px == 0 or client.height_px == 0) return;
         self.checkClientBudget();
 
@@ -455,10 +360,6 @@ pub const Window = struct {
         if (self.core) |binding| binding.schedule_tick(binding.context);
     }
 
-    /// Report a client area past `ResourceLimits.window`, whose swapchain
-    /// would exceed the budget: the Win32 surface fixes the extent to the
-    /// client area. `trackLimits` keeps every resize within it, so this
-    /// reports a path that bypassed `WM_GETMINMAXINFO`.
     fn checkClientBudget(self: *const Self) void {
         assert(self.client_width_px > 0);
         assert(self.client_height_px > 0);
@@ -487,9 +388,6 @@ pub const Window = struct {
         });
     }
 
-    /// The framebuffer for the client area at the window's scale, fitted to
-    /// the budget as the core host fits every frame's (`applyViewport`). The
-    /// swapchain then takes the surface's exact extent.
     fn rendererViewport(self: *const Self) backend.Viewport {
         assert(self.size.width > 0);
         assert(self.size.height > 0);
@@ -501,9 +399,6 @@ pub const Window = struct {
         );
     }
 
-    /// Translate one input message and deliver the event it produces, at
-    /// most one (`windows_input.message_event_count_max`), a focus loss
-    /// included.
     fn translateAndDeliver(self: *Self, message: *const windows_input.Message) void {
         assert(self.hwnd != null);
         assert(self.scale_factor > 0);
@@ -518,14 +413,9 @@ pub const Window = struct {
         self.applyPointerActions(self.translator.pointerActions(message.id, event));
         if (self.closed) return;
         _ = self.handleInput(event);
-        // A loss leaves nothing held for a second event to report.
         if (message.id == win32.WM_KILLFOCUS) assert(self.translator.buttons_held == 0);
     }
 
-    /// The pointer position `Context` reports for `message`, in logical
-    /// client pixels. Wheel messages carry screen coordinates, converted here
-    /// so the translator stays free of Win32 calls; every other message uses
-    /// the last known position.
     fn messagePointer(
         self: *const Self,
         message: *const windows_input.Message,
@@ -549,16 +439,12 @@ pub const Window = struct {
         return windows_input.logicalFromDevice(point, self.scale_factor);
     }
 
-    /// Make the capture and leave-tracking calls `pointerActions` decided.
     fn applyPointerActions(self: *Self, actions: windows_input.PointerActions) void {
         assert(self.hwnd != null);
         if (actions.capture == .set) assert(!actions.track_leave);
         switch (actions.capture) {
             .none => {},
-            // Returns the previous capture owner, which carries no error.
             .set => _ = win32.SetCapture(self.hwnd.?),
-            // Sends `WM_CAPTURECHANGED`, which translates to nothing: no
-            // button is held by the time capture is released.
             .release => if (win32.ReleaseCapture() == win32.FALSE) {
                 std.log.warn("windows: ReleaseCapture failed (error {d})", .{win32.GetLastError()});
             },
@@ -566,8 +452,6 @@ pub const Window = struct {
         if (actions.track_leave) self.trackPointerLeave();
     }
 
-    /// Route one translated input event to the core. Events before
-    /// `bindCore` (the window is shown first) reach nothing.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
         assert(!self.closed);
         switch (event) {
@@ -588,8 +472,6 @@ pub const Window = struct {
         return pushCoreInput(binding, event);
     }
 
-    /// Queue `event` for the core's next drain. Only a key the keymap claims
-    /// counts as handled.
     fn pushCoreInput(binding: CoreBinding, event: input.InputEvent) bool {
         binding.queue.push(.{ .input = event });
         binding.schedule_tick(binding.context);
@@ -599,8 +481,6 @@ pub const Window = struct {
         };
     }
 
-    /// Bind a core app. Call once, before the host's render thread starts:
-    /// from then on the renderer belongs to that thread.
     pub fn bindCore(self: *Self, binding: CoreBinding) void {
         assert(self.core == null);
         assert(self.renderer.initialized);
@@ -608,10 +488,6 @@ pub const Window = struct {
         assert(self.core != null);
     }
 
-    /// Attach the window's default input context, or detach it so keys reach
-    /// the window without an IME. The core host attaches it only while a text
-    /// field is focused; attaching places the candidate list again, because
-    /// the context it restores has not seen the caret.
     pub fn setImeEnabled(self: *Self, enabled: bool) void {
         assert(self.core != null);
         const hwnd = self.hwnd orelse return;
@@ -623,24 +499,17 @@ pub const Window = struct {
         if (enabled) self.applyImePlacement();
     }
 
-    /// Cancel the IME's composition, if any: the IME clears it and sends a
-    /// `WM_IME_COMPOSITION` cancellation, which the focused field ignores.
     pub fn cancelImeComposition(self: *Self) void {
         assert(self.core != null);
         const hwnd = self.hwnd orelse return;
         const context = ime.ImmGetContext(hwnd) orelse return;
         defer _ = ime.ImmReleaseContext(hwnd, context);
 
-        // FALSE also answers a context with no composition, the usual case,
-        // so it reports nothing to handle.
         _ = ime.ImmNotifyIME(context, ime.NI_COMPOSITIONSTR, ime.CPS_CANCEL, 0);
     }
 
-    /// Ask for one `WM_MOUSELEAVE` when the pointer next leaves the client.
     fn trackPointerLeave(self: *Self) void {
         assert(self.hwnd != null);
-        // Armed only for an arrival, or after a release with the pointer
-        // still reported inside; see `Translator.pointerActions`.
         assert(self.translator.pointer_inside);
         var request = win32.TRACKMOUSEEVENT{
             .cbSize = @sizeOf(win32.TRACKMOUSEEVENT),
@@ -653,8 +522,6 @@ pub const Window = struct {
         }
     }
 
-    /// Store the title as NUL-terminated UTF-16. Returns false, with the
-    /// stored title untouched, when `title` is not valid UTF-8.
     fn storeTitle(self: *Self, title: []const u8) bool {
         assert(title.len <= title_bytes_max);
         assert(titleTerminated(&self.title_buffer));
@@ -663,8 +530,6 @@ pub const Window = struct {
         return stored;
     }
 
-    /// Applied on the next `WM_SETCURSOR`, which Windows sends on every
-    /// pointer move.
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
         if (self.mouse_inside) assert(self.hwnd != null);
         self.cursor_shape = shape;
@@ -672,10 +537,6 @@ pub const Window = struct {
         assert(self.cursor_shape == shape);
     }
 
-    /// Runs the core host's close handler, which decides whether the window
-    /// closes, then records the close and hides the window. The `HWND` lives
-    /// until `deinit`: `close` is reachable from inside this window's own
-    /// input dispatch, where teardown would free state the caller still uses.
     pub fn close(self: *Self) void {
         if (self.closed) return;
         if (self.on_close) |callback| {
@@ -689,12 +550,6 @@ pub const Window = struct {
         assert(self.closed);
     }
 
-    // Calls from the 0.3.1 `context/window.zig`; the core never makes these
-    // calls. They stay only while that file compiles, and go when phase 6
-    // deletes it.
-
-    /// Stored only. Windows applies the system theme to the frame; asking
-    /// for a dark title bar needs `DwmSetWindowAttribute`, a later item.
     pub fn setAppearance(self: *Self, dark: bool) void {
         self.dark_appearance = dark;
         assert(self.dark_appearance == dark);
@@ -711,7 +566,6 @@ pub const Window = struct {
         assert(self.needs_redraw);
     }
 
-    /// Keeps only the earliest deadline.
     pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
         assert(delay_ms <= interface_mod.render_delay_ms_max);
         if (self.closed) return;
@@ -727,17 +581,11 @@ pub const Window = struct {
         assert(self.render_deadline_ms.? <= deadline_ms);
     }
 
-    // IME text on this backend is one `ime.utf8FromUtf16` result: at most
-    // `ime.units_max` (1024) UTF-16 units, each at most three UTF-8 bytes
-    // (a surrogate pair is four bytes for two units), so 3072 bytes, which
-    // is `ime_bytes_max` exactly.
     comptime {
         assert(ime_bytes_max == ime.bytes_max);
         assert(ime_bytes_max >= ime.units_max * 3);
     }
 
-    /// Called every frame while a text widget has focus. The IME is told only
-    /// when the caret moved, and again when a composition starts.
     pub fn setImeCursorRect(self: *Self, x: f32, y: f32, w: f32, h: f32) void {
         assert(w >= 0);
         assert(h >= 0);
@@ -747,12 +595,10 @@ pub const Window = struct {
         self.applyImePlacement();
     }
 
-    /// Place the IME's candidate list against the caret.
     fn applyImePlacement(self: *Self) void {
         assert(self.scale_factor > 0);
         assert(self.ime_cursor_rect.size.width >= 0);
         const hwnd = self.hwnd orelse return;
-        // No context: IME is disabled for this window, so nothing to place.
         const context = ime.ImmGetContext(hwnd) orelse return;
         defer _ = ime.ImmReleaseContext(hwnd, context);
 
@@ -765,8 +611,6 @@ pub const Window = struct {
         }
     }
 
-    /// Hide the IME's composition window, because the text widgets draw the
-    /// composition inline as preedit. The candidate list stays.
     fn handleImeSetContext(self: *Self, message: *const windows_input.Message) win32.LRESULT {
         assert(message.id == win32.WM_IME_SETCONTEXT);
         assert(self.hwnd != null);
@@ -775,9 +619,6 @@ pub const Window = struct {
         return win32.DefWindowProcW(self.hwnd.?, message.id, message.wparam, lparam);
     }
 
-    /// Deliver one composition update: committed text first, then the new
-    /// preedit, the order the Wayland backend uses. Returns null to let
-    /// `DefWindowProcW` deliver a result too long for `ime.units_max`.
     fn handleImeComposition(self: *Self, lparam: win32.LPARAM) ?win32.LRESULT {
         assert(self.hwnd != null);
         const hwnd = self.hwnd.?;
@@ -791,23 +632,16 @@ pub const Window = struct {
 
         if (changes.result) {
             const units = ime.readString(context, ime.GCS_RESULTSTR, &self.ime_units) orelse {
-                // `DefWindowProcW` turns the result into `WM_CHAR`, which
-                // loses nothing. The preedit is cleared first so the
-                // characters do not land inside it; the next update redraws
-                // any new composition.
                 self.clearImeComposition();
                 return null;
             };
             self.commitImeComposition(units);
         }
         if (changes.preedit) {
-            // Unreadable or oversized preedit was logged; the last one stays.
             const units = ime.readString(context, ime.GCS_COMPSTR, &self.ime_units) orelse
                 return 0;
             self.updateImeComposition(units);
         }
-        // Neither string changed: only the cursor, attributes, or clauses
-        // moved, which `CompositionEvent` cannot carry, so the preedit stays.
         return 0;
     }
 
@@ -817,7 +651,6 @@ pub const Window = struct {
             self.clearImeComposition();
             return;
         }
-        // The widgets drop their preedit when committed text arrives.
         self.marked_text_len = 0;
         self.inserted_text_len = ime.utf8FromUtf16(&self.inserted_text_buffer, units);
         assert(self.inserted_text_len > 0);
@@ -839,8 +672,6 @@ pub const Window = struct {
         _ = self.handleInput(.{ .composition = .{ .text = text } });
     }
 
-    /// Remove a shown preedit. Also the `WM_IME_ENDCOMPOSITION` handler: after
-    /// a commit nothing is shown, so only a cancelled composition reports.
     fn clearImeComposition(self: *Self) void {
         if (self.marked_text_len == 0) return;
         assert(self.marked_text_len <= ime_bytes_max);
@@ -864,12 +695,10 @@ pub const Window = struct {
 
     fn handleSize(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) void {
         assert(self.hwnd != null);
-        // `SIZE_RESTORED` (0) through `SIZE_MAXHIDE` (4).
         assert(wparam <= 4);
         const was_minimized = self.minimized;
         self.minimized = wparam == win32.SIZE_MINIMIZED;
         if (self.minimized) {
-            // The core host stops presenting until the window is restored.
             if (self.core) |binding| binding.schedule_tick(binding.context);
             return;
         }
@@ -882,11 +711,6 @@ pub const Window = struct {
         if (self.core) |binding| binding.schedule_tick(binding.context);
     }
 
-    /// Adopt the new monitor's scale and move to the rectangle Windows
-    /// suggests, which keeps the logical size. The scale is set first, so
-    /// the `WM_GETMINMAXINFO` the move sends computes limits for the new DPI.
-    /// The resulting `WM_SIZE` schedules a tick, whose frame the host's render
-    /// thread draws at the new scale.
     fn handleDpiChanged(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) void {
         assert(self.hwnd != null);
         const dpi = win32.loWord(wparam);
@@ -908,14 +732,9 @@ pub const Window = struct {
                 win32.GetLastError(),
             });
         }
-        // A move between monitors of equal pixel size changes only the scale.
         self.readClientSize();
     }
 
-    /// Apply `trackLimits` as outer track sizes. The maximum also caps the
-    /// maximized size, so neither a drag nor a maximize grows the client
-    /// area, and the swapchain extent that equals it, past the budget.
-    /// Limits the system already sets lower are kept.
     fn handleMinMaxInfo(self: *const Self, info: *win32.MINMAXINFO) void {
         assert(self.scale_factor > 0);
         assert(self.hwnd != null);
@@ -929,10 +748,6 @@ pub const Window = struct {
         assert(info.ptMaxSize.y <= limits.max.y);
     }
 
-    /// Answer a UI Automation client's request for the root provider, and
-    /// tell the core host on the first one, so it polls for a screen reader
-    /// at its next frame even when nothing else would draw. Other object
-    /// requests (MSAA) go to `DefWindowProcW`.
     fn handleGetObject(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) ?win32.LRESULT {
         assert(self.hwnd != null);
         const object_id: i32 = @truncate(lparam);
@@ -940,7 +755,6 @@ pub const Window = struct {
         const root = self.uia_host.root orelse return null;
         const first_request = !self.uia_host.client_requested;
         self.uia_host.client_requested = true;
-        // The bridge publishes `root` only after `bindCore`.
         const binding = self.core.?;
         if (first_request) binding.screen_reader_requested(binding.context);
         assert(self.uia_host.client_requested);
@@ -954,9 +768,6 @@ pub const Window = struct {
         assert(self.platform.getActiveWindowId() == self.window_id);
     }
 
-    /// Release what the window holds: keys and buttons go up and a drag
-    /// ends, because their real releases now reach the window that took
-    /// focus.
     fn handleKillFocus(self: *Self, message: *const windows_input.Message) void {
         assert(message.id == win32.WM_KILLFOCUS);
         assert(self.hwnd != null);
@@ -966,11 +777,6 @@ pub const Window = struct {
         assert(self.translator.buttons_held == 0);
     }
 
-    /// A move or resize started: `DefWindowProcW` now runs a modal loop until
-    /// the button is released, and the core host's loop sits blocked in
-    /// `DispatchMessageW` below it. A timer keeps host turns going from
-    /// inside that loop (`handleModalTurnTimer`), so animations, timed
-    /// redraws, and async completions carry on during the drag.
     fn handleEnterSizeMove(self: *Self) void {
         assert(self.hwnd != null);
         assert(!self.modal_turn_active);
@@ -994,8 +800,6 @@ pub const Window = struct {
         assert(!self.modal_turn_active);
     }
 
-    /// One host turn from inside the modal move or resize loop. A closed
-    /// window stops the timer instead.
     fn handleModalTurnTimer(self: *Self) void {
         assert(self.hwnd != null);
         if (!self.modal_turn_active) return;
@@ -1007,8 +811,6 @@ pub const Window = struct {
         binding.modal_turn(binding.context);
     }
 
-    /// Dispatch one message for this window. Returns null to defer to
-    /// `DefWindowProcW`.
     fn handleMessage(self: *Self, message: *const windows_input.Message) ?win32.LRESULT {
         assert(self.hwnd != null);
         assert(message.id != win32.WM_NCCREATE);
@@ -1028,7 +830,7 @@ pub const Window = struct {
                 self.handleModalTurnTimer();
             },
             win32.WM_GETOBJECT => return self.handleGetObject(message.wparam, message.lparam),
-            win32.WM_ERASEBKGND => return 1, // Vulkan covers every pixel.
+            win32.WM_ERASEBKGND => return 1,
             win32.WM_SETCURSOR => {
                 if (win32.loWord(@bitCast(message.lparam)) != win32.HTCLIENT) return null;
                 _ = win32.SetCursor(self.platform.cursor(self.cursor_shape));
@@ -1039,8 +841,6 @@ pub const Window = struct {
         return 0;
     }
 
-    /// Dispatch one pointer, keyboard, or IME message. Returns null to defer
-    /// to `DefWindowProcW`, including for messages that are none of these.
     fn handleInputMessage(self: *Self, message: *const windows_input.Message) ?win32.LRESULT {
         assert(self.hwnd != null);
         assert(self.scale_factor > 0);
@@ -1060,26 +860,17 @@ pub const Window = struct {
             win32.WM_CHAR,
             => self.translateAndDeliver(message),
             win32.WM_CAPTURECHANGED => {
-                // `lParam` is the window gaining capture. This window's own
-                // `SetCapture` for a second button can name itself, which is
-                // no loss; null (its own `ReleaseCapture`) translates to
-                // nothing because no button is held by then.
                 const gaining: usize = @bitCast(message.lparam);
                 if (gaining != @intFromPtr(self.hwnd.?)) self.translateAndDeliver(message);
             },
             win32.WM_IME_SETCONTEXT => return self.handleImeSetContext(message),
-            // Handled, not passed on, so the IME draws no composition window.
             win32.WM_IME_STARTCOMPOSITION => self.applyImePlacement(),
             win32.WM_IME_COMPOSITION => return self.handleImeComposition(message.lparam),
             win32.WM_IME_ENDCOMPOSITION => self.clearImeComposition(),
             win32.WM_SYSKEYDOWN, win32.WM_SYSKEYUP => {
-                // Delivered as keys; only Alt+F4 and Alt+Space also reach the
-                // system, so a lone Alt or F10 never enters menu mode.
                 self.translateAndDeliver(message);
                 if (windows_input.systemKeyUsesDefault(message)) return null;
             },
-            // Consumed, so Alt+letter does not beep; Alt+Space opens the
-            // system menu.
             win32.WM_SYSCHAR => if (windows_input.systemKeyUsesDefault(message)) return null,
             else => return null,
         }
@@ -1087,12 +878,6 @@ pub const Window = struct {
     }
 };
 
-/// The window procedure for every Gooey window.
-///
-/// `WM_NCCREATE` carries the `*Window` passed to `CreateWindowExW`; it is
-/// stored in `GWLP_USERDATA` and recovered for every later message. Messages
-/// sent before it, and after `destroyNativeWindow` unbinds the window, go to
-/// `DefWindowProcW`.
 pub fn windowProc(
     hwnd: win32.HWND,
     message_id: u32,
@@ -1103,8 +888,6 @@ pub fn windowProc(
         const create: *const win32.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lparam)));
         const window: *Window = @ptrCast(@alignCast(create.lpCreateParams.?));
         assert(window.hwnd == null);
-        // An unbound window would route nothing to Gooey; refusing
-        // `WM_NCCREATE` fails `CreateWindowExW`, which `init` reports.
         if (!bindWindow(hwnd, @bitCast(@intFromPtr(window)))) return 0;
         window.hwnd = hwnd;
         window.uia_host.hwnd = hwnd;
@@ -1129,16 +912,10 @@ fn currentModifiers() input.Modifiers {
     };
 }
 
-/// Convert `title` into `target` as NUL-terminated UTF-16. Returns false,
-/// with `target` untouched, when `title` is not valid UTF-8. Validation comes
-/// first because `utf8ToUtf16Le` writes its ASCII prefix before it reports an
-/// error, which would leave a half-replaced title behind.
 fn encodeTitle(target: *TitleBuffer, title: []const u8) bool {
     assert(title.len <= Window.title_bytes_max);
     assert(titleTerminated(target));
     if (!std.unicode.utf8ValidateSlice(title)) return false;
-    // `utf8ValidateSlice` applies the policy `utf8ToUtf16Le` decodes with
-    // (no encoded surrogate halves), so the conversion cannot fail.
     const units = std.unicode.utf8ToUtf16Le(target[0..Window.title_bytes_max], title) catch |err|
         switch (err) {
             error.InvalidUtf8 => unreachable,
@@ -1149,9 +926,6 @@ fn encodeTitle(target: *TitleBuffer, title: []const u8) bool {
 }
 
 comptime {
-    // About 13.1 KiB, the shared renderer 4.3 KiB of it: heap-allocated and
-    // initialized in place, under the 50 KiB WASM stack threshold. Revisit
-    // `initInPlace` if this bound has to grow.
     assert(@sizeOf(Window) <= 16 * 1024);
     assert(@sizeOf(TitleBuffer) == (Window.title_bytes_max + 1) * @sizeOf(u16));
 }
@@ -1160,16 +934,11 @@ fn titleTerminated(buffer: *const TitleBuffer) bool {
     return std.mem.indexOfScalar(u16, buffer, 0) != null;
 }
 
-/// `WindowOptions.min_size` and `max_size` must be positive. Infinity is
-/// accepted, and means no limit for a maximum; NaN is a caller bug.
 fn assertSizeLimit(size: geometry.Size(f64)) void {
     assert(size.width > 0);
     assert(size.height > 0);
 }
 
-/// Whether the shared renderer holds a complete swapchain: a handle and one
-/// framebuffer per image. Its `resize` reports no error, and a failed
-/// rebuild leaves the framebuffers destroyed.
 pub fn rendererSwapchainUsable(renderer: *const Renderer) bool {
     assert(renderer.initialized);
     if (renderer_choice.selected == .dx11) return renderer.swapchainUsable();
@@ -1196,37 +965,25 @@ fn dpiFromScale(scale: f64) u32 {
     return @intFromFloat(@round(scale * @as(f64, @floatFromInt(win32.USER_DEFAULT_SCREEN_DPI))));
 }
 
-/// Largest client extent, in device pixels, a window is sized to. `WM_SIZE`
-/// reports the client size in 16-bit words and mouse messages carry signed
-/// 16-bit client coordinates, so no larger client is usable. It also keeps
-/// `AdjustWindowRectExForDpi`'s frame arithmetic far from `i32` overflow.
 const client_px_max: i32 = std.math.maxInt(i16);
 const client_px_max_u32: u32 = client_px_max;
 
-/// Where a new window opens: the DPI it is sized for and the work area of
-/// the monitor it opens on, null when that could not be read.
 const OpeningPlacement = struct {
     dpi: u32,
     work_area: ?win32.RECT,
 };
 
-/// Outer window sizes `WM_GETMINMAXINFO` enforces; see `Window.trackLimits`.
 const TrackLimits = struct {
     min: ?win32.POINT,
     max: win32.POINT,
 };
 
-/// Device pixels covering `logical` pixels at `scale`, rounded up and
-/// clamped to `[1, client_px_max]`. Infinity clamps to the maximum.
 fn clientPxFromLogical(logical: f64, scale: f64) i32 {
     assert(!std.math.isNan(logical));
     assert(logical > 0);
     assert(std.math.isFinite(scale));
     assert(scale > 0);
     const device_px = @ceil(logical * scale);
-    // Compared as floats first: `@intFromFloat` of an out-of-range value is
-    // illegal behavior. A NaN that slipped past the assertions takes the
-    // minimum.
     if (device_px >= 1) {
         if (device_px <= client_px_max) return @intFromFloat(device_px);
         return client_px_max;
@@ -1234,8 +991,6 @@ fn clientPxFromLogical(logical: f64, scale: f64) i32 {
     return 1;
 }
 
-/// The outer window size whose client area is `size` in logical pixels at
-/// `dpi`, each axis clamped by `clientPxFromLogical`.
 fn outerSize(size: geometry.Size(f64), dpi: u32) win32.POINT {
     assert(size.width > 0);
     assert(size.height > 0);
@@ -1246,8 +1001,6 @@ fn outerSize(size: geometry.Size(f64), dpi: u32) win32.POINT {
     }, dpi);
 }
 
-/// The outer window size whose client area is `client` device pixels at
-/// `dpi`: the client plus the frame `AdjustWindowRectExForDpi` adds.
 fn outerFromClient(client: win32.POINT, dpi: u32) win32.POINT {
     assert(client.x > 0);
     assert(client.x <= client_px_max);
@@ -1272,9 +1025,6 @@ fn outerFromClient(client: win32.POINT, dpi: u32) win32.POINT {
     return outer;
 }
 
-/// Top-left corner that centers `outer` in `work_area`, keeping the title
-/// bar's corner on screen when `outer` is larger. The system places the
-/// window when the work area is unknown.
 fn centeredOrigin(outer: win32.POINT, work_area: ?win32.RECT) win32.POINT {
     assert(outer.x > 0);
     assert(outer.y > 0);
@@ -1285,9 +1035,6 @@ fn centeredOrigin(outer: win32.POINT, work_area: ?win32.RECT) win32.POINT {
     };
 }
 
-/// The work area of the monitor `hwnd` is on, or of the primary monitor when
-/// `hwnd` is null (a window not created yet). Null, logged, when it cannot be
-/// read; callers then skip fitting to it.
 fn workArea(hwnd: ?win32.HWND) ?win32.RECT {
     var area: win32.RECT = undefined;
     if (hwnd) |window| {
@@ -1315,11 +1062,6 @@ fn workArea(hwnd: ?win32.HWND) ?win32.RECT {
     return area;
 }
 
-/// Store `value` in `hwnd`'s `GWLP_USERDATA`: the window's `*Window`, or 0 to
-/// unbind it. `SetWindowLongPtrW` returns the previous value, which is
-/// legitimately 0 on first bind, so failure is read from the thread's last
-/// error, cleared first. Returns whether the value was stored; a failure is
-/// logged.
 fn bindWindow(hwnd: win32.HWND, value: isize) bool {
     win32.SetLastError(0);
     const previous = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, value);
@@ -1372,15 +1114,13 @@ test "title encoding fills the buffer exactly at the byte limit" {
 }
 
 test "invalid title UTF-8 leaves the stored title intact" {
-    // Each rejected title starts with an ASCII run longer than any SIMD
-    // chunk, which `utf8ToUtf16Le` would copy before failing.
     var buffer = try testTitleBuffer("Old title");
     const ascii_run: [70]u8 = @splat('x');
     const rejected = [_][]const u8{
-        &(ascii_run ++ "\xFF".*), // Never valid in UTF-8.
-        &(ascii_run ++ "\xE2\x82".*), // Truncated three-byte sequence.
-        &(ascii_run ++ "\xED\xA0\x80".*), // Encoded surrogate half.
-        &(ascii_run ++ "\xC0\xAF".*), // Overlong encoding.
+        &(ascii_run ++ "\xFF".*),
+        &(ascii_run ++ "\xE2\x82".*),
+        &(ascii_run ++ "\xED\xA0\x80".*),
+        &(ascii_run ++ "\xC0\xAF".*),
     };
     for (rejected) |title| {
         try std.testing.expect(!encodeTitle(&buffer, title));
@@ -1416,7 +1156,6 @@ test "outer size stays in range for unbounded client sizes" {
     }
 }
 
-/// A window with only the fields `trackLimits` and `openingOuterSize` read.
 fn testLimitsWindow(options: *const WindowOptions) Window {
     var window: Window = undefined;
     window.window_limits = options.limits.window;

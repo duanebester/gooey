@@ -22,5 +22,4 @@ pub const RasterBudget = backend.RasterBudget;
 
 pub const rasterize = backend.rasterize;
 pub const rasterizeWithOptions = backend.rasterizeWithOptions;
-/// Scratch bytes one rasterization within a `RasterBudget` allocates.
 pub const scratchBytes = backend.scratchBytes;

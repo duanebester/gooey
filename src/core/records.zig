@@ -26,7 +26,6 @@ pub const Rect = struct {
         return x < self.x + self.width and y < self.y + self.height;
     }
 
-    // Touching edges share no area.
     pub fn overlaps(self: Rect, other: Rect) bool {
         assert(self.width >= 0);
         assert(other.width >= 0);
@@ -34,7 +33,6 @@ pub const Rect = struct {
         return self.y + self.height > other.y and other.y + other.height > self.y;
     }
 
-    // Zero-sized at `self`'s origin when there is no overlap.
     pub fn intersect(self: Rect, other: Rect) Rect {
         assert(self.width >= 0);
         assert(other.width >= 0);
@@ -88,7 +86,6 @@ pub const Quad = struct {
     fill: Color,
     border: Border,
     corners: Corners,
-    /// Shadows are blurred quads; `offset` moves the shadow off its box.
     blur: f32,
     offset_x: f32 = 0,
     offset_y: f32 = 0,
@@ -99,38 +96,27 @@ pub const AtlasKind = enum { glyph, glyph_color, svg, image };
 pub const Sprite = struct {
     bounds: Rect,
     atlas: AtlasKind,
-    /// Normalized atlas coordinates.
     uv: Rect,
     tint: Color,
-    /// SVG stroke colour.
     secondary: Color,
     corners: Corners,
     grayscale: f32,
     opacity: f32,
 };
 
-/// Points of the frame's mesh pool, `Frame.mesh_points[first..][0..count]`.
 pub const MeshRange = struct { first: u32, count: u32 };
 
-/// A mesh's points in window coordinates, laid out for the GPU so `pack`
-/// hands ranges to the renderer without copying.
 pub const MeshPoint = geometry.GpuPoint;
 
 pub const Mesh = struct {
     range: MeshRange,
-    /// `triangles`: a triangle list, three points each. `strip_expanded`: a
-    /// polyline the GPU widens. `point_instanced`: circle centres.
     topology: Topology,
     fill: Color,
-    /// The polyline's width or the points' radius; unused for triangles.
     width: f32,
 
     pub const Topology = enum { triangles, strip_expanded, point_instanced };
 };
 
-// `record` with its alpha multiplied by `opacity`. Image sprites fade through
-// `opacity`, since their tint multiplies the texel and fading both would
-// square the opacity.
 pub fn fade(record: Record, opacity: f32) Record {
     assert(opacity >= 0);
     assert(opacity <= 1);
@@ -160,51 +146,32 @@ pub fn fadeColor(color: Color, opacity: f32) Color {
     return .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a * opacity };
 }
 
-// Sentinel for "no handler" and "no parent" indexes.
 pub const index_none: u32 = std.math.maxInt(u32);
 
-// `parent` is the index of the nearest ancestor hit record, so the router can
-// bubble without the tree.
 pub const HitRecord = struct {
     id: ElementId,
     bounds: Rect,
     fragment: u8,
     parent: u32,
-    /// `Style.pointer_events == .auto`. A record without it is skipped by
-    /// pointer hit tests but still bubbles, focuses, and takes keys.
     pointer: bool,
     focusable: bool,
-    /// Tab and Shift+Tab stop here (`Box.tab_stop`); implies `focusable`.
     tab_stop: bool,
-    /// A `Style.scroll` box: the wheel scrolls its retained `ScrollState`.
     scroll: bool,
-    /// `Style.cursor`; null defers to the parent record's.
     cursor: ?CursorShape,
     on_click: u32,
     on_click_outside: u32,
-    /// `Box.on_context_menu`: a right press, a macOS Ctrl+press, or
-    /// Shift+F10 bubbles to the nearest record with one.
     on_context_menu: u32,
     on_key: u32,
-    /// A press here or on a child without one captures the pointer for this
-    /// record.
     on_pointer_drag: u32,
-    /// `Box.draggable`: the payload's `typeId` (0 for none) and the payload.
     drag_type: usize,
     drag_payload: u64,
-    /// `Box.drop_target`: the accepted `typeId` (0 for none) and its
-    /// `on_drop` handler.
     drop_type: usize,
     on_drop: u32,
-    /// `KeyContext.hash`, or 0 for none.
     key_context: u64,
-    /// `Box.actions`: handlers `[actions_start, actions_start + actions_len)`,
-    /// each with its action id at the same index of `Frame.action_ids`.
     actions_start: u32,
     actions_len: u32,
 };
 
-/// One accessibility node. Strings live in the frame's text bytes.
 pub const A11yNode = struct {
     id: ElementId,
     role: a11y_types.Role,
@@ -219,9 +186,7 @@ pub const A11yNode = struct {
     live: a11y_types.Live,
     pos_in_set: ?u16,
     set_size: ?u16,
-    /// `A11y.range`: a splitter's or slider's position in its range.
     range: ?Range,
-    /// `A11y.selection` in the kept `value`.
     selection: ?TextSelection,
 
     pub const Range = struct {
@@ -232,13 +197,6 @@ pub const A11yNode = struct {
     };
 };
 
-// Pending screen-reader announcements, in fixed slots: `polite_pending_max + 1`
-// slots of `message_bytes_max` bytes, item i's text in slot i, so a
-// replacement never fragments the bytes. Removing an item shifts the later
-// items and slots down one and zeroes the slot it frees; a write fills its
-// whole slot, text then zeros, so no slot holds an earlier owner's bytes.
-// Assertive: at most one, replaced by a newer one. Polite: a FIFO of at most
-// `polite_pending_max`, a newer one past the count replacing the oldest.
 pub const Announcements = struct {
     bytes: []u8,
     items: []Item,
@@ -249,9 +207,7 @@ pub const Announcements = struct {
     pub const Item = struct { text: TextRange, live: a11y_types.Live };
 
     pub const Capacity = struct {
-        /// `a11y.announcement_polite_pending_max`.
         polite_pending_max: u32,
-        /// `a11y.announcement_message_bytes_max`.
         message_bytes_max: u32,
 
         fn slotCount(self: Capacity) u32 {
@@ -288,16 +244,12 @@ pub const Announcements = struct {
         self.* = undefined;
     }
 
-    /// Release every pending announcement, zeroing the slots they used.
     pub fn clear(self: *Announcements) void {
         assert(self.count <= self.items.len);
         @memset(self.bytes[0 .. self.count * self.message_bytes_max], 0);
         self.count = 0;
     }
 
-    // Assertive replaces the pending assertive one; a polite one past
-    // `polite_pending_max` replaces the oldest. Only a message longer than
-    // its slot fails fast.
     pub fn push(
         self: *Announcements,
         message: []const u8,
@@ -336,8 +288,6 @@ pub const Announcements = struct {
         self.assertInvariants();
     }
 
-    // Both come from the same budget, so a straight copy is safe. The frame
-    // was cleared, so its unused slots are zero.
     pub fn copyFrom(self: *Announcements, source: *const Announcements) void {
         assert(self.count == 0);
         assert(self.items.len == source.items.len);
@@ -417,7 +367,6 @@ pub const Announcements = struct {
     }
 };
 
-/// A byte range in `Frame.text_bytes`. `len == 0` means absent.
 pub const TextRange = struct {
     offset: u32 = 0,
     len: u32 = 0,
@@ -425,11 +374,9 @@ pub const TextRange = struct {
     pub const empty: TextRange = .{};
 };
 
-/// The text-input state the platform's IME asks about synchronously.
 pub const Ime = struct {
     owner: ElementId,
     cursor_rect: Rect,
-    /// Selected range in the owner's text, in bytes.
     selected_start: u32,
     selected_end: u32,
 };
@@ -444,15 +391,12 @@ pub const FrameCapacity = struct {
     mesh_point_count_max: u32,
 };
 
-/// One tick's records. Storage is borrowed from the window's reservation.
 pub const Frame = struct {
     paint: []Record,
     paint_count: u32,
     hits: []HitRecord,
     hit_count: u32,
     handlers: []Handler,
-    /// The action id of each handler appended by `appendAction`; other
-    /// indexes are never read.
     action_ids: []u64,
     handler_count: u32,
     a11y: []A11yNode,
@@ -462,19 +406,11 @@ pub const Frame = struct {
     text_len: u32,
     mesh_points: []MeshPoint,
     mesh_point_count: u32,
-    /// Points claimed per `Mesh.Topology`, against each kind's paint limit.
     mesh_point_counts: [3]u32,
     triangle_mesh_count: u32,
     ime: ?Ime,
-    /// `Style.opacity` of the element emit is drawing, folded into the alpha
-    /// of every paint record appended (`fade`); 1 outside an element.
     paint_opacity: f32,
-    /// The first hit record of the last modal fragment, or 0 with none open.
-    /// A modal blocks hit testing of earlier fragments, and fragments emit in
-    /// order, so hit tests never look below this index.
     modal_hit_start: u32,
-    /// Where the debugger's overlay starts in `paint`: nothing in release
-    /// builds. Pack holds the app to its declared limits up to here.
     overlay_start: debugger.PaintMark,
     frame_number: u64,
     viewport_width: f32,
@@ -519,8 +455,6 @@ pub const Frame = struct {
 
     pub const Viewport = struct { width: f32, height: f32, scale_factor: f32 };
 
-    /// Empty the frame for tick `frame_number`. The previous owner's bytes
-    /// stay in place but are unreachable: every reader bounds by the counts.
     pub fn reset(self: *Frame, frame_number: u64, viewport: Viewport) void {
         assert(viewport.scale_factor > 0);
         assert(frame_number >= self.frame_number);
@@ -576,7 +510,6 @@ pub const Frame = struct {
         return index;
     }
 
-    /// Append an action handler; it shares the handler pool and its index.
     pub fn appendAction(self: *Frame, action: u64, handler: Handler) u32 {
         assert(action != 0);
         const index = self.appendHandler(handler);
@@ -584,7 +517,6 @@ pub const Frame = struct {
         return index;
     }
 
-    /// The handler for `action` among a hit record's actions, if listed.
     pub fn actionHandler(self: *const Frame, record: *const HitRecord, action: u64) ?Handler {
         assert(record.actions_start + record.actions_len <= self.handler_count);
         const start = record.actions_start;
@@ -608,7 +540,6 @@ pub const Frame = struct {
         self.a11y_count += 1;
     }
 
-    /// Copies `bytes` into the frame's own storage and returns their range.
     pub fn copyText(self: *Frame, bytes: []const u8) TextRange {
         assert(self.text_len <= self.text_bytes.len);
         if (bytes.len == 0) return .empty;
@@ -809,13 +740,10 @@ test "replaced announcements reuse their slots and leave no stale bytes" {
             try std.testing.expectEqualStrings(source[0..item.text.len], slot[0..item.text.len]);
             try std.testing.expect(std.mem.allEqual(u8, slot[item.text.len..], 0));
         }
-        // Slots are not zeroed at init (zero on release), so an unused slot is
-        // zero once every slot has been written and released.
         if (round >= 3) {
             const unused = pending.bytes[pending.count * 16 ..];
             try std.testing.expect(std.mem.allEqual(u8, unused, 0));
         }
-        // A build takes the set midway: every byte it used is released.
         if (round == 500) {
             pending.clear();
             try std.testing.expect(std.mem.allEqual(u8, pending.bytes, 0));

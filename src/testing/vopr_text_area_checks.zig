@@ -1,11 +1,3 @@
-//! Structural checks of every frame the text_area example builds, beside its
-//! model (`vopr_text_area_model.zig`): the IME caret over the field's
-//! selection and in view after a move, the preview's wrapping as GPUI's
-//! `LineWrapper` packs lines (`sizing_pass.LinePacker`) - lines cover the
-//! text in order, no line holds a newline, a line is as wide as its
-//! codepoints measured together and fits the wrap width unless it cannot
-//! break further - and the preview's and card's heights.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const text_area = @import("text_area_example");
@@ -22,7 +14,6 @@ const LayoutEngine = layout.LayoutEngine;
 const LayoutElement = layout.LayoutElement;
 const WrappedLine = internals.layout.types.WrappedLine;
 
-/// Float slack for sums of advances measured in different orders.
 const epsilon: f32 = 0.01;
 
 pub const Counts = struct {
@@ -53,12 +44,10 @@ pub const Counts = struct {
 
 pub const Options = struct {
     area_id: ElementId,
-    /// The caret or text moved since the last build (`TextArea.follow`).
     moved: bool,
     counts: *Counts,
 };
 
-/// Check the frame `tickMain` just built, with the layout it came from.
 pub fn checkBuild(window: *Window, options: Options) void {
     const frame = window.built();
     checkCaret(window, frame, options);
@@ -117,7 +106,6 @@ fn checkCaret(window: *Window, frame: *const records.Frame, options: Options) vo
     options.counts.carets_in_view += 1;
 }
 
-/// The preview's text element: the only words-wrapped text of its size.
 fn findPreview(engine: *const LayoutEngine, frame_number: u64) u32 {
     var found: ?u32 = null;
     for (engine.elements.items(), 0..) |*element, index| {
@@ -141,7 +129,6 @@ fn checkLines(
     counts: *Counts,
 ) void {
     const text = data.text;
-    // With no width to wrap at, the text is one line cut to nothing.
     if (lines.len == 1 and data.container_width <= 0) {
         if (lines[0].extent.end != .cut_if_wide or lines[0].width != 0) {
             failLine(frame_number, 0, "is not cut to a zero width", text);
@@ -178,9 +165,6 @@ fn checkLines(
     }
 }
 
-/// A line is as wide as its codepoints measured together, and its width
-/// says so; it fits the wrap width unless it is one word, no whitespace,
-/// or one space or tab.
 fn checkWidth(
     engine: *LayoutEngine,
     data: *const layout.TextData,
@@ -192,7 +176,6 @@ fn checkWidth(
     const run = data.text[line.start_offset..][0..line.extent.length];
     const width = measure(engine, data, run);
     if (line.extent.end != .whole) {
-        // A word wider than the line: cut at the wrap width, which it passes.
         if (line.width > data.container_width + epsilon or width <= line.width) {
             std.debug.panic("vopr text_area: frame {d}: preview line {d} \"{s}\" is cut at " ++
                 "{d} px, but measures {d} in a {d} px width", .{
@@ -209,8 +192,6 @@ fn checkWidth(
         });
     }
     if (width <= data.container_width + epsilon) return;
-    // What cannot break further may pass the width alone on its line: one
-    // word, or one space or tab in a width narrower than it.
     const one_word = std.mem.indexOfAny(u8, run, " \t") == null;
     const one_space = run.len == 1;
     if (one_word or one_space) {
@@ -223,10 +204,6 @@ fn checkWidth(
     });
 }
 
-/// A wrap is needed: what starts the next line does not fit after the
-/// line before. A next line starting with a word moved there because the
-/// word, or the whitespace after it in the text, did not fit; one starting
-/// with whitespace broke where its first space or tab did not fit.
 fn checkWrapNeeded(
     engine: *LayoutEngine,
     data: *const layout.TextData,
@@ -239,13 +216,10 @@ fn checkWrapNeeded(
     const start = after.start_offset;
     var end = start + 1;
     if (!isSpace(text[start])) {
-        // The word, then its whitespace up to the next word or newline.
         while (end < text.len and !isSpace(text[end]) and text[end] != '\n') end += 1;
         while (end < text.len and isSpace(text[end])) end += 1;
     }
     const head = text[before.start_offset..][0..before.extent.length];
-    // Whitespace breaks only after a line's first word: past others, the
-    // word moves down with its whitespace instead.
     const body = std.mem.trimEnd(u8, head, " \t");
     if (isSpace(text[start]) and std.mem.indexOfAny(u8, body, " \t") != null) {
         std.debug.panic("vopr text_area: the preview breaks inside the whitespace after " ++
@@ -257,8 +231,6 @@ fn checkWrapNeeded(
         "on one line: {d} px of {d}", .{ head, text[start..end], width, data.container_width });
 }
 
-/// The text is its lines tall, and each fit-height box around it, up to
-/// the card, is as tall as its content.
 fn checkHeights(
     engine: *const LayoutEngine,
     index: u32,

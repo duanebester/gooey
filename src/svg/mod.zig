@@ -1,13 +1,7 @@
 const builtin = @import("builtin");
 
-// Path parser, element parser, bezier and arc flattening all live in
-// `path.zig`, the codebase's one SVG module; vector math reuses
-// `geometry.Vec2` / `geometry.IndexSlice` instead of a parallel `Vec2`.
-
 pub const path = @import("path.zig");
 
-// Re-exports of the public SVG-parsing surface. Backends (CoreGraphics,
-// Cairo, Canvas2D) and tests reach for these via `svg_mod.SvgPath` etc.
 pub const Vec2 = path.Vec2;
 pub const IndexSlice = path.IndexSlice;
 pub const PathCommand = path.PathCommand;

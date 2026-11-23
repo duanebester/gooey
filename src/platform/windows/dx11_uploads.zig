@@ -1,21 +1,3 @@
-//! Atlas uploads for the Direct3D 11 renderer, on the GPU timeline.
-//!
-//! `uploadAtlas` must copy a record before it returns, and the region must
-//! reach its texture after every draw submitted earlier and before the next
-//! draw samples it. Direct3D 11 has no buffer-to-texture copy, and a staging
-//! texture would need a 2D packer with no tight bound for the journal's mixed
-//! record sizes. So each frame in flight owns a fixed staging buffer:
-//! `stage` writes the record's descriptor and pixels into it, mapped from the
-//! first record of the frame until the flush; `flush`, at the start of the
-//! next `draw`, copies the used ranges into one default buffer with
-//! `CopySubresourceRegion`, then draws one pixel-exact quad per record into
-//! its atlas, bound as the render target (`shaders/upload.hlsl`). Both are
-//! ordered after earlier frames' draws and before this frame's.
-//!
-//! Staging set `n mod frame_count` was last copied from `frame_count` flushes
-//! ago, which the swapchain's latency waitable has retired; were it not,
-//! `Map(WRITE)` would wait for the copy rather than race it.
-
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
 const dx11_device = @import("dx11_device.zig");
@@ -27,15 +9,10 @@ const assert = std.debug.assert;
 const log = std.log.scoped(.dx11);
 const hex = dx11_device.hex;
 
-/// The smallest record the journal stages (`atlas_uploads.record_bytes_min`),
-/// which bounds the records of one frame by its byte budget.
 const record_bytes_min: u32 = 64;
-/// One record descriptor: four `u32` words (`shaders/upload.hlsl`).
 const descriptor_bytes: u32 = 16;
-/// Record pixels start on a word, as the shader reads whole words.
 const pixel_alignment: u32 = 4;
 
-/// The atlases, numbered as the kind in a record's last word.
 pub const Slot = enum(u32) { glyph, svg, image };
 pub const atlas_count: u32 = @typeInfo(Slot).@"enum".field_names.len;
 
@@ -51,13 +28,10 @@ const vertex_dxbc = [atlas_count][]const u8{
 };
 
 pub const Uploads = struct {
-    /// CPU-written copies of `words`, one per frame in flight.
     staging: [limits_mod.MAX_FRAMES_IN_FLIGHT]*d3d11.ID3D11Buffer,
     staging_count: u32,
     staging_index: u32,
-    /// The staging buffer mapped for this frame's records, or null.
     mapped: ?[*]u8,
-    /// Descriptors, then pixels, as `upload.hlsl` reads them.
     words: *d3d11.ID3D11Buffer,
     words_view: *d3d11.ID3D11ShaderResourceView,
     vertex: [atlas_count]*d3d11.ID3D11VertexShader,
@@ -66,14 +40,12 @@ pub const Uploads = struct {
     pixel_rgba8: *d3d11.ID3D11PixelShader,
     record_count: u32,
     record_count_max: u32,
-    /// Records staged this frame per atlas, so empty atlases draw nothing.
     record_counts: [atlas_count]u32,
     pixel_bytes: u32,
     pixel_bytes_max: u32,
 
     const Self = @This();
 
-    /// Records one frame may stage: the journal's own bound.
     pub fn recordCountMax(atlas: *const limits_mod.AtlasLimits) u32 {
         assert(atlas.upload_bytes_frame_max >= record_bytes_min);
         const count = @divFloor(atlas.upload_bytes_frame_max, record_bytes_min);
@@ -81,8 +53,6 @@ pub const Uploads = struct {
         return count;
     }
 
-    /// Bytes of `words` and each staging copy: every record's descriptor,
-    /// then the frame's pixels.
     pub fn wordsBytes(atlas: *const limits_mod.AtlasLimits) u64 {
         const pixel_bytes_max = std.mem.alignForward(u64, atlas.upload_bytes_frame_max, 4);
         const bytes = @as(u64, recordCountMax(atlas)) * descriptor_bytes + pixel_bytes_max;
@@ -98,7 +68,6 @@ pub const Uploads = struct {
     ) dx11_resources.ResourceError!void {
         assert(frame_count > 0);
         assert(frame_count <= limits_mod.MAX_FRAMES_IN_FLIGHT);
-        // `Dx11Renderer.initResources` refused a budget past the bound.
         assert(wordsBytes(atlas) <= dx11_resources.buffer_bytes_max);
         self.record_count_max = recordCountMax(atlas);
         self.pixel_bytes_max = std.mem.alignForward(u32, atlas.upload_bytes_frame_max, 4);
@@ -142,7 +111,6 @@ pub const Uploads = struct {
             self.vertex[vertex_count] = try dx11_resources.createVertexShader(device, bytecode);
             vertex_count += 1;
         }
-        // Every upload vertex shader takes the same single input.
         self.layout = try dx11_resources.createInstanceLayout(device, vertex_dxbc[0]);
         errdefer self.layout.release();
         const r8 = @embedFile("shaders/upload.ps_r8.dxbc");
@@ -184,8 +152,6 @@ pub const Uploads = struct {
         self.words.release();
     }
 
-    /// Copy one journal record into this frame's staging buffer. Returns
-    /// false when the staging buffer cannot be mapped (the device is lost).
     pub fn stage(
         self: *Self,
         context: *d3d11.ID3D11DeviceContext,
@@ -221,9 +187,6 @@ pub const Uploads = struct {
         return true;
     }
 
-    /// Land this frame's staged records in their atlases, ahead of any draw
-    /// recorded after it, and start the next frame's staging set. Leaves no
-    /// render target bound. Does nothing when nothing was staged.
     pub fn flush(
         self: *Self,
         context: *d3d11.ID3D11DeviceContext,
@@ -241,7 +204,6 @@ pub const Uploads = struct {
         self.mapped = null;
         self.copyStaged(context, staging);
 
-        // The atlases may still be bound for sampling from the last frame.
         const no_views = [_]?*d3d11.ID3D11ShaderResourceView{null};
         context.vtable.PSSetShaderResources(context, 3, 1, &no_views);
         const streams = [_]?*d3d11.ID3D11Buffer{instance_indices};
@@ -253,7 +215,6 @@ pub const Uploads = struct {
         const views = [_]?*d3d11.ID3D11ShaderResourceView{self.words_view};
         context.vtable.VSSetShaderResources(context, 0, 1, &views);
         context.vtable.PSSetShaderResources(context, 0, 1, &views);
-        // Records replace atlas pixels; nothing blends.
         context.vtable.OMSetBlendState(context, null, null, 0xFFFF_FFFF);
         context.vtable.RSSetState(context, rasterizer);
         for (targets, 0..) |*target, index| {
@@ -296,8 +257,6 @@ pub const Uploads = struct {
         }
     }
 
-    /// Draw every staged record through `slot`'s vertex shader, which keeps
-    /// only that atlas's, into `target`, in journal order.
     fn drawRecords(
         self: *const Self,
         context: *d3d11.ID3D11DeviceContext,
@@ -327,8 +286,6 @@ pub const Uploads = struct {
         context.vtable.DrawInstanced(context, 6, self.record_count, 0, 0);
     }
 
-    /// The journal never pends more than one frame's budget, so overflowing
-    /// staging sized from the same budget is a programmer error.
     fn exhausted(self: *const Self, requested_bytes: usize) noreturn {
         std.debug.panic("dx11 atlas upload staging exhausted: {d} of {d} records and " ++
             "{d} of {d} bytes used, 1 record of {d} B requested. The journal stages at " ++

@@ -9,11 +9,6 @@ layout(location = 3) flat out uint circle;
 layout(location = 4) out vec4 edge_distance;
 layout(location = 5) flat out uint edge_modes;
 
-// Segments are independent butt-ended quads, like Metal's. The sides of every
-// segment fade; only the line's first start cap and last end cap fade, so the
-// hard joints of consecutive segments still overlap without a seam.
-// Segment `i` (the instance) joins the mesh's points i and i + 1; `width`
-// is the line's full width.
 void main() {
     Mesh mesh = meshes[draw.mesh];
     uint segment = uint(gl_InstanceIndex);
@@ -23,7 +18,6 @@ void main() {
     vec2 end = mesh_points[mesh.first + segment + 1u];
     vec2 direction = end - start;
     float distance = length(direction);
-    // Zero-length segments keep their degenerate quad: they cover no pixels.
     vec2 along_unit = vec2(1, 0);
     vec2 across_unit = vec2(0, 1);
     bool has_length = distance > 0.0001;

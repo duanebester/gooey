@@ -12,15 +12,12 @@ pub const Bridge = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Called every synced frame, even with an empty list, so pull-based
-        /// bridges (Windows) can refresh bounds that moved.
         syncDirty: *const fn (
             ptr: *anyopaque,
             tree: *const Tree,
             dirty_indices: []const u16,
         ) void,
 
-        /// Remove elements that no longer exist.
         removeElements: *const fn (
             ptr: *anyopaque,
             fingerprints: []const Fingerprint,
@@ -38,7 +35,6 @@ pub const Bridge = struct {
             element_index: ?u16,
         ) void,
 
-        /// Called periodically, not every frame, to gate a11y work.
         isActive: *const fn (ptr: *anyopaque) bool,
 
         deinit: *const fn (ptr: *anyopaque) void,
@@ -83,7 +79,6 @@ pub const Bridge = struct {
 
         if (!self.isActive()) return;
 
-        // Called even when none are dirty; see `VTable.syncDirty`.
         self.syncDirty(tree, tree.getDirtyElements());
 
         const removed = tree.getRemovedFingerprints();
@@ -102,7 +97,6 @@ pub const Bridge = struct {
     }
 };
 
-/// Safe no-ops, for when a11y is disabled or unsupported.
 pub const NullBridge = struct {
     pub fn bridge() Bridge {
         return .{
@@ -215,7 +209,6 @@ comptime {
     std.debug.assert(@sizeOf(Bridge.VTable) == 6 * @sizeOf(usize));
 }
 
-/// A tree at the tests' capacity, on the heap like a window's.
 fn createTestTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
     errdefer std.testing.allocator.destroy(tree);
@@ -282,7 +275,6 @@ test "test bridge respects active flag" {
     tree.popElement();
     tree.endFrame();
 
-    // syncFrame early-outs when not active.
     b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 0), test_bridge.sync_count);

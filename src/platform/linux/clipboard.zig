@@ -9,7 +9,6 @@ pub const WlDataDevice = opaque {};
 pub const WlDataSource = opaque {};
 pub const WlDataOffer = opaque {};
 
-/// Data offer listener - receives events about available paste data
 pub const WlDataOfferListener = extern struct {
     offer: *const fn (
         data: ?*anyopaque,
@@ -28,7 +27,6 @@ pub const WlDataOfferListener = extern struct {
     ) callconv(.c) void = null,
 };
 
-/// Data source listener - receives events when our data is requested
 pub const WlDataSourceListener = extern struct {
     target: ?*const fn (
         data: ?*anyopaque,
@@ -60,7 +58,6 @@ pub const WlDataSourceListener = extern struct {
     ) callconv(.c) void = null,
 };
 
-/// Data device listener - receives selection/DnD events
 pub const WlDataDeviceListener = extern struct {
     data_offer: ?*const fn (
         data: ?*anyopaque,
@@ -127,7 +124,7 @@ pub fn dataDeviceManagerCreateDataSource(manager: *WlDataDeviceManager) ?*WlData
         &wl_data_source_interface,
         wayland.wl_proxy_get_version(@ptrCast(manager)),
         0,
-        @as(?*anyopaque, null), // new_id placeholder
+        @as(?*anyopaque, null),
     ));
 }
 
@@ -138,7 +135,7 @@ pub fn dataDeviceManagerGetDataDevice(manager: *WlDataDeviceManager, seat: *wayl
         &wl_data_device_interface,
         wayland.wl_proxy_get_version(@ptrCast(manager)),
         0,
-        @as(?*anyopaque, null), // new_id placeholder
+        @as(?*anyopaque, null),
         seat,
     ));
 }
@@ -158,8 +155,6 @@ pub fn dataDeviceSetSelection(device: *WlDataDevice, source: ?*WlDataSource, ser
 pub fn dataDeviceRelease(device: *WlDataDevice) void {
     const version = wayland.wl_proxy_get_version(@ptrCast(device));
 
-    // wl_data_device version range: 1-3 per Wayland core protocol specification
-    // Version 2 added the 'release' request, version 3 added DnD actions
     std.debug.assert(version >= 1);
     std.debug.assert(version <= 3);
 
@@ -172,8 +167,6 @@ pub fn dataDeviceRelease(device: *WlDataDevice) void {
             wayland.MARSHAL_FLAG_DESTROY,
         );
     } else {
-        // For version 1 compositors (some minimal window managers),
-        // just destroy the proxy directly without sending release request
         wayland.wl_proxy_destroy(@ptrCast(device));
     }
 }
@@ -240,15 +233,11 @@ pub const ClipboardState = struct {
     current_offer: ?*WlDataOffer = null,
     offer_has_text: bool = false,
 
-    // Pending offer being advertised (before selection event)
     pending_offer: ?*WlDataOffer = null,
     pending_has_text: bool = false,
 
     active_source: ?*WlDataSource = null,
 
-    // Text we're offering (copy): the core clipboard's size (the largest
-    // `bytes_max` of a text kind with engines), reserved by the core host at
-    // init (`reserveCopy`), so every copy the core makes fits whole.
     copy_buffer: []u8 = &.{},
     copy_len: usize = 0,
 
@@ -270,8 +259,6 @@ pub const ClipboardState = struct {
         assert(self.copy_buffer.len == bytes);
     }
 
-    /// Free the copy buffer after the core host stopped. A copy still
-    /// offered can no longer be sent, so the selection is withdrawn first.
     pub fn releaseCopy(self: *Self, gpa: std.mem.Allocator) void {
         assert(self.copy_buffer.len > 0);
         if (self.active_source) |source| {
@@ -356,12 +343,8 @@ pub const ClipboardState = struct {
         }
     }
 
-    /// Read the clipboard text into `out`, cut at a codepoint boundary, and
-    /// return its length (0 for none). Blocks on the offer's pipe, on the
-    /// main thread; claims no storage.
     pub fn readText(self: *Self, out: []u8) u32 {
         assert(out.len > 0);
-        // Wayland gives no data_offer for our own selection.
         if (self.active_source != null and self.copy_len > 0) {
             const kept = core_clipboard.prefixFitting(self.copy_buffer[0..self.copy_len], out.len);
             @memcpy(out[0..kept], self.copy_buffer[0..kept]);
@@ -372,22 +355,18 @@ pub const ClipboardState = struct {
         var pipe_fds: [2]i32 = undefined;
         if (std.c.pipe(&pipe_fds) != 0) return 0;
         const read_fd = pipe_fds[0];
-        // The compositor writes to the other end.
         dataOfferReceive(offer, MIME_TYPE_TEXT_PLAIN, pipe_fds[1]);
         if (self.display) |display| _ = wayland.wl_display_flush(display);
-        // std.posix.close was removed in Zig 0.16; this module links libc.
         _ = std.c.close(@intCast(pipe_fds[1]));
         defer _ = std.c.close(@intCast(read_fd));
         var total: usize = 0;
         var reads: u32 = 0;
-        // Each read returns at least one byte or ends the loop.
         while (total < out.len) : (reads += 1) {
             assert(reads <= out.len);
             const n = std.posix.read(@intCast(read_fd), out[total..]) catch break;
             if (n == 0) break;
             total += n;
         }
-        // The source may have had more; keep whole codepoints only.
         if (total == out.len) total = core_clipboard.wholeCodepoints(out);
         return @intCast(total);
     }
@@ -396,7 +375,6 @@ pub const ClipboardState = struct {
         const manager = self.data_device_manager orelse return false;
         const device = self.data_device orelse return false;
 
-        // The core never copies more than its clipboard, the size reserved.
         assert(text.len <= self.copy_buffer.len);
         const len = text.len;
         if (len == 0) return false;
@@ -433,9 +411,6 @@ pub const ClipboardState = struct {
             return;
         }
 
-        // Write data to fd. std.posix.write was also removed in Zig 0.16;
-        // drop to the libc symbol directly and handle EINTR ourselves since
-        // std.c.write does not retry.
         var written: usize = 0;
         while (written < self.copy_len) {
             const remaining = self.copy_buffer[written..self.copy_len];
@@ -492,8 +467,6 @@ fn dataDeviceSelectionCallback(
     state.handleSelection(offer);
 }
 
-// Stub callbacks for DnD events - required to prevent null pointer crashes
-// when compositors like Hyprland dispatch these events
 const log = std.log.scoped(.clipboard_dnd);
 
 fn dataDeviceEnterCallback(
@@ -630,9 +603,6 @@ pub fn setText(text: []const u8) bool {
     return global_state.setText(text);
 }
 
-// Matches the mac/clipboard.zig interface.
-
-/// Read the clipboard text into `out` without allocating (core hosts).
 pub fn readText(out: []u8) u32 {
     return global_state.readText(out);
 }

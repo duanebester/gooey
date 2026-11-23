@@ -1,22 +1,3 @@
-//! The image atlas mirrored into `RAM_G` as one ARGB4 bitmap. Uploads
-//! convert into a host mirror of the atlas; `flush` writes the uploaded
-//! rectangles to the same texels of the chip's copy at
-//! `RamLayout.image_address`, and an image sprite draws straight from it,
-//! scaled by `BITMAP_TRANSFORM` (`display_list.image`).
-//!
-//! ARGB4 because the BT817 has no 32-bit bitmap format. Of its formats with
-//! alpha, `ARGB1555` keeps one alpha bit, so anti-aliased edges go jagged;
-//! the paletted formats need a palette per image and, for `PALETTED8`,
-//! several passes per draw; an L8 alpha plane under an `RGB565` image costs
-//! 3 B per texel and two draws through the alpha buffer. `ARGB4` is one draw
-//! at 2 B per texel with 16 alpha levels; its 16 levels per channel band
-//! smooth gradients, so photographs look posterized, but flat-colour
-//! artwork, the embedded case, does not.
-//!
-//! The atlas never rewrites texels a frame in flight draws, and the chip
-//! shows the last swapped list until the next swap, which `draw` waits for
-//! before it flushes, so rows are written in place without retirement.
-
 const std = @import("std");
 const chip_mod = @import("chip.zig");
 const cells_mod = @import("cells.zig");
@@ -26,22 +7,16 @@ const assert = std.debug.assert;
 const Chip = chip_mod.Chip;
 const Region = cells_mod.Region;
 
-/// Upload rectangles one frame may queue. Each landed image is one, and
-/// images land at most one per frame; the rest is headroom.
 pub const pending_count_max: u32 = 16;
 pub const texel_bytes: u32 = 2;
 
 pub const ImageMirror = struct {
-    /// The atlas in ARGB4, `size × size` texels, little-endian `u16`.
     texels: []u8 = &.{},
     size: u32 = 0,
-    /// The chip's copy of texel (0, 0).
     address: u32 = 0,
-    /// Rows any upload wrote, for resending after a failure and zeroing.
     rows_used: u32 = 0,
     pending: [pending_count_max]Region = undefined,
     pending_count: u32 = 0,
-    /// Every used row must be resent: a transfer failed.
     resend_all: bool = false,
 
     const Self = @This();
@@ -71,9 +46,6 @@ pub const ImageMirror = struct {
         return self.size * texel_bytes;
     }
 
-    /// Convert `rgba` (straight alpha, `region.w × region.h × 4` bytes) into
-    /// the mirror and queue the rectangle for the next `flush`. A frame that
-    /// queues more rectangles than the queue holds fails fast.
     pub fn upload(self: *Self, region: Region, rgba: []const u8) void {
         assert(region.x + region.w <= self.size);
         assert(region.y + region.h <= self.size);
@@ -102,8 +74,6 @@ pub const ImageMirror = struct {
         assert(self.pending_count <= pending_count_max);
     }
 
-    /// Write the queued rectangles, or every used row after a failure, to the
-    /// chip's copy. Returns the bytes written.
     pub fn flush(self: *Self, chip: *Chip) chip_mod.Error!u64 {
         assert(self.pending_count <= pending_count_max);
         assert(self.rows_used <= self.size);
@@ -122,14 +92,12 @@ pub const ImageMirror = struct {
         return written;
     }
 
-    /// After a failed transfer the chip's copy is unknown; resend it whole.
     pub fn forgetAll(self: *Self) void {
         assert(self.rows_used <= self.size);
         self.resend_all = self.rows_used > 0;
         self.pending_count = 0;
     }
 
-    /// The chip address of `region`'s top-left texel.
     pub fn sourceOf(self: *const Self, region: Region) u32 {
         assert(region.x < self.size);
         assert(region.y < self.size);
@@ -140,7 +108,6 @@ pub const ImageMirror = struct {
         assert(region.w > 0);
         assert(region.h > 0);
         const row_bytes = region.w * texel_bytes;
-        // Full-width rectangles are contiguous: one write.
         if (region.x == 0 and region.w == self.size) {
             const offset = region.y * self.stride();
             const rows = self.texels[offset..][0 .. region.h * row_bytes];
@@ -156,7 +123,6 @@ pub const ImageMirror = struct {
     }
 };
 
-/// RGBA8 straight alpha to ARGB4 (`A << 12 | R << 8 | G << 4 | B`), rounded.
 fn convertRow(rgba: []const u8, target: []u8) void {
     assert(rgba.len % 4 == 0);
     assert(target.len == rgba.len / 4 * texel_bytes);
@@ -169,7 +135,6 @@ fn convertRow(rgba: []const u8, target: []u8) void {
     }
 }
 
-/// The nearest of 16 levels: 0..8 → 0, 247..255 → 15.
 fn nibble(value: u8) u4 {
     const level = (@as(u32, value) * 15 + 127) / 255;
     assert(level <= 15);
@@ -200,7 +165,6 @@ test "uploads convert to rounded ARGB4 and flush only their rectangle" {
 }
 
 test "the upload queue fills exactly, then the next upload fails fast" {
-    // The panic path cannot be caught; this fills the queue to its last slot.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();

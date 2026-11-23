@@ -1,7 +1,6 @@
 const input = @import("../../input/events.zig");
 const event_ring = @import("event_ring.zig");
 
-/// Layout matches the JavaScript writer.
 pub const RawKeyEvent = packed struct(u64) {
     event_type: EventType,
     key_code: u16,
@@ -42,7 +41,6 @@ comptime {
     if (@sizeOf(RawKeyEvent) != 8) @compileError("RawKeyEvent must be exactly 8 bytes");
 }
 
-/// Events reserved by the core host from `events.queue_count_max`.
 pub var g_key_ring: event_ring.EventRing(RawKeyEvent) = .{};
 
 fn getKeyRingPtr() callconv(.c) [*]u8 {
@@ -61,7 +59,7 @@ pub fn toInputEvent(raw: RawKeyEvent) InputEvent {
     const key_event = KeyEvent{
         .key = KeyCode.from(raw.key_code),
         .modifiers = raw.modifiers.toInput(),
-        .characters = null, // Text comes via TextInputBuffer
+        .characters = null,
         .characters_ignoring_modifiers = null,
         .is_repeat = raw.flags.is_repeat,
     };

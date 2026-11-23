@@ -1,7 +1,3 @@
-// Imported as a child module so its native `main` does not make Zig
-// synthesize `std.start` for a freestanding executable; its `App` type
-// generates the exports.
-
 const application = @import("application");
 const gooey = @import("gooey");
 

@@ -1,12 +1,3 @@
-//! Win32 platform state: the window class, stock cursors, bounded window
-//! registry, clipboard owner window, and the waitable timer the core host's
-//! loop waits on.
-//!
-//! The timer is high resolution where the system has it: a millisecond
-//! timeout alone expires on the system tick (15.6 ms by default), so a 16.7 ms
-//! wait would last two ticks and cap animation near 32 fps. `timeBeginPeriod`
-//! would also fix it, but it raises the tick rate for the whole system.
-
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
 const window_registry = @import("../window_registry.zig");
@@ -20,27 +11,18 @@ const assert = std.debug.assert;
 const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 
-/// Messages dispatched per loop turn. Bounds the time between ticks and
-/// frames when input floods the queue; the remainder waits one turn.
 pub const message_batch_max: u32 = 256;
 
-/// The core host's pacing period when DWM reports no usable timing: a 60 Hz
-/// ceiling.
 pub const frame_period_ns_min: u64 = 16_666_667;
 
 pub const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GooeyWindow");
 
 pub const WindowsPlatform = struct {
-    /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
-    /// compiles.
     running: bool = false,
     window_registry: WindowRegistry,
     hinstance: win32.HINSTANCE,
-    /// Stock cursors indexed by `CursorShape`, loaded once. Shared system
-    /// resources: they are never destroyed.
     cursors: [cursor_shape_count]?win32.HCURSOR,
     click_settings: windows_input.ClickSettings,
-    /// Ends each of the core host's waits at its deadline. Owned.
     frame_timer: win32.HANDLE,
 
     const Self = @This();
@@ -50,10 +32,6 @@ pub const WindowsPlatform = struct {
     pub fn initInPlace(self: *Self) !void {
         assert(@intFromPtr(self) != 0);
 
-        // Per-monitor v2 makes every size Windows reports a device-pixel size
-        // and delivers `WM_DPICHANGED` when a window crosses monitors. It
-        // fails when the manifest or an earlier call already chose a mode;
-        // that mode stays in effect, so log it and continue.
         if (win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) ==
             win32.FALSE)
         {
@@ -83,8 +61,8 @@ pub const WindowsPlatform = struct {
             .cbWndExtra = 0,
             .hInstance = hinstance,
             .hIcon = null,
-            .hCursor = null, // `WM_SETCURSOR` selects per window.
-            .hbrBackground = null, // Vulkan covers the client area.
+            .hCursor = null,
+            .hbrBackground = null,
             .lpszMenuName = null,
             .lpszClassName = class_name,
             .hIconSm = null,
@@ -109,8 +87,6 @@ pub const WindowsPlatform = struct {
         closeFrameTimer(self.frame_timer);
     }
 
-    /// Fails only while a window of the class exists, which `deinit` asserts
-    /// against; the class dies with the process regardless.
     fn unregisterClass(self: *const Self) void {
         assert(self.window_registry.count() == 0);
         if (win32.UnregisterClassW(class_name, self.hinstance) == win32.FALSE) {
@@ -118,8 +94,6 @@ pub const WindowsPlatform = struct {
         }
     }
 
-    /// The cursor for a shape. Falls back to the arrow when a stock cursor
-    /// failed to load.
     pub fn cursor(self: *const Self, shape: interface_mod.CursorShape) ?win32.HCURSOR {
         const index = @backingInt(shape);
         assert(index < cursor_shape_count);
@@ -154,15 +128,11 @@ pub const WindowsPlatform = struct {
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    // Calls from the 0.3.1 `context/window.zig`; they go when phase 6 deletes
-    // it. The core never makes these calls.
-
     pub fn quit(self: *Self) void {
         self.running = false;
         assert(!self.running);
     }
 
-    /// The core's renderer is its host's, so there is nothing to lock here.
     pub fn lockRenderThreads(self: *Self) void {
         assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
@@ -172,11 +142,6 @@ pub const WindowsPlatform = struct {
     }
 };
 
-/// Dispatch up to `message_batch_max` queued messages of this thread, each
-/// only while `queue` has `room_count_min` free slots, so input never
-/// overflows it: the rest stay queued until a tick drains it, and the wait
-/// (`MWMO_INPUTAVAILABLE`) returns at once for them. Returns false when
-/// `WM_QUIT` arrives. The core host's loop calls it.
 pub fn dispatchMessageBatch(queue: *const core_events.EventQueue, room_count_min: u32) bool {
     assert(room_count_min > 0);
     assert(room_count_min <= queue.events.len);
@@ -186,8 +151,6 @@ pub fn dispatchMessageBatch(queue: *const core_events.EventQueue, room_count_min
         if (queue.room() < room_count_min) break;
         if (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) == win32.FALSE) break;
         if (message.message == win32.WM_QUIT) return false;
-        // Produces `WM_CHAR` from key messages; the result says only whether
-        // a character message was posted.
         _ = win32.TranslateMessage(&message);
         _ = win32.DispatchMessageW(&message);
     }
@@ -195,9 +158,6 @@ pub fn dispatchMessageBatch(queue: *const core_events.EventQueue, room_count_min
     return true;
 }
 
-/// Create the loop's waitable timer, high resolution where the system has
-/// it (Windows 10 1803 and later). The regular fallback still works but
-/// expires on the system tick, so frames below 60 Hz may pace coarsely.
 pub fn createFrameTimer() !win32.HANDLE {
     comptime assert(win32.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION == 0x2);
     comptime assert(win32.TIMER_ALL_ACCESS == 0x001F_0003);
@@ -247,19 +207,15 @@ fn loadCursors() [WindowsPlatform.cursor_shape_count]?win32.HCURSOR {
     return cursors;
 }
 
-/// The user's double-click time and distance. Windows returns its defaults
-/// (500 ms, 4 px) when the settings are absent, never zero.
 fn clickSettings() windows_input.ClickSettings {
     const time_ms_max = win32.GetDoubleClickTime();
     const width_px = win32.GetSystemMetrics(win32.SM_CXDOUBLECLK);
     const height_px = win32.GetSystemMetrics(win32.SM_CYDOUBLECLK);
-    // The metrics give the size of the whole rectangle around the first click.
     const distance_px_max: u32 = @intCast(@max(1, @divFloor(@max(width_px, height_px), 2)));
     const settings = windows_input.ClickSettings{
         .time_ms_max = @max(1, time_ms_max),
         .distance_px_max = distance_px_max,
     };
-    // Zero would make every second click a double click, or none.
     assert(settings.time_ms_max > 0);
     assert(settings.distance_px_max > 0);
     return settings;
@@ -271,8 +227,6 @@ pub fn nowMilliseconds() i64 {
     return @intCast(ms);
 }
 
-/// Nanoseconds on the `.awake` clock. The callers carry no `Io`, so this uses
-/// the process-lifetime global, as the other native backends do.
 pub fn nowNanoseconds() u64 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const ns = std.Io.Timestamp.now(io, .awake).toNanoseconds();
@@ -281,8 +235,6 @@ pub fn nowNanoseconds() u64 {
 }
 
 comptime {
-    // A zero frame period would let the loop spin; above a second would make
-    // input feel broken.
     assert(frame_period_ns_min > 0);
     assert(frame_period_ns_min < std.time.ns_per_s);
     assert(message_batch_max > 0);
@@ -292,11 +244,9 @@ test "frame timer arms, signals, and closes" {
     const timer = try createFrameTimer();
     defer closeFrameTimer(timer);
 
-    // Relative (negative), in 100 ns intervals: 1 ms.
     const due_time: i64 = -10_000;
     try std.testing.expect(win32.SetWaitableTimer(timer, &due_time, 0, null, null, 0) != 0);
     const handles = [1]win32.HANDLE{timer};
-    // No input mask: only the timer or the backstop can end this wait.
     const result = win32.MsgWaitForMultipleObjectsEx(handles.len, &handles, 1_000, 0, 0);
     try std.testing.expectEqual(win32.WAIT_OBJECT_0, result);
 }

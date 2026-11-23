@@ -1,14 +1,3 @@
-//! The bounded event queue and the completion ring.
-//!
-//! `tick` drains the whole queue once per tick, so a push never waits on a
-//! handler and a handler never runs inside a platform callback. Event text
-//! is copied into the queue's own bytes at push and stays valid until the
-//! drain that delivers it ends.
-//!
-//! Overflow policy: consecutive pointer moves (with or without the same held
-//! button) and scroll deltas coalesce. Any other overflow panics with the
-//! queue's name and capacity.
-
 const std = @import("std");
 const input = @import("../input/mod.zig");
 const clipboard = @import("clipboard.zig");
@@ -19,26 +8,14 @@ pub const InputEvent = input.InputEvent;
 
 pub const WindowEvent = union(enum) {
     resized: struct { width: f32, height: f32, scale_factor: f32 },
-    /// The window controls the content must stay clear of changed
-    /// (`Config.title_bar = .transparent`, macOS only).
     title_bar: TitleBar.Inset,
     close_requested,
 };
 
-/// How the window's title bar meets the content (`Config.title_bar`).
-///
-/// macOS only; every other platform ignores it and draws its usual frame.
 pub const TitleBar = enum {
     standard,
     transparent,
 
-    /// The window-control area a transparent title bar draws over the
-    /// content, in logical pixels. `top` is the height of the title strip;
-    /// `left` or `right` is how far the traffic lights reach in from that
-    /// edge, with the margin AppKit leaves on their outer side mirrored on
-    /// the inner one (they sit on the right in right-to-left languages).
-    /// All zero for `.standard`, off macOS, and in full screen, where the
-    /// title bar slides in over the content only on demand.
     pub const Inset = struct {
         top: f32 = 0,
         left: f32 = 0,
@@ -46,32 +23,23 @@ pub const TitleBar = enum {
     };
 };
 
-/// The result of an operation that finished outside the handler that asked
-/// for it.
 pub const Completion = struct {
     request_id: u32,
     outcome: Outcome,
 
     pub const Outcome = union(enum) {
-        /// One path for a save or a single selection; up to
-        /// `ResourceLimits.events.dialog_path_count_max` for `multiple`.
         file_selected: Paths,
         cancelled,
         failed: anyerror,
     };
 };
 
-/// The paths a file dialog selected, in the platform's order, joined by NUL
-/// bytes. No supported platform allows NUL in a path, so the join is
-/// unambiguous, and one path is kept without a copy.
 pub const Paths = struct {
     bytes: []const u8,
     count: u32,
 
     pub const separator: u8 = 0;
 
-    /// Join `paths` into `allocator`, a host's dialog scratch. A path that
-    /// is empty or holds a NUL is the platform's error, not the app's.
     pub fn join(allocator: std.mem.Allocator, paths: []const []const u8) !Paths {
         assert(paths.len > 0);
         assert(paths.len <= std.math.maxInt(u32));
@@ -121,17 +89,12 @@ pub const Event = union(enum) {
     window: WindowEvent,
 };
 
-/// One delivery from a background job (`jobs.zig`): a result it posted, or
-/// its end.
 pub const JobEntry = struct {
     slot: u32,
     generation: u32,
     kind: Kind,
-    /// The result slot holding the posted bytes, for `.result`.
     result_index: u32,
-    /// How `run` ended, for `.done`.
     outcome: Outcome,
-    /// The error `run` returned, for `outcome == .failed`.
     failure: anyerror,
 
     pub const Kind = enum(u8) { result, done };
@@ -140,9 +103,6 @@ pub const JobEntry = struct {
     pub const result_index_none: u32 = std.math.maxInt(u32);
 };
 
-/// The job deliveries one drain took from the completion ring, in ring
-/// order. Its capacity is the ring's, so a drain can never overfill it, and
-/// job deliveries never take event-queue slots that input needs.
 pub const JobInbox = struct {
     entries: []JobEntry,
     count: u32,
@@ -160,17 +120,8 @@ pub const JobInbox = struct {
     }
 };
 
-/// Bytes of one key event's `characters`, and as many of its
-/// `characters_ignoring_modifiers`, that the queue keeps in the event's own
-/// slot. One keystroke yields one key layout output: a character, a
-/// dead-key composition, or a layout's multi-character output string. The
-/// longest emoji ZWJ sequences Unicode recommends are 35 bytes of UTF-8, so
-/// 64 bytes holds any one grapheme cluster a key types, with room for short
-/// layout strings. Only macOS fills `characters`, from `NSEvent`; Linux,
-/// Windows, and the web deliver null and type through `text_input`.
 pub const key_characters_bytes_max: u32 = 64;
 
-/// The room a queued key event's characters take in its event slot.
 const KeyCharacters = struct {
     characters: [key_characters_bytes_max]u8,
     ignoring_modifiers: [key_characters_bytes_max]u8,
@@ -179,7 +130,6 @@ const KeyCharacters = struct {
 pub const QueueCapacity = struct {
     event_count_max: u32,
     text_bytes_max: u32,
-    /// `events.dialog_count_max`: request ids, so path slots.
     dialog_count_max: u32,
     dialog_path_bytes_max: u32,
 };
@@ -189,18 +139,9 @@ pub const EventQueue = struct {
     count: u32,
     text_bytes: []u8,
     text_len: u32,
-    /// A queued completion's paths, in its request id's slot of
-    /// `dialog_path_bytes_max` bytes. Text a platform pushes (typed text is
-    /// cut to the room left, never refused) can fill `text_bytes` at any
-    /// time, so paths there could find no room; each request id has at
-    /// most one completion queued, since its slot frees only when routed.
     dialog_paths: []u8,
     dialog_path_bytes_max: u32,
-    /// A queued key event's characters, in its event slot's entry. They
-    /// once shared `text_bytes`, so a key pressed after typed text filled
-    /// them panicked; cutting them instead would change what the key typed.
     key_characters: []KeyCharacters,
-    /// Events coalesced since init, for tests and diagnostics.
     coalesced_count: u64,
 
     pub fn initInPlace(self: *EventQueue, gpa: std.mem.Allocator, capacity: QueueCapacity) !void {
@@ -236,8 +177,6 @@ pub const EventQueue = struct {
         self.* = undefined;
     }
 
-    /// Free event slots. A native host reads more input only while this
-    /// holds its largest burst (`EventLimits.checkInputRoom`).
     pub fn room(self: *const EventQueue) u32 {
         assert(self.count <= self.events.len);
         const free: u32 = @intCast(self.events.len - self.count);
@@ -245,7 +184,6 @@ pub const EventQueue = struct {
         return free;
     }
 
-    /// Queue `event`, copying its text. Runs on the main thread.
     pub fn push(self: *EventQueue, event: Event) void {
         assert(self.count <= self.events.len);
         if (self.coalesce(event)) {
@@ -264,23 +202,17 @@ pub const EventQueue = struct {
         self.count += 1;
     }
 
-    /// The queued events, in push order. Valid until `clear`.
     pub fn pending(self: *const EventQueue) []const Event {
         assert(self.count <= self.events.len);
         return self.events[0..self.count];
     }
 
-    /// Release every event and its text. Called by `tick` after the drain.
     pub fn clear(self: *EventQueue) void {
         assert(self.text_len <= self.text_bytes.len);
         self.count = 0;
         self.text_len = 0;
     }
 
-    /// Fold a pointer move into a queued move, a held-button move into a
-    /// queued one with the same button, or a scroll into a queued scroll,
-    /// when it directly follows one. Without the held-button rule a drag
-    /// at a 1 kHz mouse fills a 64-event queue in 64 ms of stalled ticks.
     fn coalesce(self: *EventQueue, event: Event) bool {
         if (self.count == 0) return false;
         const last = &self.events[self.count - 1];
@@ -308,9 +240,6 @@ pub const EventQueue = struct {
         }
     }
 
-    /// Copy the text `event` points at into the queue: platform text into
-    /// the text bytes, a key's characters into event slot `slot`'s room,
-    /// and a completion's paths into its request's room.
     fn copyText(self: *EventQueue, event: Event, slot: u32) Event {
         assert(slot < self.events.len);
         var copy = event;
@@ -342,10 +271,6 @@ pub const EventQueue = struct {
         return copy;
     }
 
-    /// Typed, dictated, or composed text is operating input whose length
-    /// the app cannot plan: text past the queue's free text bytes
-    /// (`ResourceLimits.events.text_bytes_max`) is cut at the last codepoint
-    /// boundary that fits, and the cut logged, rather than split or refused.
     fn copyPlatformText(self: *EventQueue, bytes: []const u8, kind: []const u8) []const u8 {
         assert(self.text_len <= self.text_bytes.len);
         const text_room = self.text_bytes.len - self.text_len;
@@ -364,12 +289,6 @@ pub const EventQueue = struct {
         return self.copyBytes(bytes[0..kept]);
     }
 
-    /// Copy a key's characters into `target`, whole. Characters past it
-    /// are not a keystroke any shipped layout makes; they become null, and
-    /// the drop is logged, rather than cut: cut characters would be a
-    /// different keystroke, and null is what Linux, Windows, and the web
-    /// always deliver. The text the key typed still reaches the app, since
-    /// macOS sends it again through `insertText:` as a `text_input`.
     fn keepCharacters(bytes: ?[]const u8, target: *[key_characters_bytes_max]u8) ?[]const u8 {
         const characters = bytes orelse return null;
         if (characters.len > target.len) {
@@ -385,9 +304,6 @@ pub const EventQueue = struct {
         return target[0..characters.len];
     }
 
-    /// Copy a completion's paths into its request id's slot, which no other
-    /// queued completion holds. Paths past the slot are a backend's error:
-    /// `tick.checkSelection` bounds every selection first.
     fn copyPaths(self: *EventQueue, request_id: u32, bytes: []const u8) []const u8 {
         const slot_count = self.dialog_paths.len / self.dialog_path_bytes_max;
         assert(request_id < slot_count);
@@ -408,8 +324,6 @@ pub const EventQueue = struct {
         return target;
     }
 
-    /// Append `bytes` to the text bytes. Only platform text, already cut to
-    /// the room left (`copyPlatformText`), comes here.
     fn copyBytes(self: *EventQueue, bytes: []const u8) []const u8 {
         assert(self.text_len <= self.text_bytes.len);
         assert(bytes.len <= self.text_bytes.len - self.text_len);
@@ -420,37 +334,20 @@ pub const EventQueue = struct {
     }
 };
 
-/// A decode the image worker finished (`images.zig`). Core-internal: the
-/// drain hands it to the image loader, never to an app's handler, so it is
-/// not a `Completion.Outcome` and apps' switches over outcomes stay exact.
 pub const ImageDecoded = struct {
-    /// The loader's request entry the decode answers.
     entry: u32,
     width: u32,
     height: u32,
-    /// Offset of the RGBA pixels, `width * height * 4` bytes, in staging.
     pixel_offset: u32,
-    /// Null when the pixels are ready.
     failure: ?anyerror,
 };
 
-/// A bounded multi-producer, single-consumer ring for completions produced
-/// on worker threads: the image worker's decodes and background jobs'
-/// results and ends. Producers serialize on `producer_mutex`; the consumer,
-/// `tick` on the main thread, takes no lock. A dialog's paths
-/// are copied into the path slot of its request id, so the worker's buffer
-/// can be reused: a request id is reused only after the router delivers its
-/// completion, which the drain has copied into the queue by then.
 pub const CompletionRing = struct {
     slots: []Slot,
-    /// `dialog_count_max` path slots of `path_bytes_max` bytes each.
     paths: []u8,
     path_bytes_max: u32,
-    /// Written by the producer, read by the consumer.
     head: std.atomic.Value(u32),
-    /// Written by the consumer, read by the producer.
     tail: std.atomic.Value(u32),
-    /// Held by a producer from claiming a slot to publishing it.
     producer_mutex: std.Io.Mutex,
     io: std.Io,
 
@@ -466,13 +363,9 @@ pub const CompletionRing = struct {
     };
 
     pub const Options = struct {
-        /// Ring slots, a power of two at or above `events.completion_count_max`.
         count_max: u32,
-        /// `events.dialog_count_max`: request ids, so path slots.
         dialog_count_max: u32,
-        /// `events.dialog_path_bytes_max`: one selection's joined paths.
         dialog_path_bytes_max: u32,
-        /// For the producers' mutex.
         io: std.Io,
     };
 
@@ -500,8 +393,6 @@ pub const CompletionRing = struct {
         self.* = undefined;
     }
 
-    /// Producer side. A full ring, or paths past the request's slot, is a
-    /// capacity-planning error.
     pub fn push(self: *CompletionRing, completion: Completion) void {
         assert(completion.request_id < self.paths.len / self.path_bytes_max);
         self.producer_mutex.lockUncancelable(self.io);
@@ -542,7 +433,6 @@ pub const CompletionRing = struct {
         return self.paths[start..][0..self.path_bytes_max];
     }
 
-    /// Producer side, for the image worker. Same capacity rule as `push`.
     pub fn pushImage(self: *CompletionRing, decoded: ImageDecoded) void {
         if (decoded.failure == null) {
             assert(decoded.width > 0);
@@ -557,9 +447,6 @@ pub const CompletionRing = struct {
         self.head.store(head +% 1, .release);
     }
 
-    /// Producer side, for a background job's result or end. The job pool
-    /// holds back results past its result slots and each job ends once, so
-    /// `ResourceLimits.check` proves the ring cannot fill from jobs.
     pub fn pushJob(self: *CompletionRing, entry: JobEntry) void {
         if (entry.kind == .result) assert(entry.result_index != JobEntry.result_index_none);
         if (entry.kind == .done) assert(entry.result_index == JobEntry.result_index_none);
@@ -585,9 +472,6 @@ pub const CompletionRing = struct {
         return &self.slots[head & (@as(u32, @intCast(self.slots.len)) - 1)];
     }
 
-    /// Consumer side: move every completion into `queue`, the image decode,
-    /// of which the worker has at most one outstanding, into `image`, and
-    /// every job delivery into `jobs`, which must be empty.
     pub fn drainInto(
         self: *CompletionRing,
         queue: *EventQueue,
@@ -683,9 +567,6 @@ test "queue coalesces moves and scrolls and copies text" {
 }
 
 test "platform text past the free text bytes is cut on a codepoint boundary" {
-    // Long dictation or an IME commit must never split a UTF-8 sequence or
-    // panic. A composition that no longer fits at all arrives empty, which
-    // clears the preedit until the next update.
     var long: [255 + "東京".len]u8 = undefined;
     @memset(long[0..255], 'a');
     @memcpy(long[255..], "東京");
@@ -758,9 +639,6 @@ test "completion ring delivers distinct outcomes in order" {
 }
 
 test "completion ring holds a selection of exactly the dialog path budget per request" {
-    // The ring once held 1 KiB per slot: a selection between that and the
-    // budget panicked. Each pending dialog owns a path slot of
-    // `dialog_path_bytes_max` bytes.
     const path_bytes_max: u32 = 8;
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{
@@ -806,10 +684,6 @@ test "completion ring holds a selection of exactly the dialog path budget per re
 }
 
 test "a completion's paths fit in a queue whose text bytes typed text filled" {
-    // Paths once shared the text bytes, which typed text may fill (it is
-    // cut, never refused): a dialog's outcome queued after it, as the Linux
-    // host's `pollDialog` queues one, panicked with "text bytes exhausted".
-    // Each request id now has its own path slot, used to the last byte.
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{
         .event_count_max = 4,
@@ -838,10 +712,6 @@ test "a completion's paths fit in a queue whose text bytes typed text filled" {
 }
 
 test "a key's characters stay whole in a queue whose text bytes typed text filled" {
-    // Key characters once shared the text bytes, so a key pressed after
-    // typed text filled them panicked with "text bytes exhausted". Each
-    // event slot now has its own room, used to the last byte; characters
-    // past it become null (and are logged), never cut.
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{
         .event_count_max = 4,

@@ -94,9 +94,7 @@ pub const ImageData = struct {
 
 pub const ImageKey = struct {
     source_hash: u64,
-    /// Target width in device pixels (0 = intrinsic)
     target_width: u16,
-    /// Target height in device pixels (0 = intrinsic)
     target_height: u16,
 
     pub fn init(source: ImageSource, logical_width: ?f32, logical_height: ?f32, scale_factor: f64) ImageKey {
@@ -124,15 +122,11 @@ pub const ImageKey = struct {
 
 pub const CachedImage = struct {
     region: Region,
-    /// Original image dimensions (device pixels)
     source_width: u16,
     source_height: u16,
-    /// Rendered dimensions in atlas (device pixels)
     rendered_width: u16,
     rendered_height: u16,
-    /// Side of the atlas the region lies in; fixed for the atlas's lifetime.
     atlas_size: u32 = 0,
-    /// Atlas shelf holding the pixels; the entry is stale once it is evicted.
     shelf: u16 = atlas_mod.shelf_none,
     generation: u32 = 0,
 
@@ -143,37 +137,21 @@ pub const CachedImage = struct {
 
 pub const ImageAtlas = struct {
     allocator: std.mem.Allocator,
-    /// IO instance for mutex operations. Stored on the struct because lock
-    /// sites run on CVDisplayLink threads that have no access to `*Cx` and
-    /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
-    /// process-lifetime vtable — safe to copy across threads.
     io: std.Io,
-    /// RGBA texture atlas, fixed at `AtlasLimits.image_size`.
     atlas: Atlas,
-    /// Cache map. Capacity is reserved at init and never grows: a full map
-    /// reclaims entries whose shelves were evicted (CLAUDE.md §2).
     cache: std.AutoHashMap(ImageKey, CachedImage),
-    /// `AtlasLimits.image_entry_count_max`: images the map holds.
     entry_count_max: u32,
     scale_factor: f64,
-    /// Mutex for thread-safe access in multi-window scenarios.
-    /// Multiple DisplayLink threads may access the atlas concurrently.
-    /// Uses `lockUncancelable` everywhere — none of the atlas call sites
-    /// propagate `std.Io.Cancelable`, and the critical sections are short
-    /// enough that cancelation points would add noise without value.
     mutex: std.Io.Mutex = .init,
 
     const Self = @This();
 
     pub const Options = struct {
-        /// `AtlasLimits.image_size`.
         size: u32,
-        /// `AtlasLimits.image_entry_count_max`.
         entry_count_max: u32,
         uploads: *AtlasUploads,
     };
 
-    /// Initialize in place: `Atlas` is reserved at its final address.
     pub fn initInPlace(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -221,7 +199,6 @@ pub const ImageAtlas = struct {
         return self.atlas.isLive(cached.shelf, cached.generation);
     }
 
-    /// Get cached image if its pixels are live, marking it used this frame.
     pub fn get(self: *Self, key: ImageKey) ?CachedImage {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -232,10 +209,6 @@ pub const ImageAtlas = struct {
         return cached;
     }
 
-    /// Cache decoded RGBA pixels. Returns `error.UploadDeferred` when this
-    /// frame's upload staging is full; the frame renders again. The image
-    /// must fit the atlas with its 1 px border: the core's loader checks that
-    /// first and names `atlas.image_size`, so the atlas never clips or copies.
     pub fn cacheRgba(
         self: *Self,
         key: ImageKey,
@@ -278,11 +251,6 @@ pub const ImageAtlas = struct {
         return cached;
     }
 
-    /// Ensure `key` can be stored without growing the map: drop entries whose
-    /// shelves were evicted, evicting the least recently used shelf if none
-    /// were. A map full of images used by an open frame fails fast. Through
-    /// the core it cannot: `ResourceLimits.check` holds the map to at least a
-    /// frame's images and every request.
     fn makeRoom(self: *Self, key: ImageKey) void {
         if (self.cache.contains(key)) return;
         assert(self.cache.count() <= self.entry_count_max);
@@ -301,7 +269,6 @@ pub const ImageAtlas = struct {
         });
     }
 
-    /// Remove entries whose atlas pixels were evicted. Bounded by the map size.
     fn reclaimStale(self: *Self) u32 {
         var freed: u32 = 0;
         var it = self.cache.iterator();
@@ -314,7 +281,6 @@ pub const ImageAtlas = struct {
         return freed;
     }
 
-    /// Clear all cached images; the atlas condemns their pixels.
     pub fn clear(self: *Self) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -322,30 +288,21 @@ pub const ImageAtlas = struct {
         self.atlas.clear();
     }
 
-    /// The atlas the renderers sample. Its pixels reach GPU textures through
-    /// `AtlasUploads`, so renderers read only its fixed size and format here.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
     }
 
     pub const FitResult = struct {
-        /// Output quad width (clamped to container for cover/none)
         width: f32,
-        /// Output quad height (clamped to container for cover/none)
         height: f32,
-        /// X offset within container
         offset_x: f32,
-        /// Y offset within container
         offset_y: f32,
-        /// UV coordinate adjustments (0-1 range within the texture region)
         uv_left: f32 = 0,
         uv_top: f32 = 0,
         uv_right: f32 = 1,
         uv_bottom: f32 = 1,
     };
 
-    /// Calculate fit dimensions and UV adjustments based on ObjectFit mode
-    /// Returns output quad size (clamped to container) and UV coords for texture sampling
     pub fn calculateFitResult(
         src_width: f32,
         src_height: f32,
@@ -473,10 +430,6 @@ test "ObjectFit calculations" {
 }
 
 test "ImageAtlas never returns an image whose pixels were evicted" {
-    // A 64² atlas holds four 62×14 images, one per shelf. Frames 2-5 cache
-    // a..d; frame 6 touches a and caches e, which evicts b. `get(b)` must miss
-    // rather than return the region e now owns, and re-caching b must place
-    // b's own pixels while a and e keep theirs.
     const testing = std.testing;
     var uploads: AtlasUploads = undefined;
     try uploads.init(
@@ -549,9 +502,6 @@ test "ImageAtlas never returns an image whose pixels were evicted" {
 }
 
 test "ImageAtlas holds exactly its entries, all live in one frame" {
-    // Goal: `image_entry_count_max` is exact. Method: an atlas of 8 entries
-    // caches 8 distinct images in one frame, and each then hits with its own
-    // region. (A 9th in that frame is the `image-cache` fail-fast check.)
     const testing = std.testing;
     var uploads: AtlasUploads = undefined;
     try uploads.init(

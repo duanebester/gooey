@@ -1,8 +1,3 @@
-//! Hand-written Win32 bindings for the Windows backend, named as in the SDK
-//! (`CreateWindowExW`, `WM_SIZE`) so each declaration can be checked against
-//! Microsoft's documentation. Win32 never changes the layout of a released
-//! struct or the value of a released constant.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -22,7 +17,6 @@ pub const HCURSOR = *opaque {};
 pub const HICON = *opaque {};
 pub const HBRUSH = *opaque {};
 pub const HMENU = *opaque {};
-/// A movable global memory block, the only kind the clipboard accepts.
 pub const HGLOBAL = *opaque {};
 pub const HANDLE = *opaque {};
 
@@ -121,8 +115,6 @@ pub const SWP_NOACTIVATE: u32 = 0x0010;
 
 pub const GWLP_USERDATA: i32 = -21;
 
-// `CreateWindowExW` parent that makes a message-only window: never shown,
-// never enumerated, and receiving no broadcasts. A pseudo-handle, -3.
 pub const HWND_MESSAGE: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
 
 pub const CF_UNICODETEXT: u32 = 13;
@@ -132,11 +124,8 @@ pub const GMEM_ZEROINIT: u32 = 0x0040;
 
 pub const PM_NOREMOVE: u32 = 0x0000;
 pub const PM_REMOVE: u32 = 0x0001;
-// Windows 8 and later add `QS_TOUCH | QS_POINTER` to `QS_INPUT`; without them
-// touch and pen input would not wake the loop.
 pub const QS_ALLINPUT: u32 = 0x1CFF;
 pub const QS_SENDMESSAGE: u32 = 0x0040;
-/// `PeekMessageW` processes only messages sent from other threads.
 pub const PM_QS_SENDMESSAGE: u32 = QS_SENDMESSAGE << 16;
 pub const MWMO_INPUTAVAILABLE: u32 = 0x0004;
 pub const WAIT_FAILED: u32 = 0xFFFF_FFFF;
@@ -144,11 +133,7 @@ pub const WAIT_OBJECT_0: u32 = 0x0000_0000;
 pub const WAIT_TIMEOUT: u32 = 0x0000_0102;
 pub const INFINITE: u32 = 0xFFFF_FFFF;
 
-// `CreateWaitableTimerExW` flags (synchapi.h). High resolution needs Windows 10
-// 1803; earlier systems reject the flag with `ERROR_INVALID_PARAMETER`.
 pub const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: u32 = 0x0000_0002;
-// `STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | TIMER_QUERY_STATE |
-// TIMER_MODIFY_STATE` (winnt.h).
 pub const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
 
 pub const SIZE_MINIMIZED: usize = 1;
@@ -157,14 +142,12 @@ pub const HTCLIENT: u16 = 1;
 
 pub const TME_LEAVE: u32 = 0x0002;
 
-// Stock cursors, passed to `LoadCursorW` as `MAKEINTRESOURCE` ordinals.
 pub const IDC_ARROW: u16 = 32512;
 pub const IDC_IBEAM: u16 = 32513;
 pub const IDC_HAND: u16 = 32649;
 pub const IDC_SIZEWE: u16 = 32644;
 pub const IDC_SIZENS: u16 = 32645;
 
-// Pseudo-handle: a small negative integer in a pointer-sized slot.
 pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 pub const USER_DEFAULT_SCREEN_DPI: u32 = 96;
 
@@ -175,7 +158,6 @@ pub const MONITOR_DEFAULTTONEAREST: u32 = 0x0000_0002;
 pub const SM_CXDOUBLECLK: i32 = 36;
 pub const SM_CYDOUBLECLK: i32 = 37;
 
-// One detent of a standard mouse wheel.
 pub const WHEEL_DELTA: i32 = 120;
 
 pub const WM_CREATE: u32 = 0x0001;
@@ -217,12 +199,10 @@ pub const WM_IME_SETCONTEXT: u32 = 0x0281;
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
 pub const WM_DPICHANGED: u32 = 0x02E0;
 
-// Mouse message `wParam` flags for the buttons held when the message was sent.
 pub const MK_LBUTTON: usize = 0x0001;
 pub const MK_RBUTTON: usize = 0x0002;
 pub const MK_MBUTTON: usize = 0x0010;
 
-// Virtual-key codes. The full translation table lives in `input.zig`.
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
 pub const VK_MENU: i32 = 0x12;
@@ -248,7 +228,6 @@ pub extern "kernel32" fn CreateWaitableTimerExW(
     dwFlags: u32,
     dwDesiredAccess: u32,
 ) callconv(.winapi) ?HANDLE;
-/// `lpDueTime` is a `LARGE_INTEGER` in 100 ns units: negative is relative.
 pub extern "kernel32" fn SetWaitableTimer(
     hTimer: HANDLE,
     lpDueTime: *const i64,
@@ -273,16 +252,11 @@ pub extern "kernel32" fn WaitForMultipleObjects(
 pub extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.winapi) BOOL;
 pub extern "kernel32" fn QueryPerformanceFrequency(lpFrequency: *i64) callconv(.winapi) BOOL;
 
-/// `DWM_TIMING_INFO` is declared under `#pragma pack(1)`, so it is read as
-/// bytes at the offsets `dwmapi.h` gives rather than as an `extern struct`.
-/// Only the fields the core host paces by are named.
 pub const DwmTimingInfo = struct {
     pub const bytes_count: u32 = 292;
-    pub const refresh_period_offset: u32 = 12; // `qpcRefreshPeriod`
-    pub const vblank_offset: u32 = 28; // `qpcVBlank`
+    pub const refresh_period_offset: u32 = 12;
+    pub const vblank_offset: u32 = 28;
 };
-/// With `hwnd` null, the timing of the composition on the primary display
-/// (required from Windows 8.1 on). Returns an `HRESULT`.
 pub extern "dwmapi" fn DwmGetCompositionTimingInfo(
     hwnd: ?HWND,
     pTimingInfo: *align(4) [DwmTimingInfo.bytes_count]u8,
@@ -410,8 +384,6 @@ pub fn hiWord(value: usize) u16 {
     return @truncate(value >> 16);
 }
 
-/// `GET_X_LPARAM`: the signed client x coordinate. Signed because a captured
-/// pointer outside the client area reports negative coordinates.
 pub fn xFromLParam(lparam: LPARAM) i16 {
     return @bitCast(loWord(@bitCast(lparam)));
 }
@@ -420,12 +392,10 @@ pub fn yFromLParam(lparam: LPARAM) i16 {
     return @bitCast(hiWord(@bitCast(lparam)));
 }
 
-/// `GET_WHEEL_DELTA_WPARAM`: signed wheel rotation in `WHEEL_DELTA` units.
 pub fn wheelDeltaFromWParam(wparam: WPARAM) i16 {
     return @bitCast(hiWord(wparam));
 }
 
-/// Whether `GetKeyState` reports the key as held: the high bit of the result.
 pub fn isKeyDown(virtual_key: i32) bool {
     assert(virtual_key > 0);
     assert(virtual_key <= 0xFF);
@@ -433,8 +403,6 @@ pub fn isKeyDown(virtual_key: i32) bool {
 }
 
 comptime {
-    // `x86_64-windows` only: every layout below and every handle in
-    // `linux/vulkan.zig` assumes 64-bit pointers.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(POINT) == 8);

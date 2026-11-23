@@ -5,8 +5,6 @@ const c = @import("c.zig").c;
 const objc = @import("main.zig");
 
 comptime {
-    // aarch64 routes every return type through the one `objc_msgSend`, but
-    // x86_64 would need the `_stret` / `_fpret` variants this port omits.
     if (builtin.target.cpu.arch != .aarch64)
         @compileError("Gooey's Objective-C wrapper supports aarch64 (Apple Silicon) only");
 }
@@ -20,8 +18,6 @@ pub fn MsgSend(comptime T: type) type {
             args: anytype,
         ) Return {
             const is_object = Return == objc.Object;
-            // The ABI return type is `c.id` when wrapping `Object`, otherwise
-            // the caller's type.
             const RealReturn = if (is_object) c.id else Return;
 
             const sel: objc.Sel = switch (@TypeOf(sel_raw)) {
@@ -41,12 +37,6 @@ pub fn MsgSend(comptime T: type) type {
     };
 }
 
-/// objc_msgSend must be called with the C ABI of the *real* target method, not
-/// as a variadic C function, so the exact function type is synthesized and
-/// `objc_msgSend` is cast to it:
-///
-///     // Wrong (garbage): objc_msgSend(obj, sel, (float)x)
-///     // Right: ((void (*)(id, SEL, float))objc_msgSend)(obj, sel, x)
 fn MsgSendFn(
     comptime Return: type,
     comptime Target: type,
@@ -72,14 +62,9 @@ fn UnwrappedArgs(comptime Args: type) type {
     return @Tuple(&types);
 }
 
-/// Maps objc wrapper types to their underlying C types for use in `@Fn`
-/// signatures.
 fn unwrapType(comptime T: type) type {
     if (T == objc.Object) return c.id;
 
-    // Other objc wrappers (Class, Sel, etc.) are identified by a single
-    // `value` field of pointer size. Return the actual field type rather than
-    // c.id, since Class and Sel have distinct pointer types.
     if (@typeInfo(T) == .@"struct") {
         const info = @typeInfo(T).@"struct";
         for (info.field_names, info.field_types) |field_name, field_type| {
@@ -89,8 +74,6 @@ fn unwrapType(comptime T: type) type {
         }
     }
 
-    // A non-C-compatible type (like []const u8) would compile but segfault at
-    // runtime via objc_msgSend; these checks turn that into a compile error.
     switch (@typeInfo(T)) {
         .int, .float, .bool, .void => {},
         .@"enum" => {},

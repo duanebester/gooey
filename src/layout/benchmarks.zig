@@ -2,15 +2,6 @@ const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
-/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
-/// local to the benchmark module so every sample site reads as a two-line
-/// capture-then-diff instead of threading `io` through every benchmark
-/// helper signature. `.awake` is the monotonic clock — deltas here can
-/// never go negative regardless of NTP or sysadmin clock edits.
-///
-/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
-/// per-call `global_single_threaded.io()` lookup compiles down to a pair
-/// of constant pointer loads — effectively free.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -34,8 +25,6 @@ const layout = gooey.internals.layout;
 
 const LayoutEngine = layout.LayoutEngine;
 
-/// The framework ceiling, the profile `ResourceLimits` documents for stress
-/// tests and benchmarks; an app budget is at most this.
 const bench_capacity = layout.LayoutCapacity.fromLimits(&gooey.ResourceLimits.ceiling);
 const Sizing = layout.Sizing;
 const SizingAxis = layout.SizingAxis;
@@ -53,8 +42,6 @@ fn getMinSampleIterations(node_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark; zero in
-/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 const BenchmarkResult = struct {
@@ -76,8 +63,6 @@ const BenchmarkResult = struct {
         return avg_ns / @as(f64, @floatFromInt(self.node_count));
     }
 
-    /// Minimum observed per-node nanoseconds — the best-of-N estimator, least
-    /// perturbed by runner noise. Mirrors `timePerOpNs` on the min sample.
     pub fn minPerOpNs(self: BenchmarkResult) f64 {
         std.debug.assert(self.iterations > 0);
         std.debug.assert(self.node_count > 0);
@@ -458,7 +443,7 @@ test "validate: percentage_and_ratio" {
 
 fn buildDeepNesting(engine: *LayoutEngine) !u32 {
     var count: u32 = 0;
-    const depth: u32 = 50; // Within every profile's `build.box_depth_max` (64).
+    const depth: u32 = 50;
 
     for (0..depth) |_| {
         try engine.openElement(.{
@@ -625,10 +610,6 @@ test "validate: percentage_sizing" {
     try validateBenchmark(buildPercentageSizing, 1001);
 }
 
-// A data table on one grid: a header and 300 row boxes of six cells, over
-// fit, grow, fixed, and percent columns, as `docs/layout-grid.md` sketches.
-// The cell widths vary by row so the fit columns take their widest cell.
-
 const grid_table_columns = [_]layout.Track{
     .{},
     .{ .axis = SizingAxis.grow() },
@@ -676,9 +657,6 @@ test "validate: grid_table" {
     try validateBenchmark(buildGridTable, 2107);
 }
 
-// A dashboard of 100 cards on 12 equal grow columns, spanning 3, 4, and 6
-// in turn, each card a nested two-column grid of label and value cells.
-
 const grid_cards_columns: [12]layout.Track = @splat(.{ .axis = SizingAxis.grow() });
 const grid_card_columns = [_]layout.Track{ .{}, .{ .axis = SizingAxis.grow() } };
 
@@ -712,10 +690,6 @@ fn buildGridCards(engine: *LayoutEngine) !u32 {
 test "validate: grid_cards" {
     try validateBenchmark(buildGridCards, 501);
 }
-
-// Text truncation (`docs/text-truncation.md`): 100 cards of a 400-word body,
-// clamped to three lines with an ellipsis or not clamped at all, and 1,000
-// one-line table cells cut with an ellipsis. Text measures 7 px a byte.
 
 const truncation_body: [400 * 6]u8 = blk: {
     @setEvalBranchQuota(10_000);
@@ -811,11 +785,6 @@ test "validate: text_ellipsis_cells" {
     try validateBenchmark(buildTextEllipsisCells, 1251);
 }
 
-// Models 127 open modals, each with a nested dropdown and later modal content.
-// This nearly saturates the ceiling's 255 floating roots (one per layer, a
-// `u8` fragment index) and positions nested floats on two-thirds of all
-// elements without overflowing the floating pool.
-
 fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
     const group_count: u32 = 127;
     comptime {
@@ -853,8 +822,6 @@ test "validate: nested_floating_overlays" {
     try validateBenchmark(buildNestedFloatingOverlays, 382);
 }
 
-/// Print a layout benchmark result and record it in the JSON reporter.
-/// Maps the layout-specific `node_count` field to the common `operation_count`.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.addEntry(bench.entry(
         result.name,
@@ -864,7 +831,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.minPerOpNs(),
     ));
     result.print();
-    // Printing stays outside the next benchmark's Cachegrind region.
     reporter.beginBenchmark();
 }
 
@@ -905,7 +871,6 @@ fn printTableHeader(comptime title: []const u8) void {
     std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
 }
 
-/// `endFrame` alone, in the order the Cachegrind gate's baselines use.
 fn collectLayoutOnly(reporter: *bench.Reporter) void {
     collect(reporter, runBenchmark("nested_floating_overlays", buildNestedFloatingOverlays));
     collect(reporter, runBenchmark("wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
@@ -927,7 +892,6 @@ fn collectLayoutOnly(reporter: *bench.Reporter) void {
     collect(reporter, runBenchmark("text_ellipsis_cells", buildTextEllipsisCells));
 }
 
-/// `beginFrame`, the tree build, and `endFrame`, in the gate's order.
 fn collectFullFrame(reporter: *bench.Reporter) void {
     collect(reporter, runFullFrameBenchmark(
         "full_nested_floating_overlays",

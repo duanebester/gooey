@@ -1,17 +1,10 @@
-// Every layout allocation, text copies and wrapped lines, comes from one
-// buffer the engine reserved at initialization and resets at the start of
-// each frame; exhausting it is an error, so layout never reaches a
-// general-purpose allocator after initialization (CLAUDE.md §2).
-
 const std = @import("std");
 
-/// Per-frame arena over a reserved buffer.
 pub const LayoutArena = struct {
     fixed: std.heap.FixedBufferAllocator,
 
     const Self = @This();
 
-    // The caller must keep `buffer` alive and unchanged for the arena's lifetime.
     pub fn init(buffer: []u8) Self {
         std.debug.assert(buffer.len > 0);
         const arena: Self = .{ .fixed = std.heap.FixedBufferAllocator.init(buffer) };

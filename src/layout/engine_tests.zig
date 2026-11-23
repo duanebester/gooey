@@ -14,8 +14,6 @@ const TextMeasurement = engine_mod.TextMeasurement;
 const LayoutCapacity = engine_mod.LayoutCapacity;
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 
-/// Every engine here holds the `standard` profile's capacities, as an app on
-/// that profile would; there is no unbudgeted engine.
 const test_capacity = LayoutCapacity.fromLimits(&ResourceLimits.standard);
 
 const Sizing = types.Sizing;
@@ -29,8 +27,6 @@ const CornerRadius = types.CornerRadius;
 const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
 
-/// The computed bounds of the element at `index`, in creation order: the
-/// engine appends elements as `openElement` and `text` create them.
 fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
     assert(index < engine.elements.len());
     const bounds = engine.elements.getConst(index).computed.bounding_box;
@@ -154,11 +150,6 @@ test "shrink behavior" {
 }
 
 test "a grow scroll container's children overflow it instead of shrinking" {
-    // Goal: a scroll container sized by the uniform-grow fast path (the only
-    // grow-both-axes child of its parent) lets its children keep their size
-    // along the scroll axis, as every other sizing path does. Methodology: a
-    // 100 px tall viewport holds a vertical scroll container whose box child
-    // fits two 80 px children; the box must keep its 160 px.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
@@ -229,11 +220,6 @@ test "percent with min/max" {
     try std.testing.expectEqual(@as(f32, 300), elem.computed.sized_width);
 }
 
-// A percent child takes its fraction once, of its parent's content less the
-// gaps between flow children (decision 25). The fractions 0.5 and 0.25 beside
-// a grow child tell the readings apart: of the content less gaps, 190 and 95
-// leave the grow child 95; of the whole content, 200 and 100 leave it 80; and
-// a fraction taken twice, as the grow rule once did, gives 100 and 25.
 test "percent children take their fraction once, less the gaps" {
     const directions = [_]LayoutDirection{ .left_to_right, .top_to_bottom };
     for (directions) |direction| {
@@ -551,14 +537,6 @@ test "wrapped text does not grow a fixed-height ancestor" {
 }
 
 test "wrapped text grows its floating panel but not the panel's host" {
-    // Goal: wrapped lines inside a floating panel must grow the panel, as they
-    // grow any fit-content parent, while the panel must not grow its host.
-    // Methodology: both texts wrap "abcdefghij abcdefghij" (210 px at 10 px a
-    // character) to three 20 px lines in 100 px: the first word fills its
-    // line, its space overflows and breaks there, and the second word does
-    // not fit after that space, so the space is a line of its own. Without
-    // the fix the panel stays one line tall (40 px) and the host counts the
-    // panel in its height (100 px).
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
@@ -590,10 +568,6 @@ test "wrapped text grows its floating panel but not the panel's host" {
 }
 
 test "a floating panel sizes its children once, as the main pass does" {
-    // Goal: a floating subtree runs widths, wrapping, and heights once, as
-    // the main tree does. Method: a 200 px panel holds a 50 % child, which
-    // must be 100 px; sizing each element again from its own size, as the
-    // floating pass once did, took the fraction twice and gave 50.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
@@ -614,12 +588,6 @@ test "a floating panel sizes its children once, as the main pass does" {
 }
 
 test "an overflowing row shrinks its widest children first, down to their floors" {
-    // Goal: Clay's shrink (decision 26). Method: a 300 px row holds three
-    // wrapping texts at 10 px a character, one-line widths 300, 100, and 40,
-    // that must lose 140 px. Largest first caps the 300 px text at 160 and
-    // leaves 100 and 40 alone (160 + 100 + 40 = 300); one shrink ratio would
-    // give 204.5, 68.2, and 27.3, cutting the 40 px word "dddd", which is
-    // also its floor. The shrunk text wraps at its 160 px, not the row's 300.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
@@ -640,15 +608,10 @@ test "an overflowing row shrinks its widest children first, down to their floors
     try std.testing.expectApproxEqAbs(@as(f32, 100), third.x - second.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 40), third.width, 0.01);
     try std.testing.expect(first.width <= 160);
-    try std.testing.expectEqual(@as(f32, 40), first.height); // Two 20 px lines.
+    try std.testing.expectEqual(@as(f32, 40), first.height);
 }
 
 test "a column whose shrink lands on a breakpoint by rounding keeps that level" {
-    // Goal: leveling's later rounds start at a breakpoint that overflows in
-    // exact arithmetic but may fit after f32 rounding; that level is then
-    // the answer, not a broken invariant. Method: the smallest tree the
-    // fuzzer found. A 0.01 percent row of aspect 0.25 sits in a grow column
-    // beside a grow column with 3 px padding, in fit columns.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(64, 64);
@@ -678,8 +641,6 @@ test "a column whose shrink lands on a breakpoint by rounding keeps that level" 
     engine.closeElement();
     try engine.endFrame();
 
-    // The row is 1 % of its 4 px parent, 0.04 wide, so 0.16 tall; the fit
-    // column holds 6 and 0.16, and both grow children keep their minimums.
     const percent_row = boundingBox(&engine, 5);
     try std.testing.expectApproxEqAbs(@as(f32, 0.16), percent_row.height, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 6.16), boundingBox(&engine, 2).height, 0.0001);
@@ -689,11 +650,6 @@ test "a column whose shrink lands on a breakpoint by rounding keeps that level" 
 }
 
 test "a grow box beside a fixed one takes its share and its text wraps there" {
-    // Goal: a grow child floors at its content's floor, its widest word, not
-    // at its one-line width. Method: a 400 px row holds a fixed 100 px box
-    // and a grow column with a 760 px text of 50 px words. The column must
-    // take the remaining 300 px, where the text wraps; flooring at the
-    // one-line width made it 760 px wide, off the row.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
@@ -716,15 +672,10 @@ test "a grow box beside a fixed one takes its share and its text wraps there" {
     const text = boundingBox(&engine, 3);
     try std.testing.expectEqual(@as(f32, 300), column.width);
     try std.testing.expect(text.width <= 300);
-    try std.testing.expectEqual(@as(f32, 60), column.height); // 15 words, 6 a line.
+    try std.testing.expectEqual(@as(f32, 60), column.height);
 }
 
 test "a grow child held at its floor takes space from its grow sibling" {
-    // Goal: a grow child whose floor is above its share no longer pushes the
-    // row past its width. Method: a 300 px row of two weight-1 grow boxes,
-    // the first holding a 200 px unwrapped text. Shares of 150 floor the
-    // first at 200, so the second gives way to 100 (200 + 100 = 300); before,
-    // it kept 150 and the row overflowed by 50.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
@@ -740,20 +691,11 @@ test "a grow child held at its floor takes space from its grow sibling" {
     engine.closeElement();
     try engine.endFrame();
 
-    // The level is bisected, so it lands within a few ulps of 100.
     try std.testing.expectEqual(@as(f32, 200), boundingBox(&engine, 1).width);
     try std.testing.expectApproxEqAbs(@as(f32, 100), boundingBox(&engine, 3).width, 0.01);
 }
 
 test "a text of more words than one wrap batch wraps as one batch would" {
-    // Goal: the word scratch bounds a batch, not a text. A long text wraps in
-    // batches whose line in progress carries into the next, so its lines are
-    // the ones one pass would make. Method: 3,000 "ab" words (20 px, spaces
-    // 10 px) in 95 px fit three to a line ("ab ab ab ", 90 px with the space
-    // that counts toward fitting), so there must be 1,000 lines of 90 px, the
-    // last 80 px with no space, each starting 9 bytes after the last. The
-    // batches hold 1,024 words, 3 × 341 + 1, so each batch boundary falls
-    // inside a line, where a lost carry would start a short line.
     const word_count = 3_000;
     comptime assert(word_count > 2 * test_capacity.word_count_text_max);
     const text = comptime blk: {
@@ -781,7 +723,6 @@ test "a text of more words than one wrap batch wraps as one batch would" {
     try std.testing.expectEqual(@as(usize, word_count / 3), lines.len);
     for (lines, 0..) |line, index| {
         try std.testing.expectEqual(@as(u32, @intCast(index * 9)), line.start_offset);
-        // A wrapped line keeps its trailing space; the last line has none.
         const length: u32 = if (index + 1 == lines.len) 8 else 9;
         try std.testing.expectEqual(length, @as(u32, line.extent.length));
         const width: f32 = if (index + 1 == lines.len) 80 else 90;
@@ -791,12 +732,6 @@ test "a text of more words than one wrap batch wraps as one batch would" {
 }
 
 test "a word before a line break wraps and counts its space like any other" {
-    // Goal: the last word of a paragraph packs as every other word does
-    // (it ran past the column in long chat replies). Method: letters are
-    // 10 px and spaces 10 px, in 75 px. "aa bb" is 50 px with its space, not
-    // the 40 px of its words alone; "cc dd ee" is 80 px, so "ee" wraps to its
-    // own line before the break instead of overflowing, leaving "cc dd " 60 px
-    // with the space that counts toward fitting; "ff" ends the text.
     const text = "aa bb\ncc dd ee\nff";
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
@@ -1023,19 +958,10 @@ test "space_between with single child stays at start" {
     try std.testing.expectEqual(@as(f32, 0.0), child.computed.bounding_box.x);
 }
 
-/// Records what the layout engine asks the text-measurement callback to
-/// measure, so tests can assert *how much* measuring a frame does rather than
-/// only what it computes.  Widths mirror the 10px-per-character mock used by
-/// the wrapping tests above.
 const MeasureRecorder = struct {
-    /// Byte length of the message under test.  `text()` measures the whole
-    /// string in a single call, while `wrapText` only ever measures individual
-    /// words, so a call of exactly this length is unambiguously the former.
     whole_string_len: u32,
     call_count: u32 = 0,
     whole_string_calls: u32 = 0,
-    /// Longest call that was not the whole string — the longest word wrapping
-    /// measured.
     longest_word_len: u32 = 0,
 
     fn measure(
@@ -1062,34 +988,13 @@ const MeasureRecorder = struct {
     }
 };
 
-/// Shape cache insert limit from `text.ShapedRunCache.MAX_GLYPHS_PER_ENTRY`,
-/// duplicated as a plain constant so the layout tests stay free of any
-/// dependency on the platform text backend.
 const SHAPE_CACHE_INSERT_LIMIT: u32 = 128;
 
 test "wrapped text re-measures the whole string on every frame" {
-    // Goal: pin the measurement pattern of `LayoutEngine.text()`.  It measures
-    // the entire string unconditionally, but for wrap-enabled text
-    // `computeTextWrapping` recomputes width and height from per-word
-    // measurements later in the same frame and overwrites both.
-    //
-    // That whole-string call is the only one long enough to exceed the shape
-    // cache's 128-glyph insert limit, so `ShapedRunCache.put` refuses it.
-    // `TextSystem.MeasureCache` absorbs it by caching width without glyphs,
-    // so the call is a hash lookup rather than a full platform shape every
-    // frame.  The count below is therefore expected to equal the frame count
-    // -- the text layer removes the cost, not the call.
-    //
-    // Methodology: lay out one long wrapped paragraph across several frames
-    // with a recording measure callback, then assert the whole-string call
-    // happens once per frame and that every other call is a short word.
     const message = "The quick brown fox jumps over the lazy dog while the " ++
         "cat watches from a sunny windowsill and the world turns slowly " ++
         "onward through another long and uneventful afternoon";
 
-    // The message sits in the band that the shaped-run cache cannot store: past
-    // its insert limit but under the lookup gate.  This is exactly the range
-    // `MeasureCache` exists to cover.
     try std.testing.expect(message.len > SHAPE_CACHE_INSERT_LIMIT);
     try std.testing.expect(message.len < 512);
 
@@ -1117,29 +1022,13 @@ test "wrapped text re-measures the whole string on every frame" {
         try engine.endFrame();
     }
 
-    // One whole-string measurement per frame, whose result is superseded by
-    // wrapping before the frame ends.  Deliberately NOT driven to 0: the value
-    // feeds Phase 1 min-sizing (`content_width = @max(content_width,
-    // td.measured_width)` in sizing_pass.zig), so skipping it would change the
-    // min content width of any fit-content ancestor -- a behaviour change, not
-    // an optimisation.  The cost is removed in the text layer instead.
     try std.testing.expectEqual(frame_count, recorder.whole_string_calls);
 
-    // Wrapping itself is cache-friendly: every other measurement is a
-    // single word, comfortably inside the shaped-run cache's insert limit.
     try std.testing.expect(recorder.longest_word_len > 0);
     try std.testing.expect(recorder.longest_word_len < SHAPE_CACHE_INSERT_LIMIT);
 }
 
 test "unwrapped text depends on the whole-string measurement" {
-    // Goal: guard the obvious over-correction.  With `wrap_mode == .none`,
-    // `computeTextWrapping` returns early and never overwrites the measurement,
-    // so `text()`'s whole-string call is the *only* source of the element's
-    // size.  Any fix that skips measuring must keep this path exact, which is
-    // why the redundancy cannot simply be deleted for all text.
-    //
-    // Methodology: lay out one unwrapped string and assert the sized width
-    // still matches what the measure callback reported.
     const message = "Sized entirely by the whole-string measurement";
 
     var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
@@ -1150,7 +1039,6 @@ test "unwrapped text depends on the whole-string measurement" {
     engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
     engine.beginFrame(800, 600);
 
-    // 500 px holds the 460 px text, which a narrower column would cut.
     try engine.openElement(.{
         .layout = .{
             .sizing = Sizing.fixed(500, 600),
@@ -1174,14 +1062,6 @@ test "unwrapped text depends on the whole-string measurement" {
 }
 
 test "gaps wider than their box overflow it, and its grow children get none" {
-    // Goal: when only the gaps overflow a box (its children desire nothing),
-    // the grow children size to 0 and the row overflows, as in CSS flexbox
-    // and clay, without tripping an assertion (layout fuzz crash at
-    // sizing_pass.zig:421). Methodology: a 20 px wide row with 16 px gaps
-    // holds four empty grow children and an empty 0 px fixed one, which
-    // keeps the uniform-grow fast path out; the four gaps need 64 px. Every
-    // child must be 0 px wide, start 16 px after the one before, and stay
-    // finite, so the last starts at 64, past the row's 20 px.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
@@ -1223,7 +1103,6 @@ test "gaps wider than their box overflow it, and its grow children get none" {
     try std.testing.expect(last.x > row_x + 20);
 }
 
-/// A childless box of a fixed size, for the wrapping tests.
 fn fixedLeaf(engine: *LayoutEngine, width: f32, height: f32) !void {
     assert(width >= 0);
     assert(height >= 0);
@@ -1232,9 +1111,6 @@ fn fixedLeaf(engine: *LayoutEngine, width: f32, height: f32) !void {
 }
 
 test "a wrapping row breaks before the child that overflows, and fits its lines" {
-    // Five 100 px children with gaps of 10 in a 290 px content width: two
-    // fit (210), a third would not (320). Lines are as tall as their
-    // tallest child, so line tops come from heights 40 and 30, not 20.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
@@ -1252,7 +1128,6 @@ test "a wrapping row breaks before the child that overflows, and fits its lines"
     engine.closeElement();
     try engine.endFrame();
 
-    // Lines of 40, 30, and 25, two gaps, and the padding.
     const height_expected: f32 = 40 + 10 + 30 + 10 + 25 + 10;
     try std.testing.expectEqual(height_expected, boundingBox(&engine, 0).height);
     const expected = [_][2]f32{ .{ 5, 5 }, .{ 115, 5 }, .{ 5, 55 }, .{ 115, 55 }, .{ 5, 95 } };
@@ -1264,8 +1139,6 @@ test "a wrapping row breaks before the child that overflows, and fits its lines"
 }
 
 test "a wrapping row keeps a child that fits exactly on its line" {
-    // Three 100 px children and two 10 px gaps fill 320 px exactly; at
-    // 319 px the third wraps, below the first line and a 10 px gap.
     const widths = [_]f32{ 320, 319 };
     const third_y = [_]f32{ 0, 30 };
     for (widths, third_y) |width, y| {
@@ -1287,11 +1160,6 @@ test "a wrapping row keeps a child that fits exactly on its line" {
 }
 
 test "grow children share their own line's free width, and a long child is cut to the row" {
-    // Line 1 is a 90 px box and grow boxes of weight 1 and 2: they share
-    // 300 - 90 = 210 as 70 and 140. The 250 px box would overflow line 1, so
-    // it starts line 2. The fit box around a 500 px box is wider than the
-    // row, so it takes line 3 alone, cut to the row's width; a fixed width
-    // would be its minimum, and would overflow instead.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
@@ -1327,10 +1195,6 @@ test "grow children share their own line's free width, and a long child is cut t
 }
 
 test "a wrapping row aligns each line on its own, and children within their line" {
-    // Main-axis centre places each line by its own width: line 1 (100, 100,
-    // and 80 px) starts at 10 in 300, line 2 (150 px) at 75. Cross-axis
-    // centre uses line 1's height (40), not the row's, so the 20 px child
-    // sits 10 down, and the cross-axis grow child stretches to the line.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
@@ -1361,10 +1225,6 @@ test "a wrapping row aligns each line on its own, and children within their line
 }
 
 test "fit-content parents grow to heights that wrapping and aspect ratios derive from widths" {
-    // A fit column holds a grow-width wrapping row of four 100x20 boxes in
-    // 300 px (two lines, 40 tall), a grow-width 2:1 box (150 tall), and a
-    // 10 px box. Their minimums say 20 and 0, so the column must learn the
-    // derived heights after sizing to place the box at 190 and be 200 tall.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
@@ -1394,13 +1254,6 @@ test "fit-content parents grow to heights that wrapping and aspect ratios derive
 }
 
 test "heights that follow a sibling's or a parent's are sized after text wraps" {
-    // Goal: heights are sized after text wraps, as Clay orders its passes.
-    // Method: a 50 px box holds "aaaa bbbb cccc" at 10 px a character, which
-    // wraps to three 10 px lines, 30 px, where its one-line height is 10. A
-    // grow-height sibling holds a grow-height column. In a fit-height row,
-    // wrapping or not, both must stretch to the 30 px the text makes, not
-    // the 10 px it measured on one line. In a 100 px column the sibling must
-    // take the 70 px the text leaves, not 90, which would overflow it.
     const Case = struct {
         wrap: bool,
         direction: LayoutDirection,
@@ -1454,8 +1307,6 @@ test "heights that follow a sibling's or a parent's are sized after text wraps" 
 }
 
 test "a wrapping scroll row scrolls to the end of its lines" {
-    // Six 100x40 boxes in 300 px make two lines, 80 tall, in a 50 px view:
-    // the end is 30 down. Measuring one line's height would give 0.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
@@ -1472,12 +1323,8 @@ test "a wrapping scroll row scrolls to the end of its lines" {
     try std.testing.expectEqual(@as(f32, 40 - 30), boundingBox(&engine, 4).y);
 }
 
-// Text truncation (`docs/text-truncation.md`). Every text here measures 10 px
-// a byte, so "…", three bytes, is 30 px, and lines are 10 px apart.
-
 const truncated: TextConfig = .{ .font_size = 10, .line_height = 100, .overflow = .ellipsis };
 
-/// `text` `count` times over, at compile time.
 inline fn repeated(comptime text: []const u8, comptime count: usize) *const [text.len * count]u8 {
     comptime {
         var bytes: [text.len * count]u8 = undefined;
@@ -1487,8 +1334,6 @@ inline fn repeated(comptime text: []const u8, comptime count: usize) *const [tex
     }
 }
 
-/// Lay out `content` with `config` in a column `width` wide and return its
-/// text element.
 fn truncationColumn(
     engine: *LayoutEngine,
     width: f32,
@@ -1509,8 +1354,6 @@ fn truncationColumn(
 }
 
 test "an ellipsis text that does not wrap is cut at its column's width, one line tall" {
-    // Goal: the one-line cut and its boundary. 10 bytes fit 100 px exactly
-    // and stay uncut; 11 and 40 are one `cut_if_wide` line at the cut width.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
@@ -1529,7 +1372,6 @@ test "an ellipsis text that does not wrap is cut at its column's width, one line
         try std.testing.expectEqual(@as(f32, 10), cut.computed.bounding_box.height);
     }
 
-    // `.clip` cuts it the same way, with no ellipsis, and keeps its floor.
     const clipped = try truncationColumn(&engine, 100, repeated("a", 40), .{ .font_size = 10 });
     const clip_lines = clipped.text_data.?.wrapped_lines.?;
     try std.testing.expectEqual(@as(usize, 1), clip_lines.len);
@@ -1538,7 +1380,6 @@ test "an ellipsis text that does not wrap is cut at its column's width, one line
     try std.testing.expectEqual(@as(f32, 0), clipped.text_data.?.ellipsis_width);
     try std.testing.expectEqual(@as(f32, 400), clipped.computed.floor_width);
 
-    // In a box that scrolls along x the text scrolls instead: uncut.
     engine.beginFrame(800, 600);
     try engine.openElement(.{
         .layout = .{ .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() } },
@@ -1551,8 +1392,6 @@ test "an ellipsis text that does not wrap is cut at its column's width, one line
 }
 
 test "a clamp keeps line_count_max lines and cuts the last only when text follows" {
-    // Goal: the clamp at, below, and one past its boundary. "aaaa bbbb " is
-    // 100 px, so ten words make five lines of two.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     const content = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj";
@@ -1575,7 +1414,6 @@ test "a clamp keeps line_count_max lines and cuts the last only when text follow
         try std.testing.expectEqual(@as(u32, count), engine.wrapped_line_count);
         const last = lines[count - 1];
         try std.testing.expectEqual(types.LineEnd.cut, last.extent.end);
-        // The last line runs on to the paragraph's end so emit can fill it.
         try std.testing.expectEqual(@as(u32, @intCast(content.len)), last.start_offset +
             @as(u32, last.extent.length));
         try std.testing.expectEqual(@as(f32, 100), last.width);
@@ -1585,7 +1423,6 @@ test "a clamp keeps line_count_max lines and cuts the last only when text follow
         }
     }
 
-    // `.clip` drops the lines past the limit and marks none.
     clamped.overflow = .clip;
     clamped.line_count_max = 2;
     const clipped = try truncationColumn(&engine, 100, content, clamped);
@@ -1632,9 +1469,6 @@ test "a word wider than a wrapping ellipsis text's line is cut on a line of its 
 }
 
 test "an overflowing row cuts an ellipsis text first, down to the ellipsis" {
-    // Goal: the floor. A 400 px text beside a 300 px box: in 500 px the text
-    // takes 200; in 330 it is at its floor, the ellipsis's 30 px, and stays
-    // there in 310. Without `.ellipsis` its floor is its whole width.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
@@ -1687,8 +1521,6 @@ test "a fit box around an ellipsis text floors at the ellipsis and its padding" 
 }
 
 test "a clamped text's parent takes the clamped height, and measureText agrees" {
-    // Goal: heights after widths (decision 27) see the clamp, and the
-    // build-time measure sizes what layout lays out.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     const body = repeated("word ", 200);

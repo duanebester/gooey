@@ -59,12 +59,9 @@ pub const SizingMinMax = struct {
     }
 };
 
-/// Grow constraints: min/max like `SizingMinMax`, plus the share of a
-/// parent's free main-axis space relative to grow siblings.
 pub const GrowSizing = struct {
     min: f32 = 0,
     max: f32 = std.math.floatMax(f32),
-    /// Grow siblings split free space in proportion to their weights.
     weight: f32 = 1,
 };
 
@@ -208,11 +205,8 @@ pub const MainAxisDistribution = enum {
     start,
     center,
     end,
-    /// Equal space between children, no space at edges
     space_between,
-    /// Equal space around children (half space at edges)
     space_around,
-    /// Equal space between and around children
     space_evenly,
 };
 
@@ -257,7 +251,6 @@ pub const ChildAlignment = struct {
     }
 };
 
-/// Padding/margin on each side (u16 for compact storage)
 pub const Padding = struct {
     left: u16 = 0,
     right: u16 = 0,
@@ -335,7 +328,6 @@ pub const ShadowConfig = struct {
     offset_y: f32 = 4,
 
     pub fn drop(blur: f32) ShadowConfig {
-        // 0.4: offset y scales with blur radius; aesthetic constant.
         return .{
             .blur_radius = blur,
             .offset_y = blur * 0.4,
@@ -351,7 +343,6 @@ pub const ShadowConfig = struct {
     }
 
     pub fn colored(blur: f32, color: Color) ShadowConfig {
-        // Same 0.4 blur-to-offset ratio as `drop`.
         return .{
             .blur_radius = blur,
             .color = color,
@@ -373,17 +364,8 @@ pub const LayoutConfig = struct {
     child_alignment: ChildAlignment = .{},
     layout_direction: LayoutDirection = .left_to_right,
     main_axis_distribution: MainAxisDistribution = .start,
-    /// Aspect ratio (width / height). When set, height is derived from width.
     aspect_ratio: ?f32 = null,
-    /// Break a `left_to_right` row into lines at its content width, as CSS
-    /// `flex-wrap: wrap`: children keep their own widths, grow children share
-    /// each line's free width, and lines stack top to bottom `child_gap`
-    /// apart. Its minimum width is its widest child's.
     wrap: bool = false,
-    /// A grid box lays its children on its grid's columns (`GridConfig`,
-    /// given to `LayoutEngine.openElementWith`); a row box is one of its
-    /// children that spans a whole row and lays its own children on those
-    /// columns. Every other box is `.none`.
     grid: GridRole = .none,
 
     pub fn row(gap: u16) LayoutConfig {
@@ -407,40 +389,25 @@ pub const LayoutConfig = struct {
 
 pub const GridRole = enum(u8) { none, grid, row };
 
-/// Columns or rows one grid lists, and the most columns a cell may span.
-/// A framework constant: it sizes every `GridSlot`, and no layout needs more.
 pub const grid_track_count_max: u8 = 32;
 
-/// A cell with no column of its own takes the placement cursor's.
 pub const cell_column_auto: u8 = std.math.maxInt(u8);
 
-/// One column or row of a grid. `axis` means what it means for a child:
-/// `.fixed` pixels, `.fit` content, `.grow` a weighted share of free space,
-/// `.percent` a fraction of the grid's content size less its gaps, each
-/// between the axis's min and max.
 pub const Track = struct {
     axis: SizingAxis = .{},
-    /// Where a child that does not fill its cell sits along the track;
-    /// `.auto` takes the grid's `child_alignment`.
     alignment: TrackAlignment = .auto,
 };
 
 pub const TrackAlignment = enum(u8) { auto, start, center, end };
 
-/// A grid's tracks, copied into the engine's grid slot when it opens, so
-/// the slices need only live until `openElementWith` returns.
 pub const GridConfig = struct {
     columns: []const Track,
-    /// The first rows; every row past them takes `row_implicit`.
     rows: []const Track = &.{},
     row_implicit: Track = .{},
-    /// Between rows. Columns are `child_gap` apart.
     row_gap: f32 = 0,
 };
 
-/// Where a child of a grid or a row box sits.
 pub const Cell = struct {
-    /// The first column, from 0, or `cell_column_auto` for the next free.
     column: u8 = cell_column_auto,
     column_span: u8 = 1,
 };
@@ -475,8 +442,6 @@ pub const AttachPoint = enum {
 
 pub const FloatingConfig = struct {
     offset: Offset2D = .{},
-    /// Position against the direct parent; false positions against the
-    /// viewport (modals).
     attach_to_parent: bool = true,
     element_attach: AttachPoint = .left_top,
     parent_attach: AttachPoint = .left_top,
@@ -501,16 +466,10 @@ pub const FloatingConfig = struct {
 pub const ScrollConfig = struct {
     horizontal: bool = false,
     vertical: bool = false,
-    /// The offset children are placed at. With a `target`, the position pass
-    /// resolves it against this frame's content and writes the offset it
-    /// used back here, for the caller to keep.
     scroll_offset: Offset2D = .{},
     target: ScrollTarget = .none,
 };
 
-/// Where a scroll container's offset comes from this frame: `scroll_offset`
-/// (`.none`), or a place in the content the position pass measures: its
-/// start or end, an offset clamped to it, or one child brought into view.
 pub const ScrollTarget = union(enum) {
     none,
     start,
@@ -520,19 +479,12 @@ pub const ScrollTarget = union(enum) {
 };
 
 pub const ScrollChild = struct {
-    /// The child's element index; it must be a direct, non-floating child.
     index: u32,
     alignment: ScrollAlignment,
 };
 
 pub const ScrollAlignment = enum { start, center, end, nearest };
 
-/// One line of wrapped text: its bytes from `start_offset`, how it ends, and
-/// its width. A cut line's width is the width it is cut at, so the widest
-/// line, the text's box, and emit's culling read it as any other line.
-/// The length and the end share a `u32`, so a line stays 12 bytes: a line
-/// is at most `line_length_max` bytes, which the core's text budget bounds
-/// at compile time (`LayoutCapacity`).
 pub const WrappedLine = struct {
     start_offset: u32,
     extent: Extent,
@@ -544,17 +496,10 @@ pub const WrappedLine = struct {
     };
 };
 
-/// How a line ends (`docs/text-truncation.md`, "Which lines are cut"):
-/// `whole` draws as it is; `cut_if_wide` is a line layout measured wider
-/// than its cut width, which emit cuts unless its shaped width fits;
-/// `cut` is the last line a `line_count_max` kept with text after it, which
-/// always ends in an ellipsis.
 pub const LineEnd = enum(u2) { whole, cut_if_wide, cut };
 
-/// What `.ellipsis` draws after a cut line's kept bytes: U+2026.
 pub const ellipsis = "\u{2026}";
 
-/// The most bytes one wrapped line holds, and so one text the engine wraps.
 pub const line_length_max: u32 = std.math.maxInt(u30);
 
 comptime {
@@ -570,9 +515,7 @@ pub const TextConfig = struct {
     wrap_mode: WrapMode = .none,
     alignment: TextAlignment = .left,
     decoration: TextDecorationConfig = .{},
-    /// The most lines a wrapping text keeps; 0 keeps every line.
     line_count_max: u8 = 0,
-    /// What marks a line cut short: `.clip` none, `.ellipsis` a trailing "…".
     overflow: Overflow = .clip,
 
     pub const WrapMode = enum { none, words, newlines };

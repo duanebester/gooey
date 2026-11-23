@@ -1,11 +1,3 @@
-//! BarChart stores a slice to externally-owned series data; the caller must
-//! keep the data alive while the chart renders. Capacities are the app's,
-//! fixed at comptime:
-//! `const Sales = BarChart(.{ .category_count_max = 8, .series_count_max = 1 });`
-//! sizes `Sales.Series` for 8 categories. Each render keeps one
-//! `[category_count_max][]const u8` label array and one `BandScale` (sized by
-//! the framework's category ceiling) on the stack.
-
 const std = @import("std");
 const paint = @import("../paint.zig");
 const constants = @import("../constants.zig");
@@ -30,8 +22,6 @@ pub const Painter = paint.Painter;
 
 pub const default_palette = theme_mod.google_palette;
 
-/// A bar chart drawing up to `capacity.series_count_max` series, each holding
-/// up to `capacity.category_count_max` categories.
 pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
     capacity.check();
     return struct {
@@ -72,14 +62,12 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
 
         pub const Series = types.CategorySeries(category_count_max);
 
-        /// The slice must outlive the chart; the data is not copied.
         pub fn init(data: []const Series) Self {
             std.debug.assert(data.len > 0);
             std.debug.assert(data.len <= series_count_max);
             return .{ .data = data };
         }
 
-        /// The series must outlive the chart; the data is not copied.
         pub fn initSingle(series: *const Series) Self {
             const slice: []const Series = @as([*]const Series, @ptrCast(series))[0..1];
             return .{ .data = slice };
@@ -96,7 +84,6 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
             return info;
         }
 
-        /// Writes into `buf` and returns a slice of it.
         pub fn describe(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.describe(&info, buf);
@@ -107,7 +94,6 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
             return a11y.summarize(&info, buf);
         }
 
-        /// Render the bar chart, offset by the paint element's bounds.
         pub fn render(self: *const Self, painter: *Painter) void {
             std.debug.assert(self.data.len > 0);
             std.debug.assert(self.width > 0 and self.height > 0);
@@ -136,7 +122,7 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
             const y_scale = LinearScale.init(
                 nice_range.min,
                 nice_range.max,
-                inner_y + inner_height, // Y is inverted (0 at bottom)
+                inner_y + inner_height,
                 inner_y,
             );
 
@@ -165,7 +151,6 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
             }
         }
 
-        /// The category labels, from the first series, written to `out`; returns their count.
         fn categoryLabels(self: *const Self, out: *[category_count_max][]const u8) u32 {
             const first = &self.data[0];
             std.debug.assert(first.data_len > 0);
@@ -184,7 +169,6 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
                 max = @max(max, series_max);
             }
 
-            // Non-zero max keeps scaling sane.
             return if (max > 0) max else 1;
         }
 
@@ -198,7 +182,7 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
             width: f32,
             height: f32,
         ) void {
-            _ = x_scale; // Band scale doesn't use x ticks for horizontal lines
+            _ = x_scale;
 
             var grid_opts = self.grid_opts;
             if (self.chart_theme) |t| {
@@ -207,7 +191,7 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
 
             Grid.drawMixed(
                 painter,
-                BandScale.init(&[_][]const u8{""}, x, x + width), // Dummy band scale
+                BandScale.init(&[_][]const u8{""}, x, x + width),
                 y_scale,
                 .{ .x = x, .y = y, .width = width, .height = height },
                 self.y_axis_opts.tick_count,
@@ -236,7 +220,6 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
 
                 for (self.data, 0..) |*series, series_idx| {
                     const point = &series.data[cat_idx];
-                    // Color priority: point color > series color > theme palette.
                     const color = point.color orelse series.color orelse
                         (if (self.chart_theme) |t|
                             t.paletteColor(series_idx)
@@ -265,7 +248,6 @@ pub fn BarChart(comptime capacity: types.CategoryCapacity) type {
     };
 }
 
-/// A chart with room for two series of 8 categories, enough for every test below.
 const TestChart = BarChart(.{ .category_count_max = 8, .series_count_max = 2 });
 const TestSeries = TestChart.Series;
 
@@ -325,10 +307,6 @@ test "BarChart struct size is small" {
 }
 
 test "BarChart fills exactly its capacity" {
-    // Goal: a chart whose series are all full labels and summarizes every
-    // category, with no loss at the boundary. Methodology: two series of
-    // exactly category_count_max categories, labelled the way render labels
-    // them, then built into the band scale render uses.
     const Full = BarChart(.{ .category_count_max = 4, .series_count_max = 2 });
     const names = [Full.category_count_max][]const u8{ "Q1", "Q2", "Q3", "Q4" };
     var series_array: [Full.series_count_max]Full.Series = undefined;

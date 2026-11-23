@@ -1,12 +1,3 @@
-//! Per-frame GPU storage for the Metal renderer: one slot per frame in
-//! flight, each holding the frame's copy of the packed instance arrays and
-//! its atlas staging, all created at init and never replaced.
-//!
-//! A slot is reused only after the command buffer that last read it has
-//! completed (`acquire` waits on it), so no reasoning about drawable counts
-//! is needed, and atlas uploads, which write a slot before its frame has a
-//! drawable, are covered too.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -21,7 +12,6 @@ const Sprite = packed_frame.Sprite;
 const MeshPoint = packed_frame.MeshPoint;
 const EdgeModes = packed_frame.EdgeModes;
 
-/// What one slot holds, in elements (`staging_bytes` in bytes).
 pub const Capacity = struct {
     quads: u32,
     sprites: u32,
@@ -59,8 +49,6 @@ pub const FrameSlots = struct {
     points: FrameBuffers,
     edge_modes: FrameBuffers,
     staging: FrameBuffers,
-    /// The committed command buffer that last read each slot (retained), or
-    /// null once it has completed.
     command_buffers: [pipelines.frame_count_max]?objc.Object,
     capacity: Capacity,
     count: u32,
@@ -109,7 +97,6 @@ pub const FrameSlots = struct {
         assert(self.command_buffers[self.index] == null);
     }
 
-    /// `command_buffer` must be committed and retained by the caller.
     pub fn retire(self: *Self, command_buffer: objc.Object) void {
         assert(self.index < self.count);
         assert(self.command_buffers[self.index] == null);
@@ -138,8 +125,6 @@ fn arrayBytes(comptime T: type, count: u32) u64 {
     return @as(u64, count) * @sizeOf(T);
 }
 
-/// The packed frame is reserved at the same limits as this renderer, so a
-/// count past capacity means the two budgets disagree: a programmer error.
 fn copyInto(comptime T: type, buffer: objc.Object, capacity: u32, source: []const T) void {
     assert(capacity > 0);
     assert(buffer.value != null);
@@ -164,9 +149,6 @@ fn waitAndRelease(slot: *?objc.Object) void {
     assert(slot.* == null);
 }
 
-/// Fail init when one window's slots exceed the device's recommended working
-/// set. `createFrameBuffers` checks each buffer against `maxBufferLength`
-/// only, which on Apple silicon is a large fraction of system memory.
 fn checkWorkingSet(device: objc.Object, reservation_bytes: u64, frame_count: u32) !void {
     assert(reservation_bytes > 0);
     assert(frame_count > 0);

@@ -25,7 +25,7 @@ import time
 import gi
 
 gi.require_version("Gio", "2.0")
-from gi.repository import Gio, GLib  # noqa: E402
+from gi.repository import Gio, GLib
 
 BUTTON_LEFT = 0x110
 MONITOR = "Meta-0"
@@ -36,7 +36,6 @@ KEYSYMS = {
     "F4": 0xFFC1, "Shift_L": 0xFFE1, "Control_L": 0xFFE3, "Alt_L": 0xFFE9,
     "Super_L": 0xFFEB, "space": 0x20,
 }
-# US layout: the unshifted key that produces each shifted symbol.
 SHIFTED = dict(zip('~!@#$%^&*()_+{}|:"<>?', "`1234567890-=[]\\;',./"))
 
 os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/gnome-rt/bus")

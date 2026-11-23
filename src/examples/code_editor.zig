@@ -13,15 +13,10 @@ const Lucide = components.Lucide;
 
 const assert = std.debug.assert;
 
-/// Largest file the editor opens: the editor slot's bytes.
 pub const file_bytes_max = 256 * 1024;
 pub const file_count_max = 256;
-/// Directory entries one folder load reads; includes hidden
-/// files and directories.
 const entry_scan_max = 4 * file_count_max;
-/// Longest folder path kept; a longer chosen path is not opened.
 const folder_bytes_max = 512;
-/// Longest file name listed; longer names are skipped, never cut.
 const name_bytes_max = 128;
 const extension_bytes_max = 16;
 
@@ -37,13 +32,9 @@ comptime {
     assert(file_bytes_max <= limits.text.editor.bytes_max);
 }
 
-/// The `small` profile with one editor: profiles reserve none, since a
-/// 256 KiB editor slot (and its undo copy) is too large to reserve unasked.
 pub const limits = blk: {
     var value = gooey.ResourceLimits.small;
     value.text.editor = .{ .count_max = 1, .bytes_max = file_bytes_max, .undo_depth_max = 128 };
-    // The editor redraws every visible line as its own shaped run each
-    // frame; 512 keeps a tall window cached.
     value.text.shaped_run_count_max = 512;
     break :blk value;
 };
@@ -92,11 +83,8 @@ pub const State = struct {
     files: [file_count_max]FileName = @splat(.{}),
     file_count: u32 = 0,
     selected: ?u32 = null,
-    /// One byte past the largest file, so a full read means "too large".
     read_bytes: [file_bytes_max + 1]u8 = @splat(0),
 
-    /// While another dialog is open the request is refused, and the open
-    /// one's answer is the folder this click would have chosen.
     pub fn openFolder(_: *State, effects: *Effects) void {
         effects.openFileDialog(.{
             .kind = .{ .open = .{ .files = false, .directories = true, .multiple = false } },
@@ -106,7 +94,6 @@ pub const State = struct {
         };
     }
 
-    /// A cancelled or failed dialog leaves the current folder.
     pub fn folderChosen(self: *State, effects: *Effects) void {
         const completion = effects.completionEvent().?;
         switch (completion.outcome) {
@@ -115,7 +102,6 @@ pub const State = struct {
         }
     }
 
-    /// A folder that cannot be read lists none.
     pub fn loadFolder(self: *State, folder_io: std.Io, path: []const u8) void {
         assert(path.len > 0);
         if (path.len > folder_bytes_max) return;
@@ -143,7 +129,6 @@ pub const State = struct {
         assert(self.file_count <= file_count_max);
     }
 
-    /// A file that cannot be read leaves the editor as it was.
     pub fn openFile(self: *State, index: u32) void {
         if (index >= self.file_count) return;
         self.selected = index;
@@ -155,7 +140,6 @@ pub const State = struct {
             return;
         }
         var path_buffer: [folder_bytes_max + 1 + name_bytes_max]u8 = undefined;
-        // The folder and name each fit their maximum, so the join fits.
         const path = std.fmt.bufPrint(&path_buffer, "{s}/{s}", .{ self.folder(), name }) catch
             unreachable;
         const content = std.Io.Dir.cwd().readFile(io(), path, &self.read_bytes) catch return;
@@ -166,8 +150,6 @@ pub const State = struct {
             self.status = .binary_file;
             self.source = "";
         } else if (longestLine(content) > gooey.text.run_codepoint_count_max) {
-            // The editor paints a line as one shaped run, which fails fast
-            // past the shapers' bound; refuse the file instead.
             self.status = .line_too_long;
             self.source = "";
         } else {
@@ -222,8 +204,6 @@ pub const State = struct {
     ;
 };
 
-/// Handlers carry no `Io`; the main thread reads through the process's
-/// single-threaded one, which blocks the handler for the read alone.
 fn io() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
 }
@@ -302,7 +282,6 @@ const Sidebar = struct {
     pub fn render(_: Sidebar, cx: *Cx) void {
         const s = cx.state(State);
         var count_buffer: [32]u8 = undefined;
-        // 32 bytes hold any u32 and " items".
         const count = std.fmt.bufPrint(&count_buffer, "{d} items", .{s.file_count}) catch
             unreachable;
         cx.render(ui.box(.{ .style = .{
@@ -413,7 +392,6 @@ const EditorPanel = struct {
         }));
     }
 
-    /// Its rows are the whole lines that fit above the status bar.
     fn editorView(cx: *Cx) void {
         const s = cx.state(State);
         cx.render(CodeEditor{

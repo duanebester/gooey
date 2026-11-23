@@ -1,11 +1,3 @@
-//! The VOPR's model of the virtual_list example. The app keeps no state of
-//! its own (its `State` has no fields; Top, Bottom, and Jump only scroll),
-//! so the model checks nothing an app model would: it measures how deep a
-//! seed went, from the rendered frames, and tells the generator where the
-//! list and its scrollbar are (`biasTarget`). Rows are found by their keyed
-//! boxes' hit records, whose parent is the list's record (`components.List`
-//! keys each row's box by its index).
-
 const std = @import("std");
 const gooey = @import("gooey");
 const virtual_list = @import("virtual_list_example");
@@ -26,16 +18,12 @@ const RowSet = std.StaticBitSet(row_count);
 
 pub const VirtualListModel = struct {
     list_id: ElementId,
-    /// Each row's box id and index, sorted by id for lookup.
     rows: [row_count]Row,
-    /// The rendered frame `observe` last read.
     frame_number_seen: u64,
     visible: RowSet,
     seen: RowSet,
     counts: Stats,
 
-    /// The kinds virtual_list's swarm draws weights for, in this order. No
-    /// text: the app has no text input.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .scroll, .wait_ns, .tick_main, .present, .drag, .resize,
     };
@@ -94,7 +82,6 @@ pub const VirtualListModel = struct {
         return self.counts;
     }
 
-    /// The model keeps no events, so only the queue bounds input.
     pub fn pendingRoom(_: *const VirtualListModel) u32 {
         return virtual_list.App.limits.events.queue_count_max;
     }
@@ -108,7 +95,6 @@ pub const VirtualListModel = struct {
         assert(window.phase == .idle);
     }
 
-    /// After `tickMain`, whose flip may have made a new frame rendered.
     pub fn endDrain(self: *VirtualListModel, window: *Window, published: bool) void {
         _ = published;
         self.observe(window);
@@ -119,7 +105,6 @@ pub const VirtualListModel = struct {
         _ = step;
     }
 
-    /// Where the generator aims: the list's box and its vertical bar.
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         const list_id = ElementId.root.child(.{ .name = "page" }).child(.{ .name = "chat-list" });
@@ -129,7 +114,6 @@ pub const VirtualListModel = struct {
         return .{ .area = frame.hits[index].bounds, .alternate = bar };
     }
 
-    /// Count the rows of a newly rendered frame.
     fn observe(self: *VirtualListModel, window: *Window) void {
         const frame = window.rendered();
         if (frame.frame_number == self.frame_number_seen) return;

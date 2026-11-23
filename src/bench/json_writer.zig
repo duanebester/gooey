@@ -1,6 +1,3 @@
-//! Benchmark JSON reporter; also runs the Cachegrind single-benchmark
-//! mode used by `bench/cachegrind_gate.zig`.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const Dir = std.Io.Dir;
@@ -8,13 +5,8 @@ const Io = std.Io;
 const cachegrind = std.valgrind.cachegrind;
 const options = @import("bench_options");
 
-/// The Cachegrind gate builds the harnesses with `fixed_iterations`,
-/// making this zero so every loop runs a fixed iteration count and
-/// instruction counts stay comparable between the base and the head
-/// of a pull request.
 pub const sample_time_ns_min: u64 = if (options.fixed_iterations) 0 else 50 * std.time.ns_per_ms;
 
-/// The largest module (core) has ~59 entries today.
 const MAX_ENTRIES: u32 = 256;
 
 const MAX_NAME_LENGTH: u32 = 128;
@@ -23,16 +15,12 @@ const MAX_PATH_LENGTH: u32 = 512;
 
 const MAX_MODULE_NAME_LENGTH: u32 = 64;
 
-/// Worst case: "freestanding-powerpc64le-context-benchmarks-12-31-2099.json"
-/// is ~62 chars.
 const MAX_FILENAME_LENGTH: u32 = 128;
 
 const os_name: []const u8 = @tagName(builtin.os.tag);
 
 const arch_name: []const u8 = @tagName(builtin.cpu.arch);
 
-/// Re-exported because this file is the `bench` module root, so harnesses
-/// reach it as `bench.Sampler`.
 pub const Sampler = @import("sampler.zig").Sampler;
 
 pub const Entry = struct {
@@ -77,8 +65,6 @@ pub const Entry = struct {
     }
 };
 
-/// `min` is the best-of-N estimator from the harness `Sampler`; pass 0 only
-/// for a genuinely unmeasured entry.
 pub fn entry(
     name: []const u8,
     operation_count: u32,
@@ -103,8 +89,6 @@ pub fn entry(
     return e;
 }
 
-/// Arguments are ordered by ascending percentile — min (p0), p50, p99 — so the
-/// float arguments are hard to transpose at the call site.
 pub fn entryWithPercentiles(
     name: []const u8,
     operation_count: u32,
@@ -127,8 +111,8 @@ pub fn entryWithPercentiles(
 
 const CalendarDate = struct {
     year: u16,
-    month: u8, // 1-12
-    day: u8, // 1-31
+    month: u8,
+    day: u8,
 };
 
 fn getCurrentDate(io: Io) CalendarDate {
@@ -139,7 +123,6 @@ fn getCurrentDate(io: Io) CalendarDate {
     const month_day = year_day.calculateMonthDay();
 
     const month_numeric: u8 = @intCast(month_day.month.numeric());
-    // day_index is 0-based; calendar days are 1-based.
     const day_numeric: u8 = @intCast(month_day.day_index + 1);
 
     std.debug.assert(month_numeric >= 1);
@@ -154,7 +137,6 @@ fn getCurrentDate(io: Io) CalendarDate {
     };
 }
 
-/// Field order here determines field order in the JSON output.
 const JsonMetadata = struct {
     module: []const u8,
     os: []const u8,
@@ -175,8 +157,6 @@ const JsonBenchmarkEntry = struct {
     p50_per_op_ns: ?f64,
     p99_per_op_ns: ?f64,
 
-    /// Optional fields serialize as `null` when unrecorded, so a reader on an
-    /// older schema (no min) can fall back tolerantly.
     fn fromEntry(e: *const Entry) JsonBenchmarkEntry {
         std.debug.assert(e.name_length > 0);
         std.debug.assert(e.iterations > 0);
@@ -214,13 +194,8 @@ pub const Reporter = struct {
 
     cachegrind_index: ?u32 = null,
 
-    /// Counts entries dropped at capacity too, so ordinals stay aligned with
-    /// the harness's call order.
     benchmark_seen_count: u32 = 0,
 
-    /// Passed from the process entry point; defaults to `Io.failing` so that
-    /// struct-literal initialisation (`.{}`) still compiles in tests where
-    /// file I/O is never exercised.
     io: Io = Io.failing,
 
     pub fn init(
@@ -238,14 +213,10 @@ pub const Reporter = struct {
         self.module_name_length = @intCast(module_name.len);
 
         self.parseArgs(argv);
-        // Benchmark 0 runs from here to the first `addEntry`.
         if (self.cachegrind_index == 0) cachegrind.startInstrumentation();
         return self;
     }
 
-    /// In a `--cachegrind-benchmark` run this ends the measured
-    /// benchmark: instrumentation stops here and the process exits,
-    /// so nothing after it is measured.
     pub fn addEntry(self: *Reporter, e: Entry) void {
         std.debug.assert(e.name_length > 0);
         if (self.cachegrind_index) |index| self.cachegrindEnd(index);
@@ -271,24 +242,18 @@ pub const Reporter = struct {
         };
     }
 
-    /// Called after printing the previous result so formatting stays
-    /// outside the measured region.
     pub fn beginBenchmark(self: *const Reporter) void {
         const index = self.cachegrind_index orelse return;
-        // The process exits at the measured benchmark, so no later one starts.
         std.debug.assert(self.benchmark_seen_count <= index);
         if (self.benchmark_seen_count == index) cachegrind.startInstrumentation();
     }
 
-    /// Excludes setup that belongs to no benchmark (e.g. font loading,
-    /// whose Ir varies run-to-run) from the measured region.
     pub fn pauseBenchmark(self: *const Reporter) void {
         const index = self.cachegrind_index orelse return;
         std.debug.assert(self.benchmark_seen_count <= index);
         if (self.benchmark_seen_count == index) cachegrind.stopInstrumentation();
     }
 
-    /// Exits the process once the measured benchmark has ended.
     fn cachegrindEnd(self: *Reporter, index: u32) void {
         std.debug.assert(self.benchmark_seen_count <= index);
         if (self.benchmark_seen_count == index) {
@@ -300,7 +265,6 @@ pub const Reporter = struct {
     }
 
     fn parseArgs(self: *Reporter, argv: []const [*:0]const u8) void {
-        // argv may be empty under test runners.
         var i: u32 = if (argv.len >= 1) 1 else 0;
         const argc: u32 = @intCast(argv.len);
         while (i < argc) : (i += 1) {
@@ -334,7 +298,7 @@ pub const Reporter = struct {
     }
 
     const FilenameBuffer = struct {
-        buf: [MAX_PATH_LENGTH + MAX_FILENAME_LENGTH + 1]u8 = undefined, // +1 for path separator
+        buf: [MAX_PATH_LENGTH + MAX_FILENAME_LENGTH + 1]u8 = undefined,
         len: u32 = 0,
     };
 
@@ -354,8 +318,6 @@ pub const Reporter = struct {
             date.day,
             date.year,
         }) catch {
-            // Path + filename exceeded capacity; the caller checks
-            // `len == 0`.
             std.debug.print("bench: output path too long\n", .{});
             return result;
         };
@@ -364,8 +326,6 @@ pub const Reporter = struct {
         return result;
     }
 
-    /// Single heap allocation, once at process exit, so the cost never
-    /// lands in a timed region.
     fn writeJsonFile(self: *const Reporter) !void {
         std.debug.assert(self.json_enabled);
         std.debug.assert(self.json_dir_length > 0);
@@ -387,8 +347,6 @@ pub const Reporter = struct {
         const json_bytes = try self.serializePayload();
         defer std.heap.page_allocator.free(json_bytes);
 
-        // Byte-sink methods live on `writer.interface`
-        // (`std.Io.Writer`), not on the `Io.File.Writer` itself.
         var write_buf: [4096]u8 = undefined;
         var writer = file.writerStreaming(self.io, &write_buf);
         try writer.interface.writeAll(json_bytes);
@@ -398,7 +356,6 @@ pub const Reporter = struct {
         std.debug.print("\nbench: wrote {d} entries to {s}\n", .{ self.count, path_slice });
     }
 
-    /// Caller owns the returned slice (allocated with page_allocator).
     fn serializePayload(self: *const Reporter) ![]u8 {
         std.debug.assert(self.count <= MAX_ENTRIES);
         std.debug.assert(self.module_name_length > 0);
@@ -409,9 +366,8 @@ pub const Reporter = struct {
             date.month,
             date.day,
             date.year,
-        }) catch unreachable; // 16 bytes is always sufficient for "mm-dd-yyyy".
+        }) catch unreachable;
 
-        // 256 entries x ~72 bytes each is ~18 KB on the stack.
         var json_entries: [MAX_ENTRIES]JsonBenchmarkEntry = undefined;
         for (0..self.count) |i| {
             json_entries[i] = JsonBenchmarkEntry.fromEntry(&self.entries[i]);
@@ -439,9 +395,6 @@ pub const Reporter = struct {
     }
 };
 
-/// Only the gate passes this flag, so a missing or malformed value is
-/// a gate bug: fail fast rather than run unmeasured and report zero
-/// instructions.
 fn parseCachegrindIndex(argv: []const [*:0]const u8, flag_index: u32) u32 {
     std.debug.assert(flag_index < argv.len);
     std.debug.assert(std.mem.eql(u8, std.mem.sliceTo(argv[flag_index], 0), "--cachegrind-benchmark"));
@@ -455,9 +408,6 @@ fn parseCachegrindIndex(argv: []const [*:0]const u8, flag_index: u32) u32 {
     std.process.exit(2);
 }
 
-// Pull the shared Sampler's tests into this (the bench module root) test
-// binary. A bare `pub const Sampler = @import(...)` alias does not cause Zig
-// to discover the imported file's `test` blocks, so reference it explicitly.
 test {
     _ = @import("sampler.zig");
 }
@@ -513,8 +463,6 @@ test "reporter: finish is no-op when json is disabled" {
 }
 
 test "getCurrentDate: returns plausible values" {
-    // `std.testing.io` routes wall-clock reads through the real
-    // system clock; `Io.failing` would return `Timestamp.zero`.
     const date = getCurrentDate(std.testing.io);
     std.debug.assert(date.year >= 2025);
     std.debug.assert(date.month >= 1);
@@ -566,14 +514,11 @@ test "JsonBenchmarkEntry.fromEntry: converts with percentiles" {
     std.debug.assert(json_entry.p99_per_op_ns.? == 128.7);
 }
 
-/// JSON has a single number type: an integer-valued number (e.g. 5.0
-/// stringified as `5`) parses as `.integer`, so callers expecting a
-/// float must accept both.
 fn jsonNumberAsF64(v: std.json.Value) f64 {
     return switch (v) {
         .float => |f| f,
         .integer => |i| @floatFromInt(i),
-        else => unreachable, // A JSON number is expected at this field.
+        else => unreachable,
     };
 }
 

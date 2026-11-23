@@ -1,9 +1,3 @@
-//! Text truncation (`docs/text-truncation.md`): a sidebar whose channel names
-//! give way to their unread badges, a file table whose name column cuts long
-//! names with an ellipsis instead of wrapping them and whose fixed note column
-//! cuts notes at its edge with no mark (`.clip`, the default), and cards whose
-//! bodies are clamped to a few lines, so every card on a row is the same height.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -62,9 +56,6 @@ fn title(text: []const u8) ui.Text.Element {
     return ui.text(text, .{ .size = 15, .weight = .bold, .color = .{ .rgba = ink } });
 }
 
-/// A fixed-width sidebar: each row is a dot, a name that grows into the
-/// rest of the row and is cut with an ellipsis, and a badge that keeps its
-/// width. The name's floor is the ellipsis, so the row cuts the name first.
 const Sidebar = struct {
     const Channel = struct { name: []const u8, unread: []const u8 };
     const channels = [_]Channel{
@@ -134,11 +125,6 @@ const Sidebar = struct {
     };
 };
 
-/// A table on a grid: the name column grows and cuts each name to one line
-/// with an ellipsis, so every row is one line tall; the owner column fits its
-/// widest owner; the note column is fixed, and a note wider than it is cut at
-/// its edge with no mark, as every `.clip` text is; the size column is fixed
-/// and right-aligned.
 const FileTable = struct {
     const columns = [_]ui.Track{
         .grow(1),
@@ -200,9 +186,6 @@ const FileTable = struct {
     };
 };
 
-/// Three cards on a grid row. The first two clamp their bodies to three lines
-/// with an ellipsis; the third clamps to two with `.clip`, which drops the
-/// rest with no mark. The short body needs no cut and shows none.
 const Cards = struct {
     const Note = struct {
         heading: []const u8,

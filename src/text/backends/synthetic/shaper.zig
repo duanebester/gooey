@@ -1,6 +1,3 @@
-//! One glyph per codepoint at the synthetic face's advance; no kerning,
-//! ligatures, or fallback, so a run's width is the sum of its advances.
-
 const std = @import("std");
 const types = @import("../../types.zig");
 const SyntheticFace = @import("face.zig").SyntheticFace;
@@ -11,7 +8,6 @@ const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
 
 pub const SyntheticShaper = struct {
-    /// Number of runs shaped, for tests that count shaping work.
     shape_count: u64,
 
     const Self = @This();
@@ -25,8 +21,6 @@ pub const SyntheticShaper = struct {
         self.* = undefined;
     }
 
-    /// Shape `text` into a glyph slice owned by `allocator`. Invalid UTF-8
-    /// bytes shape as glyph 0 one byte at a time, like a missing glyph.
     pub fn shape(
         self: *Self,
         face: *const SyntheticFace,

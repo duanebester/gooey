@@ -17,28 +17,21 @@ pub fn pack(frame: *const records.Frame, packed_frame: *PackedFrame) void {
     assert(frame.mesh_point_count <= frame.mesh_points.len);
     packed_frame.reset(frame.frame_number, frame.mesh_points[0..frame.mesh_point_count]);
     const triangle_points = frame.mesh_point_counts[@backingInt(records.Mesh.Topology.triangles)];
-    // Three edges per triangle point.
     packed_frame.edge_table.begin(triangle_points);
     var packer = Packer{ .target = packed_frame, .clip_stack = undefined, .clip_depth = 0 };
-    // The overlay's headroom is packed after the app's records, which are
-    // checked against their declared limits first.
     const app_paint_count = debugger.appPaintCount(frame);
     packer.packRecords(frame.paint[0..app_paint_count]);
     debugger.checkAppPacked(packed_frame);
     packer.packRecords(frame.paint[app_paint_count..frame.paint_count]);
     writeEdgeModes(packed_frame);
-    // Meshes under an empty clip are not packed, so not every point is used.
     assert(packed_frame.triangle_count * 3 <= triangle_points);
 }
 
 const Packer = struct {
     target: *PackedFrame,
-    /// Indices into `target.clips` of the pushed clips, innermost last.
     clip_stack: [limits_mod.MAX_CLIP_STACK_DEPTH]u32,
     clip_depth: u32,
 
-    /// Every fragment, and the overlay, pops each clip it pushes, so a run of
-    /// records leaves the clip stack as it found it.
     fn packRecords(self: *Packer, paint: []const records.Record) void {
         assert(self.clip_depth <= self.clip_stack.len);
         const depth_start = self.clip_depth;
@@ -65,8 +58,6 @@ const Packer = struct {
         return clip;
     }
 
-    // A zero-sized clip must write nothing: under the inclusive-edge rule it
-    // would still cover the pixel centres on its edge.
     fn currentClipEmpty(self: *const Packer) bool {
         const clip = self.target.clips[self.currentClip()];
         assert(clip[2] >= 0);
@@ -192,8 +183,6 @@ const Packer = struct {
         target.mesh_count += 1;
     }
 
-    // Instances of one kind append in order, so extending a draw keeps it
-    // contiguous; the assert relies on that.
     fn appendDraw(self: *Packer, pipeline: Pipeline, first: u32) void {
         const target = self.target;
         const clip = self.currentClip();
@@ -238,9 +227,6 @@ fn claim(target: *PackedFrame, pool: Pool) void {
     used.* += 1;
 }
 
-// Each record starts at most one draw and each push one clip (plus the
-// unbounded clip), so these pools are exactly bounded by the paint record
-// budget; a frame past it was packed into undersized storage.
 fn failRecordPool(target: *const PackedFrame, pool: []const u8, reserved: u32) noreturn {
     @branchHint(.cold);
     assert(pool.len > 0);
@@ -257,7 +243,6 @@ fn failRecordPool(target: *const PackedFrame, pool: []const u8, reserved: u32) n
     });
 }
 
-// Straight (non-premultiplied) RGBA, channels in 0..1.
 fn rgba(color: records.Color) packed_mod.Rgba {
     assert(color.a >= 0);
     assert(color.a <= 1);
@@ -276,9 +261,6 @@ fn intersect(a: Rect, b: Rect) Rect {
     return .{ x, y, @max(0, right - x), @max(0, bottom - y) };
 }
 
-// What a quad rasterizes: its bounds, or for a shadow its bounds moved by
-// the offset and grown by twice the blur on every side, the extent the
-// shadow shaders rasterize.
 fn drawnExtent(quad: *const records.Quad) records.Rect {
     assert(quad.blur >= 0);
     assert(quad.bounds.width >= 0);
@@ -292,7 +274,6 @@ fn drawnExtent(quad: *const records.Quad) records.Rect {
     };
 }
 
-// Wholly outside; bounds touching the clip's edge are kept.
 fn outside(bounds: records.Rect, clip: Rect) bool {
     assert(bounds.width >= 0);
     assert(bounds.height >= 0);
@@ -304,8 +285,6 @@ fn outside(bounds: records.Rect, clip: Rect) bool {
     return bounds.y > clip[1] + clip[3];
 }
 
-// Everything that decides a mesh's colour across a shared edge: its fill and
-// its clip, so equal hashes blend identically there.
 fn fillHash(fill: records.Color, clip: Rect) u32 {
     assert(clip[2] > 0);
     assert(clip[3] > 0);
@@ -323,7 +302,6 @@ fn triangleCorners(points: []const packed_mod.MeshPoint) [3][2]f32 {
     };
 }
 
-// All edges must be inserted before any mode is read.
 fn insertEdges(
     target: *PackedFrame,
     range: records.MeshRange,
@@ -343,7 +321,6 @@ fn insertEdges(
     }
 }
 
-// Runs after every edge is inserted; modes come out in draw order.
 fn writeEdgeModes(target: *PackedFrame) void {
     assert(target.triangle_count <= target.edge_modes.len);
     var path_index: u32 = 0;
@@ -397,11 +374,8 @@ test "pack resolves clips into draws, culls, and classifies shared triangle edge
     frame.appendPaint(.{ .quad = testQuad(0, 0, 0) });
     frame.appendPaint(.{ .clip_push = .{ .x = 10, .y = 10, .width = 100, .height = 100 } });
     frame.appendPaint(.{ .quad = testQuad(20, 20, 0) });
-    frame.appendPaint(.{ .quad = testQuad(150, 150, 0) }); // Wholly outside: culled.
-    // Bounds start at x 120, past the clip's right edge at 110, but the blur
-    // grows the drawn extent 12 px left, to 108: kept.
+    frame.appendPaint(.{ .quad = testQuad(150, 150, 0) });
     frame.appendPaint(.{ .quad = testQuad(120, 20, 6) });
-    // Drawn extent from 142: wholly outside, culled.
     frame.appendPaint(.{ .quad = testQuad(150, 150, 4) });
     frame.appendPaint(.{ .clip_push = .{ .x = 50, .y = 50, .width = 100, .height = 100 } });
     frame.appendPaint(.{ .quad = testQuad(60, 60, 0) });
@@ -427,11 +401,9 @@ test "pack resolves clips into draws, culls, and classifies shared triangle edge
     const draws = target.drawList();
     try testing.expectEqual(@as(usize, 5), draws.len);
     try testing.expectEqual(@as(u32, packed_mod.clip_none), draws[0].clip);
-    // Inside the first clip: the kept quad and the shadow; one draw.
     try testing.expectEqual(@as(u32, 1), draws[1].clip);
     try testing.expectEqual(@as(u32, 2), draws[1].count);
     try testing.expectEqual(@as(f32, 6), target.quads[draws[1].first + 1].blur);
-    // The nested clip is the intersection; popping returns to its parent.
     try testing.expectEqual(@as(u32, 2), draws[2].clip);
     try testing.expectEqualSlices(f32, &.{ 50, 50, 60, 60 }, &target.clips[2]);
     try testing.expectEqual(@as(u32, 1), draws[3].clip);
@@ -440,10 +412,6 @@ test "pack resolves clips into draws, culls, and classifies shared triangle edge
     try testing.expectEqual(@as(u32, 4), target.counts[@backingInt(Pool.quads)]);
     try testing.expectEqual(@as(u32, 1), target.counts[@backingInt(Pool.shadows)]);
 
-    // Edges in order v0→v1, v1→v2, v2→v0, two bits each: 0 interior,
-    // 1 fade, 2 underlap. The diagonal (10,0)-(0,10) joins two red
-    // triangles: interior in both. The edge (10,0)-(10,10) is shared with the
-    // later blue triangle: the earlier red one underlaps, the blue one fades.
     const modes = target.edgeModeList();
     try testing.expectEqual(@as(usize, 3), modes.len);
     try testing.expectEqual(@as(u32, 1 | 0 << 2 | 1 << 4), modes[0]);
@@ -486,7 +454,6 @@ test "pack skips every instance under a clip with zero area" {
     try testing.expectEqualSlices(f32, &.{ 20, 20, 10, 10 }, &target.quads[0].bounds);
     try testing.expectEqual(@as(u32, 0), target.sprite_count);
     try testing.expectEqual(@as(u32, 0), target.triangle_count);
-    // The pushes still resolve, so later clips keep their indices.
     try testing.expectEqual(@as(u32, 4), target.clip_count);
     try testing.expectEqual(@as(f32, 0), target.clips[2][2]);
 }

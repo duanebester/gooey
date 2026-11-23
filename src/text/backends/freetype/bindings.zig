@@ -9,9 +9,9 @@ pub const FT_Short = c_short;
 pub const FT_UShort = c_ushort;
 pub const FT_Int32 = i32;
 pub const FT_UInt32 = u32;
-pub const FT_Fixed = c_long; // 16.16 fixed-point
-pub const FT_Pos = c_long; // 26.6 fixed-point for positions
-pub const FT_F26Dot6 = c_long; // 26.6 fixed-point
+pub const FT_Fixed = c_long;
+pub const FT_Pos = c_long;
+pub const FT_F26Dot6 = c_long;
 
 pub const FT_Library = *opaque {};
 pub const FT_Face = *FT_FaceRec;
@@ -47,23 +47,23 @@ pub const FT_LOAD_LINEAR_DESIGN: FT_Int32 = 1 << 13;
 pub const FT_LOAD_COLOR: FT_Int32 = 1 << 20;
 
 pub const FT_Render_Mode = enum(c_int) {
-    FT_RENDER_MODE_NORMAL = 0, // Grayscale (8-bit anti-aliased)
-    FT_RENDER_MODE_LIGHT = 1, // Light hinting
-    FT_RENDER_MODE_MONO = 2, // Monochrome (1-bit)
-    FT_RENDER_MODE_LCD = 3, // Horizontal LCD subpixel
-    FT_RENDER_MODE_LCD_V = 4, // Vertical LCD subpixel
-    FT_RENDER_MODE_SDF = 5, // Signed distance field
+    FT_RENDER_MODE_NORMAL = 0,
+    FT_RENDER_MODE_LIGHT = 1,
+    FT_RENDER_MODE_MONO = 2,
+    FT_RENDER_MODE_LCD = 3,
+    FT_RENDER_MODE_LCD_V = 4,
+    FT_RENDER_MODE_SDF = 5,
 };
 
 pub const FT_Pixel_Mode = enum(u8) {
     FT_PIXEL_MODE_NONE = 0,
-    FT_PIXEL_MODE_MONO = 1, // 1 bit per pixel
-    FT_PIXEL_MODE_GRAY = 2, // 8 bits per pixel (grayscale)
-    FT_PIXEL_MODE_GRAY2 = 3, // 2 bits per pixel
-    FT_PIXEL_MODE_GRAY4 = 4, // 4 bits per pixel
-    FT_PIXEL_MODE_LCD = 5, // 8 bits per pixel (LCD)
-    FT_PIXEL_MODE_LCD_V = 6, // 8 bits per pixel (vertical LCD)
-    FT_PIXEL_MODE_BGRA = 7, // 32 bits per pixel (color emoji)
+    FT_PIXEL_MODE_MONO = 1,
+    FT_PIXEL_MODE_GRAY = 2,
+    FT_PIXEL_MODE_GRAY2 = 3,
+    FT_PIXEL_MODE_GRAY4 = 4,
+    FT_PIXEL_MODE_LCD = 5,
+    FT_PIXEL_MODE_LCD_V = 6,
+    FT_PIXEL_MODE_BGRA = 7,
 };
 
 pub const FT_Glyph_Format = enum(c_uint) {
@@ -114,14 +114,14 @@ pub const FT_Glyph_Metrics = extern struct {
 };
 
 pub const FT_Size_Metrics = extern struct {
-    x_ppem: FT_UShort, // Horizontal pixels per EM
-    y_ppem: FT_UShort, // Vertical pixels per EM
-    x_scale: FT_Fixed, // Scaling for horizontal
-    y_scale: FT_Fixed, // Scaling for vertical
-    ascender: FT_Pos, // Ascender in 26.6 frac. pixels
-    descender: FT_Pos, // Descender in 26.6 frac. pixels
-    height: FT_Pos, // Text height in 26.6 frac. pixels
-    max_advance: FT_Pos, // Max horizontal advance
+    x_ppem: FT_UShort,
+    y_ppem: FT_UShort,
+    x_scale: FT_Fixed,
+    y_scale: FT_Fixed,
+    ascender: FT_Pos,
+    descender: FT_Pos,
+    height: FT_Pos,
+    max_advance: FT_Pos,
 };
 
 pub const FT_SizeRec = extern struct {
@@ -219,7 +219,6 @@ pub const FT_FaceRec = extern struct {
     glyph: FT_GlyphSlot,
     size: FT_Size,
     charmap: ?FT_CharMap,
-    // Internal fields follow (private)
 };
 
 pub const FT_GlyphRec = extern struct {
@@ -265,15 +264,15 @@ pub extern "c" fn FT_Done_Face(face: FT_Face) FT_Error;
 
 pub extern "c" fn FT_Set_Char_Size(
     face: FT_Face,
-    char_width: FT_F26Dot6, // In 1/64th points (0 = same as height)
-    char_height: FT_F26Dot6, // In 1/64th points
-    horz_resolution: FT_UInt, // DPI (0 = default 72)
-    vert_resolution: FT_UInt, // DPI (0 = default 72)
+    char_width: FT_F26Dot6,
+    char_height: FT_F26Dot6,
+    horz_resolution: FT_UInt,
+    vert_resolution: FT_UInt,
 ) FT_Error;
 
 pub extern "c" fn FT_Set_Pixel_Sizes(
     face: FT_Face,
-    pixel_width: FT_UInt, // 0 = same as height
+    pixel_width: FT_UInt,
     pixel_height: FT_UInt,
 ) FT_Error;
 
@@ -304,8 +303,8 @@ pub extern "c" fn FT_Get_Glyph(
 pub extern "c" fn FT_Glyph_To_Bitmap(
     the_glyph: *FT_Glyph,
     render_mode: FT_Render_Mode,
-    origin: ?*FT_Vector, // Optional subpixel offset (26.6)
-    destroy: c_int, // 1 to destroy original glyph
+    origin: ?*FT_Vector,
+    destroy: c_int,
 ) FT_Error;
 
 pub extern "c" fn FT_Done_Glyph(glyph: FT_Glyph) void;
@@ -401,19 +400,19 @@ fn hbMakeTag(a: u8, b: u8, c: u8, d: u8) c_uint {
 }
 
 pub const hb_glyph_info_t = extern struct {
-    codepoint: hb_codepoint_t, // Input: Unicode; Output: glyph ID
+    codepoint: hb_codepoint_t,
     mask: hb_mask_t,
-    cluster: u32, // Byte index in original text
-    var1: u32, // Reserved
-    var2: u32, // Reserved
+    cluster: u32,
+    var1: u32,
+    var2: u32,
 };
 
 pub const hb_glyph_position_t = extern struct {
-    x_advance: hb_position_t, // Horizontal advance (26.6 fixed)
-    y_advance: hb_position_t, // Vertical advance (26.6 fixed)
-    x_offset: hb_position_t, // Horizontal offset (26.6 fixed)
-    y_offset: hb_position_t, // Vertical offset (26.6 fixed)
-    var_: u32, // Reserved
+    x_advance: hb_position_t,
+    y_advance: hb_position_t,
+    x_offset: hb_position_t,
+    y_offset: hb_position_t,
+    var_: u32,
 };
 
 pub const hb_buffer_content_type_t = enum(c_int) {
@@ -444,9 +443,9 @@ pub extern "c" fn hb_buffer_guess_segment_properties(buffer: *hb_buffer_t) void;
 pub extern "c" fn hb_buffer_add_utf8(
     buffer: *hb_buffer_t,
     text: [*]const u8,
-    text_length: c_int, // -1 for null-terminated
-    item_offset: c_uint, // Usually 0
-    item_length: c_int, // -1 for remainder
+    text_length: c_int,
+    item_offset: c_uint,
+    item_length: c_int,
 ) void;
 
 pub extern "c" fn hb_buffer_add_utf32(
@@ -495,7 +494,6 @@ pub extern "c" fn hb_ft_font_changed(font: *hb_font_t) void;
 
 pub const FcConfig = opaque {};
 pub const FcPattern = opaque {};
-/// `FcFontSet` from `fontconfig.h`; `FcFontList` returns one the caller destroys.
 pub const FcFontSet = extern struct {
     nfont: c_int,
     sfont: c_int,
@@ -633,7 +631,6 @@ pub extern "c" fn FcFontList(
 
 pub extern "c" fn FcFontSetDestroy(fs: *FcFontSet) void;
 
-/// Fontconfig weight (`FC_WEIGHT_*`) to OpenType/CSS weight; fontconfig 2.12+.
 pub extern "c" fn FcWeightToOpenType(fc_weight: c_int) c_int;
 
 pub extern "c" fn FcObjectSetCreate() ?*FcObjectSet;

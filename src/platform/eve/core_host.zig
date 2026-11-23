@@ -1,22 +1,3 @@
-//! Runs a core app full-screen on an EVE panel: the EVE backend's app path,
-//! modelled on the fbdev host (`../fbdev/core_host.zig`). One thread: the
-//! chip draws, so the render side runs on the main thread right after the
-//! main side; `EveRenderer.draw` first waits for the previous list to reach
-//! the screen, so continuous animation runs at the panel's refresh with no
-//! timer.
-//!
-//! Each loop turn reads the touch engine once (when the queue has room for a
-//! touch's events), ticks when work is pending, and otherwise waits in
-//! `poll` on a wake eventfd for at most `touch_poll_ns`, the render
-//! deadline, or the image worker's wake.
-//!
-//! There is no keyboard, input method, or file dialog (a request completes
-//! as `error.FileDialogUnsupported`); the clipboard is in-process
-//! (`../fbdev/clipboard.zig`, which has no fbdev dependency).
-//!
-//! Every allocation happens before `finishInit`; the core's guard panics on
-//! any later one.
-
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
@@ -41,16 +22,11 @@ const EveWindow = window_mod.Window;
 const Outcome = core_events.Completion.Outcome;
 
 comptime {
-    // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
     assert(platform_mod.touch_event_count_max <= core_limits.input_burst_count_max);
 }
 
-/// Run `App` until its window closes. Everything is reserved before
-/// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
     comptime {
-        // The app's own budget: the debugger overlay's headroom in
-        // `limits_reserved` needs a keyboard shortcut the panel cannot send.
         if (eve_limits.EveLimits.bt81x.check(&App.limits)) |reason| {
             @compileError("the EVE backend cannot hold this app's ResourceLimits: " ++ reason);
         }
@@ -63,7 +39,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     try platform.initInPlace();
     defer platform.deinit();
 
-    // The window covers the panel; `width` and `height` are ignored.
     const window = try EveWindow.init(gpa, platform, &.{
         .title = App.title,
         .width = @floatFromInt(App.width),
@@ -82,8 +57,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     defer host.deinit();
 
     app.finishInit();
-    // Deferred last, so it runs first: the guard leaves `running` before the
-    // deferred teardown above frees the host, the window, and the platform.
     defer app.stop();
     assert(app.guard.lifecycle == .running);
     host.runLoop(App, app);
@@ -94,13 +67,9 @@ pub const Host = struct {
     window: *EveWindow,
     core: *core_window.Window,
     query: core_router.Query,
-    /// Wakes the loop from the image worker (`scheduleTick`).
     wake_fd: posix.fd_t,
-    /// A tick is scheduled and has not started. Written by the worker.
     tick_scheduled: std.atomic.Value(bool),
 
-    /// Bind the window's input, the presenter, and the services. The host
-    /// must stay at this address.
     pub fn initInPlace(
         self: *Host,
         platform: *EvePlatform,
@@ -122,12 +91,8 @@ pub const Host = struct {
     }
 
     fn bindWindow(self: *Host) void {
-        // The renderer consumes the upload journal as this window: `draw`
-        // feeds it this consumer's records before each frame.
         const key = @intFromPtr(self.window);
         self.core.resources.registerAtlasConsumer(key);
-        // The chip draws list N from its image mirror while frame N+1 writes
-        // new texels into it, so frame N's shelves stay until N+1 uploads.
         self.core.resources.atlas_uploads.protectShownFrame(key);
         self.core.atlas_consumer_key = key;
         self.window.setUserData(self);
@@ -140,7 +105,6 @@ pub const Host = struct {
             .read = clipboardRead,
             .write = clipboardWrite,
         };
-        // The window covers the panel, whatever size the app asked for.
         self.core.bindViewport(.{
             .width = @floatCast(self.window.size.width),
             .height = @floatCast(self.window.size.height),
@@ -170,9 +134,6 @@ pub const Host = struct {
         signal(self.wake_fd);
     }
 
-    /// Each turn reads touch once, runs at most one tick, then waits, so
-    /// every turn is bounded; it ends when the window closes or the app
-    /// quits.
     fn runLoop(self: *Host, comptime App: type, app: *App) void {
         assert(&app.window == self.core);
         while (!self.window.isClosed()) {
@@ -204,8 +165,6 @@ pub const Host = struct {
         var pollfds = [_]posix.pollfd{
             .{ .fd = self.wake_fd, .events = posix.POLL.IN, .revents = 0 },
         };
-        // `poll` fails only on a bad descriptor or a lack of kernel memory;
-        // neither leaves a way to wait, so stop.
         _ = posix.poll(&pollfds, self.timeoutMs()) catch |err| {
             std.log.err("eve core host: poll failed: {t}", .{err});
             return false;
@@ -220,15 +179,13 @@ pub const Host = struct {
         if (self.core.renderDeadlineNs()) |deadline| wake_ns = @min(wake_ns, deadline);
         if (now_ns >= wake_ns) return 0;
         const remaining_ms = std.math.divCeil(u64, wake_ns - now_ns, std.time.ns_per_ms) catch
-            unreachable; // The divisor is a nonzero constant.
+            unreachable;
         assert(remaining_ms > 0);
         assert(remaining_ms <= platform_mod.touch_poll_ns / std.time.ns_per_ms + 1);
         return @intCast(remaining_ms);
     }
 };
 
-/// The window's input callback, during `dispatchTouch`: queue the event for
-/// the next tick. There is no keyboard, so nothing counts as handled.
 fn onInput(window: *EveWindow, event: input.InputEvent) bool {
     const host = window.getUserData(Host).?;
     assert(host.window == window);
@@ -253,8 +210,6 @@ fn draw(
     host.window.presentFrame(packed_frame, clear);
 }
 
-/// No file dialog exists on a bare panel; the request completes as a
-/// failure the app's handler sees.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
@@ -284,8 +239,6 @@ fn eventFd() !posix.fd_t {
     return fd;
 }
 
-/// Add one to the eventfd's counter. The counter cannot overflow (it is
-/// drained every wait), so the write cannot fail.
 fn signal(fd: posix.fd_t) void {
     assert(fd >= 0);
     const one: u64 = 1;
@@ -293,7 +246,6 @@ fn signal(fd: posix.fd_t) void {
     assert(written == @sizeOf(u64));
 }
 
-/// Reset the eventfd's counter. A spurious wake reads nothing.
 fn drain(fd: posix.fd_t) void {
     assert(fd >= 0);
     var count: u64 = 0;

@@ -1,23 +1,3 @@
-//! The EVE backend's `Renderer`: translates each packed frame into one
-//! BT81x display list, so the chip draws every primitive itself at scan-out
-//! time. The list is written over SPI and swapped in at vertical blank; its
-//! cost does not depend on panel resolution or on how much of the screen
-//! changed.
-//!
-//! A quad's border draws as an outer rect in the border colour and an inner
-//! rect in the fill. Under a translucent fill the inner rect is first marked
-//! in the stencil buffer, so the border never shows through the fill. EVE
-//! rects have one radius: mixed corner radii draw with the largest, and an
-//! opaque fill redraws its smaller corners. A shadow (quad with blur) draws
-//! as three expanding translucent rects. Each draw's clip becomes the
-//! scissor, taken over the pixels whose centres lie inside it. Cells draw
-//! 1:1 at whole pixels (`NEAREST`), so the window's scale is 1 and sprite
-//! bounds match their atlas regions. Images draw at whole pixels at any
-//! size: 1:1 with `NEAREST`, scaled with `BILINEAR`. Rounded image corners
-//! clip through the stencil buffer with the largest radius; a grayscale
-//! image fails fast. Triangle meshes (paths) and colour glyphs are not
-//! drawn: they fail fast.
-
 const std = @import("std");
 const backend = @import("../../core/backend.zig");
 const packed_mod = @import("../../core/packed_frame.zig");
@@ -35,16 +15,11 @@ const Box = display_list.Box;
 const ListColor = display_list.Color;
 const rect_words = display_list.rect_words_max;
 
-/// Largest panel side: `SCISSOR_SIZE` and `VERTEX2F` reach 2048 px.
 pub const panel_side_max: u32 = 2048;
-/// Seconds between performance log lines.
 const log_period_ns: u64 = 5 * std.time.ns_per_s;
-/// Shadow layers, widest and faintest first, stand in for the blur.
 const shadow_spreads = [_]f32{ 0.5, 0.3, 0.12 };
-/// Each shadow layer's share of the shadow colour's alpha.
 const shadow_layer_alpha: f32 = 0.3;
 
-/// Per-frame counts, for the performance log and tests.
 pub const FrameStats = struct {
     words: u32 = 0,
     cell_bytes: u32 = 0,
@@ -53,7 +28,6 @@ pub const FrameStats = struct {
 };
 
 pub const EveRenderer = struct {
-    /// `Surface.native`; the platform owns the chip and outlives the renderer.
     chip: ?*Chip = null,
     size_px: backend.SizePx = .{ .width = 0, .height = 0 },
     list: DisplayList = .{},
@@ -61,7 +35,6 @@ pub const EveRenderer = struct {
     images: images_mod.ImageMirror = .{},
     spi_bytes_frame_max: u64 = 0,
     last_stats: FrameStats = .{},
-    /// A failed transfer was logged; later failures are not.
     transfer_failure_logged: bool = false,
     perf: Perf = .{},
 
@@ -71,8 +44,6 @@ pub const EveRenderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// Field by field: the renderer is about 150 KiB, too large for a
-    /// struct literal's stack temporary.
     pub fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -113,10 +84,6 @@ pub const EveRenderer = struct {
         assert(self.chip == null);
     }
 
-    /// Glyph and SVG records land in the host mirrors; cells copy from them
-    /// when drawn. Image records convert into the image mirror and reach the
-    /// chip with the next frame. There is no colour-glyph drawing yet, so
-    /// those records fail fast where an app first loads one.
     pub fn uploadAtlas(
         self: *Self,
         kind: backend.AtlasKind,
@@ -146,17 +113,12 @@ pub const EveRenderer = struct {
         self.size_px = size_px;
     }
 
-    /// Polylines and point clouds draw; triangle meshes fail fast in `draw`,
-    /// which names them, since the flag covers every mesh kind.
     pub fn capabilities(self: *const Self) backend.Capabilities {
         assert(self.chip != null);
         assert(self.size_px.width > 0);
         return .{ .meshes = true };
     }
 
-    /// Wait for the previous list to reach the screen, encode `frame`, send
-    /// new cells and the list, and swap it in at the next vertical blank. A
-    /// failed transfer skips the frame and is logged once.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -170,7 +132,6 @@ pub const EveRenderer = struct {
         const started = chip_mod.nowNanoseconds();
         const waited = chip.waitForSwap() catch |err| return self.skipFrame(err);
         _ = chip.takeBytesWritten();
-        // A resend after a failed transfer is the one send past the budget.
         const resend = self.images.resend_all;
         const image_bytes = self.images.flush(chip) catch |err| return self.skipFrame(err);
         self.cells.beginFrame();
@@ -200,8 +161,6 @@ pub const EveRenderer = struct {
     }
 
     fn skipFrame(self: *Self, err: chip_mod.Error) void {
-        // Cells and image rows staged or sent may be missing on the chip;
-        // upload them again.
         self.cells.forgetAll();
         self.images.forgetAll();
         if (self.transfer_failure_logged) return;
@@ -265,8 +224,6 @@ pub const EveRenderer = struct {
         }
     }
 
-    /// Room for `words` more commands, or a fail-fast naming what the frame
-    /// asked for.
     fn ensureRoom(self: *const Self, words: u32, context: *const Context) void {
         assert(words > 0);
         if (self.list.room(words)) return;
@@ -295,7 +252,7 @@ pub const EveRenderer = struct {
         if (box.w <= 0 or box.h <= 0) return;
         const fill = listColor(quad.fill);
         const border = listColor(quad.border_color);
-        const widths = quad.border_widths; // Top, right, bottom, left.
+        const widths = quad.border_widths;
         const has_border = border.alpha > 0 and
             (widths[0] > 0 or widths[1] > 0 or widths[2] > 0 or widths[3] > 0);
         if (fill.alpha == 0 and !has_border) return;
@@ -304,7 +261,6 @@ pub const EveRenderer = struct {
         if (!has_border) {
             self.ensureRoom(5 * rect_words, context);
             self.list.roundRect(box, radius, fill);
-            // Opaque fills redraw their smaller corners over the largest.
             if (fill.alpha == 255) self.patchCorners(box, radius, quad.corners, fill);
             return;
         }
@@ -330,8 +286,6 @@ pub const EveRenderer = struct {
         self.borderThroughStencil(box, radius, inner, inner_radius, colors);
     }
 
-    /// A translucent fill under a border: mark the inner area in the stencil
-    /// buffer so the border colour lands only on the ring, fill, then unmark.
     fn borderThroughStencil(
         self: *Self,
         box: Box,
@@ -354,16 +308,10 @@ pub const EveRenderer = struct {
         list.stencilUnmarkEnd();
     }
 
-    /// EVE rects have one radius, so `roundRect` drew every corner with the
-    /// largest. Each smaller corner is redrawn by a square twice the largest
-    /// radius on a side, set in the corner and rounded to the corner's own
-    /// radius; its far corners fall inside the shape already drawn. Corners
-    /// are top-left, top-right, bottom-right, bottom-left.
     fn patchCorners(self: *Self, box: Box, radius: f32, corners: [4]f32, color: ListColor) void {
         assert(radius >= 0);
         assert(box.w > 0);
         const side = @min(radius, @min(box.w, box.h) / 2) * 2;
-        // Below 1 px every corner was already drawn square.
         if (side < 2) return;
         for (corners, 0..) |corner, index| {
             if (corner >= radius) continue;
@@ -417,8 +365,6 @@ pub const EveRenderer = struct {
         self.list.cell(cell.page, layout, cell.index, pixelOf(sprite.bounds), color);
     }
 
-    /// Stroke first, then fill over it, matching the CPU renderer's
-    /// `stroke * (1 - fill)` weighting.
     fn encodeSvg(
         self: *Self,
         sprite: *const packed_mod.Sprite,
@@ -454,9 +400,6 @@ pub const EveRenderer = struct {
         for (points) |point| self.list.vertex(point.x, point.y);
     }
 
-    /// An image sprite from the image mirror, tinted, faded by its opacity,
-    /// and clipped to its rounded corners. Grayscale fails fast: EVE has no
-    /// per-bitmap colour matrix.
     fn encodeImage(self: *Self, sprite: *const packed_mod.Sprite, context: *const Context) void {
         assert(sprite.bounds[2] >= 0);
         assert(self.images.size > 0);
@@ -515,16 +458,12 @@ fn panicGrayscale(sprite: *const packed_mod.Sprite, context: *const Context) nor
     });
 }
 
-/// What a fail-fast names about the primitive being encoded.
 const Context = struct {
     frame: *const PackedFrame,
     draw_index: u32,
     pipeline: packed_mod.Pipeline,
 };
 
-/// The scissor covering the pixels whose centres lie in `clip` (edges
-/// included), or null when none do. The unbounded clip is clamped in float
-/// first.
 fn scissorOf(clip: packed_mod.Rect, panel: backend.SizePx) ?display_list.Scissor {
     assert(!std.math.isNan(clip[0]));
     assert(panel.width > 0);
@@ -532,7 +471,6 @@ fn scissorOf(clip: packed_mod.Rect, panel: backend.SizePx) ?display_list.Scissor
     const height: f32 = @floatFromInt(panel.height);
     const left = std.math.clamp(@ceil(clip[0] - 0.5), 0, width);
     const top = std.math.clamp(@ceil(clip[1] - 0.5), 0, height);
-    // One past the last pixel whose centre is at or before the far edge.
     const right = std.math.clamp(@floor(clip[0] + @max(clip[2], 0) - 0.5) + 1, 0, width);
     const bottom = std.math.clamp(@floor(clip[1] + @max(clip[3], 0) - 0.5) + 1, 0, height);
     if (right <= left or bottom <= top) return null;
@@ -550,7 +488,6 @@ fn deviceBox(rect: packed_mod.Rect) Box {
     return .{ .x = rect[0], .y = rect[1], .w = @max(rect[2], 0), .h = @max(rect[3], 0) };
 }
 
-/// The atlas texels a sprite's UVs cover, or null when none.
 fn atlasRegion(uv: [4]f32, atlas_size: u32) ?cells_mod.Region {
     assert(atlas_size > 0);
     assert(!std.math.isNan(uv[0]));
@@ -568,8 +505,6 @@ fn atlasRegion(uv: [4]f32, atlas_size: u32) ?cells_mod.Region {
     };
 }
 
-/// Cells draw 1:1; a sprite drawn larger or smaller than its region would
-/// silently come out the wrong size, so it fails fast.
 fn checkSpriteSize(
     sprite: *const packed_mod.Sprite,
     region: cells_mod.Region,
@@ -613,7 +548,6 @@ fn listColor(rgba: packed_mod.Rgba) ListColor {
     };
 }
 
-/// The clear colour over black, as the CPU renderer's opaque framebuffer.
 fn opaqueRgb(color: backend.Color) u32 {
     const alpha = std.math.clamp(color.a, 0, 1);
     return listColor(.{ color.r * alpha, color.g * alpha, color.b * alpha, 1 }).rgb;
@@ -625,7 +559,6 @@ const Timings = struct {
     send_ns: u64,
 };
 
-/// Totals over `log_period_ns`, logged once per period.
 const Perf = struct {
     start_ns: u64 = 0,
     frames: u32 = 0,
@@ -634,7 +567,6 @@ const Perf = struct {
     send_ns: u64 = 0,
     words_max: u32 = 0,
     cell_bytes: u64 = 0,
-    /// `REG_UNDERRUN` at the start of the period, once read.
     underruns_start: ?u32 = null,
 
     fn record(
@@ -672,7 +604,6 @@ const Perf = struct {
         const underruns_start = self.underruns_start;
         const words_max = self.words_max;
         self.* = .{ .start_ns = now };
-        // Read once a period, not per frame: each read is an SPI transfer.
         const underruns = chip.readUnderruns() catch return;
         self.underruns_start = underruns;
         const start = underruns_start orelse return;
@@ -707,7 +638,6 @@ const test_viewport = backend.Viewport{
     .scale_factor = 1,
 };
 
-/// A renderer drawing into a simulated chip that writes no dump.
 fn testRenderer(renderer: *EveRenderer, chip: *Chip) !void {
     chip.* = .{};
     try chip.openSimulated(null);
@@ -743,7 +673,6 @@ fn appendDraw(frame: *PackedFrame, pipeline: packed_mod.Pipeline, first: u32, cl
     frame.draw_count += 1;
 }
 
-/// The words of the list the renderer last swapped in.
 fn testWords(renderer: *const EveRenderer) []const u32 {
     return renderer.list.words[0..renderer.list.count];
 }
@@ -757,7 +686,6 @@ fn containsSequence(words: []const u32, sequence: []const u32) bool {
     return false;
 }
 
-/// `VERTEX2F` at `VERTEX_FORMAT(3)`: 1/8 px.
 fn testVertex(x: f32, y: f32) u32 {
     const fx: u32 = @intFromFloat(x * 8);
     const fy: u32 = @intFromFloat(y * 8);
@@ -793,14 +721,14 @@ test "a clipped polyline is one LINE_STRIP inside the clip's pixel-centre scisso
     const scissor = [_]u32{ (27 << 24) | (11 << 11) | 21, (28 << 24) | (29 << 12) | 8 };
     try testing.expect(containsSequence(words, &scissor));
     const strip = [_]u32{
-        (31 << 24) | 4, // BEGIN(LINE_STRIP)
+        (31 << 24) | 4,
         testVertex(12, 22),
         testVertex(20.5, 25.125),
         testVertex(38, 28),
     };
     try testing.expect(containsSequence(words, &strip));
     try testing.expect(std.mem.indexOfScalar(u32, words, (14 << 24) | 24) != null);
-    try testing.expectEqual(@as(u32, 0), words[words.len - 1]); // DISPLAY
+    try testing.expectEqual(@as(u32, 0), words[words.len - 1]);
 }
 
 test "a translucent fill under a border marks, draws outside, and unmarks the stencil" {
@@ -833,8 +761,8 @@ test "a translucent fill under a border marks, draws outside, and unmarks the st
     const mask_off: u32 = 32 << 24;
     const mark = [_]u32{
         mask_off,
-        (10 << 24) | (7 << 16) | (1 << 8) | 0xFF, // STENCIL_FUNC(ALWAYS, 1, 255)
-        (12 << 24) | (2 << 3) | 2, // STENCIL_OP(REPLACE, REPLACE)
+        (10 << 24) | (7 << 16) | (1 << 8) | 0xFF,
+        (12 << 24) | (2 << 3) | 2,
     };
     const outside = [_]u32{ (32 << 24) | 0xF, (10 << 24) | (6 << 16) | (1 << 8) | 0xFF };
     const marked = std.mem.indexOf(u32, words, &mark).?;
@@ -882,17 +810,17 @@ test "an image draws from the image mirror, scaled by the transform" {
     try testing.expectEqual(@as(u16, 0xFF00), texel);
     const words = testWords(&renderer);
     const setup = [_]u32{
-        (5 << 24) | 14, // BITMAP_HANDLE(14)
-        (1 << 24) | source, // BITMAP_SOURCE
-        (7 << 24) | (6 << 19) | ((stride & 1023) << 9) | 2, // BITMAP_LAYOUT(ARGB4, stride, 2)
-        (40 << 24) | ((stride >> 10) << 2), // BITMAP_LAYOUT_H
-        (8 << 24) | (1 << 20) | (8 << 9) | 2, // BITMAP_SIZE(BILINEAR, BORDER, 8, 2)
-        (41 << 24), // BITMAP_SIZE_H
-        (21 << 24) | 128, // BITMAP_TRANSFORM_A: 0.5 texel per pixel
+        (5 << 24) | 14,
+        (1 << 24) | source,
+        (7 << 24) | (6 << 19) | ((stride & 1023) << 9) | 2,
+        (40 << 24) | ((stride >> 10) << 2),
+        (8 << 24) | (1 << 20) | (8 << 9) | 2,
+        (41 << 24),
+        (21 << 24) | 128,
     };
     try testing.expect(containsSequence(words, &setup));
     try testing.expect(std.mem.indexOfScalar(u32, words, (25 << 24) | 256) == null);
-    const vertex = (2 << 30) | (100 << 21) | (50 << 12) | (14 << 7); // VERTEX2II(100, 50, 14, 0)
+    const vertex = (2 << 30) | (100 << 21) | (50 << 12) | (14 << 7);
     try testing.expect(std.mem.indexOfScalar(u32, words, vertex) != null);
 }
 
@@ -931,16 +859,16 @@ test "a 1:1 image samples the nearest texel; a rounded, faded one draws inside a
     renderer.draw(&frame, test_viewport, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
     const words = testWords(&renderer);
 
-    const nearest = (8 << 24) | (4 << 9) | 2; // BITMAP_SIZE(NEAREST, BORDER, 4, 2)
+    const nearest = (8 << 24) | (4 << 9) | 2;
     try testing.expectEqual(@as(usize, 2), std.mem.count(u32, words, &.{nearest}));
     for (words) |word| try testing.expect(word >> 24 != 21 and word >> 24 != 25);
     const inside = [_]u32{
-        (32 << 24) | 0xF, // COLOR_MASK(1, 1, 1, 1)
-        (10 << 24) | (5 << 16) | (1 << 8) | 0xFF, // STENCIL_FUNC(EQUAL, 1, 255)
+        (32 << 24) | 0xF,
+        (10 << 24) | (5 << 16) | (1 << 8) | 0xFF,
     };
     const faded = std.mem.indexOfScalar(u32, words, (16 << 24) | 128).?;
     const masked = std.mem.indexOfPos(u32, words, faded, &inside).?;
-    const second = (2 << 30) | (40 << 21) | (10 << 12) | (14 << 7); // VERTEX2II(40, 10, 14, 0)
+    const second = (2 << 30) | (40 << 21) | (10 << 12) | (14 << 7);
     const drawn = std.mem.indexOfScalarPos(u32, words, masked, second).?;
     const unmark = std.mem.indexOfScalarPos(u32, words, drawn, (32 << 24)).?;
     try testing.expect(unmark > drawn);

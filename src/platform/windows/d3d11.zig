@@ -1,16 +1,3 @@
-//! Hand-written Direct3D 11 and DXGI bindings for the DirectX 11 renderer.
-//!
-//! Both APIs are COM. A method is found by its slot index alone, so each
-//! vtable the renderer calls through lists every slot of its interface up to
-//! the last one, in the order of `d3d11.h`, `dxgi.h`, `dxgi1_2.h`, and
-//! `dxgi1_3.h`; slots the renderer never calls are typed `Slot`. Interfaces
-//! the renderer only creates, binds, and releases (views, shaders, and state
-//! objects) declare only the three `IUnknown` slots, which every COM vtable
-//! begins with; their pointers are never dereferenced past them.
-//!
-//! Released COM vtables and structures never change, so the declarations stay
-//! correct once they match the headers.
-
 const std = @import("std");
 const win32 = @import("win32.zig");
 const assert = std.debug.assert;
@@ -21,26 +8,22 @@ pub const HANDLE = win32.HANDLE;
 pub const HWND = win32.HWND;
 
 pub const S_OK: HRESULT = 0;
-/// `Present`: the window is fully occluded; nothing was shown.
 pub const DXGI_STATUS_OCCLUDED: HRESULT = 0x087A_0001;
 pub const DXGI_ERROR_DEVICE_REMOVED: HRESULT = @bitCast(@as(u32, 0x887A_0005));
 pub const DXGI_ERROR_DEVICE_HUNG: HRESULT = @bitCast(@as(u32, 0x887A_0006));
 pub const DXGI_ERROR_DEVICE_RESET: HRESULT = @bitCast(@as(u32, 0x887A_0007));
 pub const DXGI_ERROR_UNSUPPORTED: HRESULT = @bitCast(@as(u32, 0x887A_0004));
 
-/// `SUCCEEDED`: every non-negative `HRESULT` reports success.
 pub fn succeeded(result: HRESULT) bool {
     return result >= 0;
 }
 
-/// Whether `result` reports a lost device, which only a new device recovers.
 pub fn deviceLost(result: HRESULT) bool {
     if (result == DXGI_ERROR_DEVICE_REMOVED) return true;
     if (result == DXGI_ERROR_DEVICE_RESET) return true;
     return result == DXGI_ERROR_DEVICE_HUNG;
 }
 
-/// A vtable slot the renderer never calls. It only holds its place.
 pub const Slot = *const anyopaque;
 
 pub const GUID = extern struct {
@@ -81,8 +64,6 @@ pub const IID_ID3D11Texture2D: GUID = .{
 pub const D3D11_SDK_VERSION: u32 = 7;
 
 pub const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
-/// The Windows Advanced Rasterization Platform: Microsoft's software device,
-/// present on every Windows release Gooey supports (VMs, RDP, no driver).
 pub const D3D_DRIVER_TYPE_WARP: u32 = 5;
 
 pub const D3D_FEATURE_LEVEL_11_0: u32 = 0xB000;
@@ -101,8 +82,6 @@ pub const DXGI_SCALING_NONE: u32 = 1;
 pub const DXGI_SWAP_EFFECT_FLIP_DISCARD: u32 = 4;
 pub const DXGI_ALPHA_MODE_IGNORE: u32 = 3;
 pub const DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT: u32 = 64;
-/// `MakeWindowAssociation`: DXGI must not handle Alt+Enter; Gooey windows
-/// have no exclusive fullscreen mode.
 pub const DXGI_MWA_NO_ALT_ENTER: u32 = 0x2;
 
 pub const D3D11_USAGE_DEFAULT: u32 = 0;
@@ -145,8 +124,6 @@ pub const D3D11_FILTER_MIN_MAG_MIP_LINEAR: u32 = 0x15;
 pub const D3D11_TEXTURE_ADDRESS_CLAMP: u32 = 3;
 pub const D3D11_COMPARISON_NEVER: u32 = 1;
 
-/// Simultaneous render targets the output merger accepts; fixes the length
-/// of `D3D11_BLEND_DESC.RenderTarget`.
 pub const D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT: u32 = 8;
 
 pub const DXGI_SAMPLE_DESC = extern struct {
@@ -238,7 +215,6 @@ pub const D3D11_VIEWPORT = extern struct {
     MaxDepth: f32,
 };
 
-/// `D3D11_RECT` is the Win32 `RECT`: exclusive right and bottom edges.
 pub const D3D11_RECT = extern struct {
     left: i32,
     top: i32,
@@ -246,7 +222,6 @@ pub const D3D11_RECT = extern struct {
     bottom: i32,
 };
 
-/// Exclusive `right`, `bottom`, and `back` edges.
 pub const D3D11_BOX = extern struct {
     left: u32,
     top: u32,
@@ -299,9 +274,6 @@ pub const D3D11_SAMPLER_DESC = extern struct {
     MaxLOD: f32,
 };
 
-/// An interface the renderer creates, binds, and releases but calls nothing
-/// else on. `tag` makes each one a distinct type, so a pixel shader cannot be
-/// bound where a vertex shader belongs.
 fn ReleaseOnly(comptime tag: []const u8) type {
     return extern struct {
         vtable: *const VTable,
@@ -335,12 +307,8 @@ pub const ID3D11ClassInstance = ReleaseOnly("ID3D11ClassInstance");
 pub const ID3D11InputLayout = ReleaseOnly("ID3D11InputLayout");
 pub const IDXGIOutput = ReleaseOnly("IDXGIOutput");
 
-/// Any `ID3D11Resource`: the parameter type of `Map`, `CopyResource`, and the
-/// view constructors. Buffers and textures convert with `resource()`.
 pub const ID3D11Resource = ReleaseOnly("ID3D11Resource");
 
-/// `ID3D11Buffer` and `ID3D11Texture2D` are `ID3D11Resource`s; the renderer
-/// calls only `Release` on them directly.
 pub const ID3D11Buffer = extern struct {
     vtable: *const ID3D11Resource.VTable,
 
@@ -391,14 +359,14 @@ pub const ID3D11Device = extern struct {
         CreateShaderResourceView: *const fn (
             *Self,
             *ID3D11Resource,
-            ?*const anyopaque, // D3D11_SHADER_RESOURCE_VIEW_DESC; null views it whole
+            ?*const anyopaque,
             *?*ID3D11ShaderResourceView,
         ) callconv(.winapi) HRESULT,
         CreateUnorderedAccessView: Slot,
         CreateRenderTargetView: *const fn (
             *Self,
             *ID3D11Resource,
-            ?*const anyopaque, // D3D11_RENDER_TARGET_VIEW_DESC; null views mip 0
+            ?*const anyopaque,
             *?*ID3D11RenderTargetView,
         ) callconv(.winapi) HRESULT,
         CreateDepthStencilView: Slot,
@@ -478,16 +446,13 @@ pub const ID3D11DeviceContext = extern struct {
     const Self = ID3D11DeviceContext;
 
     pub const VTable = extern struct {
-        // IUnknown
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*Self) callconv(.winapi) u32,
-        // ID3D11DeviceChild
         GetDevice: Slot,
         GetPrivateData: Slot,
         SetPrivateData: Slot,
         SetPrivateDataInterface: Slot,
-        // ID3D11DeviceContext
         VSSetConstantBuffers: *const fn (
             *Self,
             u32,
@@ -613,7 +578,6 @@ pub const ID3D11DeviceContext = extern struct {
             *ID3D11RenderTargetView,
             *const [4]f32,
         ) callconv(.winapi) void,
-        // Every later slot up to `FinishCommandList` (index 114).
         rest: [ClearState_slot - ClearRenderTargetView_slot - 1]Slot,
         ClearState: *const fn (*Self) callconv(.winapi) void,
         Flush: *const fn (*Self) callconv(.winapi) void,
@@ -684,34 +648,29 @@ pub const IDXGIFactory2 = extern struct {
     const Self = IDXGIFactory2;
 
     pub const VTable = extern struct {
-        // IUnknown
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*Self) callconv(.winapi) u32,
-        // IDXGIObject
         SetPrivateData: Slot,
         SetPrivateDataInterface: Slot,
         GetPrivateData: Slot,
         GetParent: Slot,
-        // IDXGIFactory
         EnumAdapters: Slot,
         MakeWindowAssociation: *const fn (*Self, HWND, u32) callconv(.winapi) HRESULT,
         GetWindowAssociation: Slot,
         CreateSwapChain: Slot,
         CreateSoftwareAdapter: Slot,
-        // IDXGIFactory1
         EnumAdapters1: Slot,
         IsCurrent: Slot,
-        // IDXGIFactory2
         IsWindowedStereoEnabled: Slot,
         CreateSwapChainForHwnd: *const fn (
             *Self,
-            *anyopaque, // IUnknown: the device
+            *anyopaque,
             HWND,
             *const DXGI_SWAP_CHAIN_DESC1,
-            ?*const anyopaque, // DXGI_SWAP_CHAIN_FULLSCREEN_DESC; null is windowed
+            ?*const anyopaque,
             ?*IDXGIOutput,
-            *?*IDXGISwapChain2, // An IDXGISwapChain1; queried for 2 below.
+            *?*IDXGISwapChain2,
         ) callconv(.winapi) HRESULT,
         CreateSwapChainForCoreWindow: Slot,
         GetSharedResourceAdapterLuid: Slot,
@@ -729,28 +688,20 @@ pub const IDXGIFactory2 = extern struct {
     }
 };
 
-/// Declared through `IDXGISwapChain2` (DXGI 1.3, Windows 8.1) for the frame
-/// latency waitable. `CreateSwapChainForHwnd` returns an `IDXGISwapChain1`,
-/// whose slots are this vtable's prefix; the renderer calls only those
-/// through it before querying for `IDXGISwapChain2`.
 pub const IDXGISwapChain2 = extern struct {
     vtable: *const VTable,
 
     const Self = IDXGISwapChain2;
 
     pub const VTable = extern struct {
-        // IUnknown
         QueryInterface: *const fn (*Self, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
         AddRef: Slot,
         Release: *const fn (*Self) callconv(.winapi) u32,
-        // IDXGIObject
         SetPrivateData: Slot,
         SetPrivateDataInterface: Slot,
         GetPrivateData: Slot,
         GetParent: Slot,
-        // IDXGIDeviceSubObject
         GetDevice: Slot,
-        // IDXGISwapChain
         Present: *const fn (*Self, u32, u32) callconv(.winapi) HRESULT,
         GetBuffer: *const fn (*Self, u32, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
         SetFullscreenState: Slot,
@@ -761,7 +712,6 @@ pub const IDXGISwapChain2 = extern struct {
         GetContainingOutput: Slot,
         GetFrameStatistics: Slot,
         GetLastPresentCount: Slot,
-        // IDXGISwapChain1
         GetDesc1: Slot,
         GetFullscreenDesc: Slot,
         GetHwnd: Slot,
@@ -773,7 +723,6 @@ pub const IDXGISwapChain2 = extern struct {
         GetBackgroundColor: Slot,
         SetRotation: Slot,
         GetRotation: Slot,
-        // IDXGISwapChain2
         SetSourceSize: Slot,
         GetSourceSize: Slot,
         SetMaximumFrameLatency: *const fn (*Self, u32) callconv(.winapi) HRESULT,
@@ -810,10 +759,8 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // `x86_64-windows` only.
     assert(@sizeOf(usize) == 8);
 
-    // Sizes measured against the SDK headers on 64-bit targets.
     assert(@sizeOf(GUID) == 16);
     assert(@sizeOf(DXGI_SWAP_CHAIN_DESC1) == 48);
     assert(@sizeOf(DXGI_ADAPTER_DESC) == 304);
@@ -896,7 +843,5 @@ comptime {
     assertSlot(IDXGISwapChain2.VTable, "GetFrameLatencyWaitableObject", 33);
     assertSlotCount(IDXGISwapChain2.VTable, 36);
 
-    // Distinct types: binding one release-only interface where another is
-    // expected fails to compile.
     assert(ID3D11VertexShader != ID3D11PixelShader);
 }

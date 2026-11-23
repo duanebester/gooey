@@ -47,7 +47,7 @@ pub const Legend = struct {
         color: Color = Color.hex(0x333333),
         background: ?Color = null,
         padding: f32 = 8.0,
-        item_gap: f32 = 8.0, // Gap between marker and label
+        item_gap: f32 = 8.0,
     };
 
     pub const Bounds = struct {
@@ -57,7 +57,6 @@ pub const Legend = struct {
         height: f32,
     };
 
-    /// `consumed` is the space the legend occupied.
     pub const DrawResult = struct {
         consumed: Bounds,
     };
@@ -97,7 +96,6 @@ pub const Legend = struct {
         std.debug.assert(items.len > 0);
         std.debug.assert(items.len <= MAX_LEGEND_ITEMS);
 
-        // Use slightly larger estimate (0.7) to ensure enough space for actual text
         const char_width = opts.font_size * 0.7;
         const item_height = @max(opts.item_size, opts.font_size);
 
@@ -250,7 +248,6 @@ fn drawMarker(
     }
 }
 
-/// Writes into `out_items` to avoid allocation.
 pub fn itemsFromSeries(
     comptime SeriesType: type,
     series: []const SeriesType,
@@ -363,7 +360,7 @@ test "calculateLayout top position" {
     const layout = calculateLayout(&items, bounds, opts);
 
     try std.testing.expectEqual(@as(f32, 0), layout.y);
-    try std.testing.expect(layout.x > 0); // Centered means x > 0 for small legend
+    try std.testing.expect(layout.x > 0);
 }
 
 test "calculateLayout bottom position" {
@@ -377,7 +374,7 @@ test "calculateLayout bottom position" {
     const layout = calculateLayout(&items, bounds, opts);
 
     try std.testing.expect(layout.y + layout.height <= 300);
-    try std.testing.expect(layout.y > 0); // Not at y=0 since it's at bottom
+    try std.testing.expect(layout.y > 0);
 }
 
 test "calculateLayout left position" {
@@ -391,7 +388,7 @@ test "calculateLayout left position" {
     const layout = calculateLayout(&items, bounds, opts);
 
     try std.testing.expectEqual(@as(f32, 0), layout.x);
-    try std.testing.expect(layout.y > 0); // Centered vertically
+    try std.testing.expect(layout.y > 0);
 }
 
 test "calculateLayout right position" {
@@ -405,5 +402,5 @@ test "calculateLayout right position" {
     const layout = calculateLayout(&items, bounds, opts);
 
     try std.testing.expect(layout.x + layout.width <= 400);
-    try std.testing.expect(layout.x > 0); // Not at x=0 since it's on right
+    try std.testing.expect(layout.x > 0);
 }

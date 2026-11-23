@@ -10,15 +10,12 @@ pub const A11ySystem = struct {
 
     bridge: a11y.Bridge,
 
-    /// Cached "screen reader is running" flag. Every hot path that reads it
-    /// to early out must be a no-op when this is `false`.
     enabled: bool = false,
 
     check_counter: u32 = 0,
 
     const Self = @This();
 
-    /// `noinline` keeps the tree's setup out of the caller's WASM frame.
     pub noinline fn initInPlace(self: *Self, capacity: *const a11y.TreeCapacity) !void {
         try self.tree.initInPlace(capacity);
         self.enabled = false;
@@ -29,13 +26,11 @@ pub const A11ySystem = struct {
         std.debug.assert(!self.bridge.isActive());
     }
 
-    /// Binding happens during initialization; a rebind must not allocate.
     pub fn bindPlatform(self: *Self, window: anytype, view: anytype) void {
         std.debug.assert(self.bridgeAddressValid());
         self.bridge.deinit();
         self.enabled = false;
         self.check_counter = 0;
-        // The union is at its final address because `self` is.
         self.platform_bridge = .{ .null_bridge = {} };
         self.bridge = a11y.createPlatformBridge(
             &self.platform_bridge,
@@ -46,7 +41,6 @@ pub const A11ySystem = struct {
         std.debug.assert(self.bridgeAddressValid());
     }
 
-    /// Return to the no-op bridge before the native window goes away.
     pub fn bindHeadless(self: *Self) void {
         std.debug.assert(self.bridgeAddressValid());
         self.bridge.deinit();
@@ -57,11 +51,6 @@ pub const A11ySystem = struct {
         std.debug.assert(!self.bridge.isActive());
     }
 
-    /// Whether `bridge.ptr` points into this system's own `platform_bridge`.
-    ///
-    /// False after a by-value copy or move of an initialized system: the copy's
-    /// dispatcher still points at the original storage, which dangles if the
-    /// original was a local. The null bridge has no storage, so it always passes.
     pub fn bridgeAddressValid(self: *const Self) bool {
         if (self.platform_bridge == .null_bridge) return true;
         const storage_start = @intFromPtr(&self.platform_bridge);
@@ -71,7 +60,6 @@ pub const A11ySystem = struct {
         return bridge_address < storage_end;
     }
 
-    /// Must run before teardown that invalidates the underlying window/view handles.
     pub fn deinit(self: *Self) void {
         std.debug.assert(self.bridgeAddressValid());
         self.bridge.deinit();
@@ -80,7 +68,6 @@ pub const A11ySystem = struct {
 
     pub fn beginFrame(self: *Self) void {
         std.debug.assert(self.check_counter < a11y.constants.SCREEN_READER_CHECK_INTERVAL);
-        // Every bridge call below would otherwise go through a dangling dispatcher.
         std.debug.assert(self.bridgeAddressValid());
 
         self.check_counter += 1;
@@ -106,7 +93,6 @@ pub const A11ySystem = struct {
         self.enabled = false;
     }
 
-    /// Valid only between the tree's `beginFrame` and `endFrame`.
     pub fn getTree(self: *Self) *a11y.Tree {
         return &self.tree;
     }
@@ -132,7 +118,6 @@ test "A11ySystem: initInPlace produces a disabled, freshly-counted system" {
 }
 
 test "A11ySystem: a by-value copy is detected as a dangling bridge" {
-    // Only the original is torn down: the copy shares its bridge resources.
     const original = try testing.allocator.create(A11ySystem);
     defer testing.allocator.destroy(original);
     try original.initInPlace(&a11y.TreeCapacity.standard);
@@ -145,7 +130,7 @@ test "A11ySystem: a by-value copy is detected as a dangling bridge" {
 
     try testing.expect(original.bridgeAddressValid());
     if (original.platform_bridge == .null_bridge) {
-        try testing.expect(copy.bridgeAddressValid()); // no storage to dangle into
+        try testing.expect(copy.bridgeAddressValid());
     } else {
         try testing.expect(!copy.bridgeAddressValid());
     }
@@ -179,7 +164,6 @@ test "A11ySystem: announce reaches the tree when enabled" {
     defer sys.deinit();
 
     sys.forceEnable();
-    // The tree only accepts announcements during a frame.
     sys.tree.beginFrame();
     sys.announce("hello", .polite);
     sys.tree.endFrame();

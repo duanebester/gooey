@@ -1,8 +1,3 @@
-//! Browser clock support: animation and interaction timing need a
-//! monotonically advancing source even though no general-purpose WASM I/O
-//! backend exists; every other operation keeps `std.Io.failing` semantics,
-//! since asynchronous services use explicit JavaScript callbacks.
-
 const std = @import("std");
 const imports = @import("imports.zig");
 

@@ -12,8 +12,6 @@ fn getDistantFuture() objc.Object {
     return NSDate.msgSend(objc.Object, "distantFuture", .{});
 }
 
-/// `kCoreEventClass` ('aevt') and `kAEQuitApplication` ('quit'): the event the
-/// Dock's Quit, loginwindow at logout, and `osascript ... to quit` send.
 const ae_core_event_class: u32 = 0x61657674;
 const ae_quit_application: u32 = 0x71756974;
 
@@ -25,8 +23,6 @@ pub const MacPlatform = struct {
 
     quit_handler: objc.Object,
     quit_window: ?objc.Object,
-    /// The quit Apple Event whose reply waits for teardown; `deinit` resumes
-    /// it.
     quit_suspension: ?*const anyopaque,
 
     loop_turn_callback: ?LoopTurnCallback = null,
@@ -42,8 +38,6 @@ pub const MacPlatform = struct {
         const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
         if (app.value == null) return error.ApplicationUnavailable;
 
-        // NSApplicationActivationPolicyRegular: a foreground app with a Dock
-        // tile and a menu bar, as opposed to an accessory or background agent.
         _ = app.msgSend(bool, "setActivationPolicy:", .{@as(i64, 0)});
 
         const handler_class = try registerQuitHandlerClass();
@@ -64,8 +58,6 @@ pub const MacPlatform = struct {
         assert(!self.running);
     }
 
-    /// Runs last in teardown, so the held quit Apple Event is answered only
-    /// after every other deinit has run.
     pub fn deinit(self: *Self) void {
         assert(self.app.value != null);
         self.running = false;
@@ -74,7 +66,6 @@ pub const MacPlatform = struct {
             manager.msgSend(void, "resumeWithSuspensionID:", .{suspension});
             self.quit_suspension = null;
         }
-        // The manager does not retain its handlers, so unhook before release.
         manager.msgSend(void, "removeEventHandlerForEventClass:andEventID:", .{
             ae_core_event_class,
             ae_quit_application,
@@ -82,8 +73,6 @@ pub const MacPlatform = struct {
         self.quit_handler.release();
         assert(!self.running);
         assert(self.quit_suspension == null);
-        // NSApplication is a process-wide singleton; releasing it would be a
-        // double-free of a shared instance we never owned.
     }
 
     pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
@@ -102,8 +91,6 @@ pub const MacPlatform = struct {
         _ = self.app.msgSend(void, "activateIgnoringOtherApps:", .{true});
 
         _ = self.app.msgSend(void, "finishLaunching", .{});
-        // Install after `finishLaunching`, which installs AppKit's own quit
-        // handler.
         const install = "setEventHandler:andSelector:forEventClass:andEventID:";
         appleEventManager().msgSend(void, install, .{
             self.quit_handler.value,
@@ -120,7 +107,7 @@ pub const MacPlatform = struct {
                 ?*anyopaque,
                 "nextEventMatchingMask:untilDate:inMode:dequeue:",
                 .{
-                    @as(u64, 0xFFFFFFFFFFFFFFFF), // NSEventMaskAny
+                    @as(u64, 0xFFFFFFFFFFFFFFFF),
                     getDistantFuture().value,
                     NSDefaultRunLoopMode,
                     true,
@@ -132,34 +119,19 @@ pub const MacPlatform = struct {
                 self.app.msgSend(void, "updateWindows", .{});
             }
 
-            // `sendEvent:` has returned, so every AppKit delegate callback it
-            // ran, including `windowShouldClose:` for a titlebar close, has
-            // unwound off the stack, and the owner gets its turn here. A turn
-            // is owed once per iteration even when no event came back.
-            //
-            // AppKit's nested run loops (menu tracking, modal panels, live
-            // resize) never reach this line, so no turn fires during them.
             if (self.loop_turn_callback) |on_turn| on_turn(self);
         }
     }
 
-    /// Stop the loop so `run` returns and its caller tears down in order.
-    /// `-[NSApp terminate:]` would `exit()` from inside this call and skip
-    /// every deinit; the quit Apple Event avoids it (`handleQuitEvent`).
     pub fn quit(self: *Self) void {
         assert(self.app.value != null);
 
         self.running = false;
         assert(!self.isRunning());
 
-        // `run` checks `running` only after an event, and a quit from a
-        // main-queue tick arrives as none.
         self.postWakeEvent();
     }
 
-    /// The loop turns only after an event, which a close sent as
-    /// `performClose:` (from the Quit menu item or a script) or a main-queue
-    /// tick does not produce.
     pub fn postWakeEvent(self: *Self) void {
         const NSEvent = objc.getClass("NSEvent") orelse return;
         const ns_event_type_application_defined: u64 = 15;
@@ -183,21 +155,15 @@ pub const MacPlatform = struct {
         self.app.msgSend(void, "postEvent:atStart:", .{ event.value, true });
     }
 
-    /// Install a main menu whose app menu holds `quit_title` on Cmd+Q. The
-    /// item sends `performClose:` to `ns_window`, so Cmd+Q takes the close
-    /// button's path. The view's `performKeyEquivalent:` runs before the
-    /// menu, so an app keymap that claims Cmd+Q still wins.
     pub fn installMainMenu(self: *Self, ns_window: objc.Object, quit_title: [:0]const u8) !void {
         assert(self.app.value != null);
         assert(ns_window.value != null);
         const NSMenu = objc.getClass("NSMenu") orelse return error.ClassNotFound;
         const NSMenuItem = objc.getClass("NSMenuItem") orelse return error.ClassNotFound;
         const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
-        // `run` has not pushed its pool yet; the strings below autorelease.
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
-        // Each `alloc`/`init` is ours (+1); the parent retains it, so release.
         const main_menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
         defer main_menu.release();
         const app_item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
@@ -224,25 +190,15 @@ pub const MacPlatform = struct {
         assert(self.app.msgSend(objc.c.id, "mainMenu", .{}) == main_menu.value);
     }
 
-    /// The quit Apple Event (Dock Quit, logout, `osascript`) closes the window
-    /// the way Cmd+Q does, and holds the event's reply until `deinit`.
-    ///
-    /// AppKit's own handler calls `terminate:`, which `exit()`s and skips
-    /// teardown. Answering `applicationShouldTerminate:` with
-    /// `NSTerminateLater` does not help: `terminate:` then waits in a nested
-    /// run loop for the reply, so `run` never returns to tear down, and the
-    /// reply `exit()`s from there. Suspending the event is what
-    /// `NSTerminateLater` does for its sender, without the nested loop.
     fn handleQuitEvent(
         handler: objc.c.id,
         _: objc.c.SEL,
-        _: objc.c.id, // event
-        _: objc.c.id, // reply
+        _: objc.c.id,
+        _: objc.c.id,
     ) callconv(.c) void {
         const ptr = objc.Object.fromId(handler).getInstanceVariable("_gooeyPlatform");
         const self: *Self = @ptrCast(@alignCast(ptr.value orelse return));
         assert(self.app.value != null);
-        // A repeated quit is answered now; the first one's reply is held.
         if (self.quit_suspension != null) return;
         self.quit_suspension = appleEventManager().msgSend(
             ?*const anyopaque,
@@ -250,15 +206,10 @@ pub const MacPlatform = struct {
             .{},
         );
         assert(self.quit_suspension != null);
-        // A file dialog's modal loop would hold `run` until the user answers
-        // it, so end it: the dialog reports a cancel, then the window closes.
         if (self.app.msgSend(objc.c.id, "modalWindow", .{}) != null) {
             self.app.msgSend(void, "stopModal", .{});
         }
         const window = self.quit_window orelse return self.quit();
-        // `performClose:` beeps and does nothing while a modal session runs,
-        // so it waits until the loop is back in the default mode: after this
-        // event, and after the modal loop `stopModal` ends.
         window.msgSend(void, "performSelector:withObject:afterDelay:", .{
             objc.sel("performClose:"),
             @as(objc.c.id, null),
@@ -266,8 +217,6 @@ pub const MacPlatform = struct {
         });
     }
 
-    /// Whether the host event loop is currently pumping events. Only
-    /// observable from inside a callback dispatched by `run`.
     pub fn isRunning(self: *const Self) bool {
         assert(self.app.value != null);
         return self.running;
@@ -291,11 +240,6 @@ pub const MacPlatform = struct {
         quit_handler_class = class;
         return class;
     }
-
-    // The core never makes these calls. They stay only while the legacy
-    // `context/window.zig` compiles, and go when that file is deleted. The
-    // core host's render thread takes no lock the main thread could hold, so
-    // there is nothing to lock.
 
     pub fn lockRenderThreads(self: *Self) void {
         assert(self.app.value != null);

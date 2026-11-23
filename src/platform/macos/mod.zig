@@ -13,8 +13,6 @@ pub const input_view = @import("input_view.zig");
 
 const interface = @import("../interface.zig");
 
-// `platform/mod.zig` aliases these two; the aliases below are convenience
-// spellings only.
 pub const Platform = platform.MacPlatform;
 pub const PlatformWindow = window.Window;
 

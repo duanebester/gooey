@@ -21,7 +21,6 @@ pub const State = struct {
 
     pub fn resizeSidebar(self: *State, effects: *Effects) void {
         const drag = effects.pointerDrag().?;
-        // Splitters answer the primary button only, as native ones do.
         if (drag.button != .left) return;
         switch (drag.phase) {
             .begin => self.sidebar_width_start = self.sidebar_width,
@@ -34,17 +33,13 @@ pub const State = struct {
         assert(self.sidebar_width <= sidebar_width_max);
     }
 
-    /// `content` is the pane the top and bottom panes share; its
-    /// height turns the pointer's distance into a share.
     pub fn resizeTop(self: *State, content: gooey.ElementId, effects: *Effects) void {
         const drag = effects.pointerDrag().?;
         if (drag.button != .left) return;
         switch (drag.phase) {
             .begin => self.top_share_start = self.top_share,
             .move, .end => {
-                // A pane not on screen leaves the share as it is.
                 const content_bounds = effects.bounds(content) orelse return;
-                // The weights share the pane's height less the splitter.
                 const free = content_bounds.height - splitter_size;
                 if (free <= 0) return;
                 const moved = (drag.y - drag.start_y) / free;
@@ -126,14 +121,12 @@ pub fn render(cx: *Cx) void {
     sidebar.background = .surface;
     var content = pane;
     content.padding = .zero;
-    // No gap, so the weights share exactly the height the splitter leaves.
     content.gap = 0;
     var top = pane;
     top.height = .{ .grow = s.top_share };
     var bottom = pane;
     bottom.background = .surface;
     bottom.height = .{ .grow = 1 - s.top_share };
-    // Keyed from the root down, so a handler can find the content pane.
     const content_id = cx.id(.{ .name = "panes" }).child(.{ .name = "content" });
     cx.render(ui.box(.{ .key = .{ .name = "panes" }, .style = .{
         .direction = .row,
@@ -141,8 +134,6 @@ pub fn render(cx: *Cx) void {
         .height = .{ .grow = 1 },
         .background = .bg,
     } }, .{
-        // Each pane is a group, so a screen reader finds the panes on
-        // either side of a splitter (VoiceOver's previous and next contents).
         ui.box(.{ .style = sidebar, .a11y = .{ .role = .group, .label = "Sidebar" } }, .{
             ui.text("Sidebar", .{ .size = 18 }),
             ui.text("Drag the bar on the right, or focus it and use the arrow keys.", .{

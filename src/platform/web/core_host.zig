@@ -1,19 +1,3 @@
-//! Runs a core app in the browser. The browser gives the app one thread, so
-//! each `requestAnimationFrame` callback runs both sides of the tick in
-//! sequence: forward input from the JavaScript rings into the core's queue,
-//! then `core/tick.tick` drains, builds, lays out, emits, packs, draws, and
-//! swaps. The `built` and `presented` frames still swap at the end of a
-//! frame, so the core code is the same as on the native hosts.
-//!
-//! JavaScript calls three exports, generated per app by `Exports`: `init`
-//! once the WebGPU device exists, `frame` from each animation frame, and
-//! `resize`, which is a no-op because `frame` polls the canvas size.
-//!
-//! Everything is reserved in `init` from the app's guard, which panics on
-//! any later allocation. Each ring holds `events.queue_count_max` events
-//! (rounded up to a power of two): a burst larger than the queue stays in
-//! its ring for the next frame, which bounds both storage and latency.
-
 const std = @import("std");
 const imports = @import("imports.zig");
 const clipboard = @import("clipboard.zig");
@@ -42,8 +26,6 @@ const WebPlatform = platform_mod.WebPlatform;
 const WebWindow = window_mod.WebWindow;
 const WebRenderer = renderer_mod.WebRenderer;
 
-/// The browser exports for one app type. `gooey.App` references this on
-/// WASM, which analyzes the `@export` block below.
 pub fn Exports(comptime App: type) type {
     return struct {
         var app: ?*App = null;
@@ -53,8 +35,6 @@ pub fn Exports(comptime App: type) type {
             initApp() catch |err| imports.err("gooey init failed: {}", .{err});
         }
 
-        /// In place and `noinline`: `App` and the renderer are far larger
-        /// than the WASM stack can hold as temporaries.
         noinline fn initApp() !void {
             assert(app == null);
             const backing = std.heap.wasm_allocator;
@@ -86,7 +66,6 @@ pub fn Exports(comptime App: type) type {
         }
 
         fn resize(width: u32, height: u32) callconv(.c) void {
-            // `frame` re-reads the canvas size and scale every time.
             _ = width;
             _ = height;
         }
@@ -105,21 +84,14 @@ pub const Host = struct {
     renderer: *WebRenderer,
     core: *core_window.Window,
     query: core_router.Query,
-    /// The core clock: rAF timestamps, never moving backwards.
     now_ns: u64,
-    /// The size last pushed as a `resized` event, in logical pixels.
     width: f64,
     height: f64,
     scale_factor: f64,
-    /// The canvas's drawing buffer and its scale: the logical size at
-    /// `scale_factor`, or lower past the window budget.
     viewport: backend.Viewport,
     window_limits: limits_mod.WindowLimits,
-    /// A downscaled viewport was logged; logged again only after it fits.
     downscaled: bool,
-    /// The caret rect last handed to the browser's hidden input.
     ime_rect: ?records.Rect,
-    /// The cursor last set on the canvas.
     cursor: core_element.CursorShape,
 
     pub const Options = struct {
@@ -129,9 +101,6 @@ pub const Host = struct {
         limits: ResourceLimits,
     };
 
-    /// Reserve the platform, the canvas window, and the renderer. The host
-    /// must stay at this address: the platform registers it and the core's
-    /// presenter points at it.
     pub fn initInPlace(self: *Host, gpa: std.mem.Allocator, options: *const Options) !void {
         assert(options.width > 0);
         assert(options.height > 0);
@@ -163,17 +132,12 @@ pub const Host = struct {
         assert(std.meta.eql(self.renderer.size_px, self.viewport.size_px));
     }
 
-    /// Bind the core window: atlases, the presenter, and the IME query. The
-    /// core starts at the app's configured size, so the canvas's real size
-    /// is queued for the first frame.
     pub fn bind(self: *Host, core: *core_window.Window) void {
         assert(core.presenter == null);
         self.core = core;
         self.query = .{ .window = core };
         const resources = core.resources;
         const key = @intFromPtr(self.window);
-        // The renderer owns the atlas textures; the core's atlases keep no
-        // pixels and journal every region for `uploadAtlas`.
         assert(resources.atlas_uploads.storage == .gpu_upload);
         resources.registerAtlasConsumer(key);
         core.atlas_consumer_key = key;
@@ -184,21 +148,15 @@ pub const Host = struct {
         });
         core.presenter = .{ .context = self, .draw = draw };
         core.bindScreenReader(null, null);
-        // Text fields follow the user's OS: Cmd in a browser on macOS or iOS,
-        // Ctrl elsewhere, as a native text field there does.
         text_engine.uses_cmd = imports.isApplePlatform();
-        // Paste arrives as text input from the browser's paste event, so the
-        // service only writes.
         core.clipboard.service = .{
             .context = self,
             .read = clipboardRead,
             .write = clipboardWrite,
         };
-        assert(core.file_dialog == null); // Web dialogs complete asynchronously.
+        assert(core.file_dialog == null);
     }
 
-    /// Advance the clock, then queue a resize and the input the rings hold,
-    /// as far as the queue has room.
     pub fn beginFrame(self: *Host, timestamp_ms: f64) u64 {
         assert(self.core.phase == .idle);
         const timestamp_ns = @max(0, timestamp_ms) * std.time.ns_per_ms;
@@ -208,12 +166,8 @@ pub const Host = struct {
         return self.now_ns;
     }
 
-    /// Place the browser's IME candidate window from the rendered frame,
-    /// then schedule the next animation frame.
     pub fn endFrame(self: *Host) void {
         assert(self.core.phase == .idle);
-        // Answered synchronously from the rendered frame; the browser needs
-        // the rect before composition starts, so it moves with the caret.
         const rect = self.query.imeCursorRect();
         if (!std.meta.eql(rect, self.ime_rect)) {
             self.ime_rect = rect;
@@ -230,13 +184,8 @@ pub const Host = struct {
         if (self.platform.isRunning()) imports.requestAnimationFrame();
     }
 
-    /// Size the drawing buffer before the tick builds, so the frame built
-    /// for a new size is the one presented. Resizing clears the canvas, so a
-    /// changed buffer queues a render even when the logical size is unchanged
-    /// (a ratio change). Polled every frame: the browser has no resize event
-    /// that arrives before the next animation frame.
     fn queueResize(self: *Host) void {
-        if (!hasRoom(&self.core.queue)) return; // Next frame polls again.
+        if (!hasRoom(&self.core.queue)) return;
         self.window.updateSize();
         const size = self.window.size;
         const scale = self.window.scale_factor;
@@ -256,10 +205,6 @@ pub const Host = struct {
         } } });
     }
 
-    /// The drawing buffer for a canvas of `width` x `height` CSS pixels at
-    /// `scale_factor`: at that scale, or lower when it would pass the window
-    /// budget, and CSS scales the smaller buffer up. An empty canvas (hidden,
-    /// or laid out at zero size) has an empty buffer.
     fn fitViewport(self: *Host, width: f64, height: f64, scale_factor: f64) backend.Viewport {
         assert(width >= 0);
         assert(height >= 0);
@@ -291,7 +236,6 @@ pub const Host = struct {
         return viewport;
     }
 
-    /// Keys, text, composition, scrolls, then the mouse.
     fn forwardInput(self: *Host) void {
         const queue = &self.core.queue;
         forwardRing(queue, &key_events.g_key_ring, key_events.toInputEvent);
@@ -315,9 +259,6 @@ pub const Host = struct {
     }
 };
 
-/// Reserve the rings and buffers JavaScript writes into, from the app's
-/// budget: a ring holds what the core queue takes in one frame, the text
-/// buffer one chunk of queue text, and the composition buffer one preedit.
 fn reserveInput(gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
     const ring_capacity = std.math.ceilPowerOfTwoAssert(u32, limits.events.queue_count_max);
     try key_events.g_key_ring.reserve(gpa, ring_capacity);
@@ -329,8 +270,6 @@ fn reserveInput(gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
     assert(limits.text.preedit_bytes_max <= limits.events.text_bytes_max);
 }
 
-/// Move ring entries into the queue while it has room; the rest wait. A
-/// ring gives at most its capacity in one frame.
 fn forwardRing(queue: *core_events.EventQueue, ring: anytype, comptime convert: anytype) void {
     const Ring = @typeInfo(@TypeOf(ring)).pointer.child;
     const volatile_ring: *volatile Ring = ring;
@@ -349,7 +288,6 @@ fn hasRoom(queue: *const core_events.EventQueue) bool {
     return queue.count < queue.events.len;
 }
 
-/// Upload what the build placed in the atlases, then draw the packed frame.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,

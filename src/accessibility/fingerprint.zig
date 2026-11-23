@@ -1,6 +1,3 @@
-//! Fingerprint identity across frames, since platform accessibility APIs
-//! expect stable object identity.
-
 const std = @import("std");
 const limits = @import("../core/limits.zig");
 const types = @import("types.zig");
@@ -51,13 +48,8 @@ pub const Fingerprint = packed struct(u64) {
     }
 };
 
-/// Most children one parent, or the tree's top level, can have: every child
-/// is an element of the tree, and the largest tree holds the ceiling's.
 pub const position_count_max: u16 = limits.a11y_element_count_ceiling;
 
-/// Intentionally not derived from layout bounds or visual properties: two
-/// elements are "the same" across frames if role, name, and structural
-/// position match, even when they moved on screen.
 pub fn compute(
     role: types.Role,
     name: ?[]const u8,
@@ -66,7 +58,7 @@ pub fn compute(
 ) Fingerprint {
     assert(position_in_parent < position_count_max);
     const name_hash: u32 = if (name) |n| blk: {
-        assert(n.len <= 65535); // Arbitrary cap; fits u16 name length.
+        assert(n.len <= 65535);
         var h = std.hash.Wyhash.init(0);
         h.update(n);
         break :blk @truncate(h.final());
@@ -74,14 +66,6 @@ pub fn compute(
     return computeWithHash(role, name_hash, parent_fingerprint, position_in_parent);
 }
 
-/// Variant taking a pre-computed name hash.
-///
-/// Siblings share their role, name, and parent, so their positions alone
-/// must keep them apart. The position's low byte is the `position` field;
-/// its high byte is spread into `parent_contrib` by an odd multiplier, a
-/// bijection modulo 2^16, so two positions under `position_count_max` that
-/// differ only above bit 7 still differ there. Positions below 256 add
-/// nothing, so their fingerprints are unchanged from the 8-bit scheme.
 pub fn computeWithHash(
     role: types.Role,
     name_hash: u32,
@@ -90,7 +74,6 @@ pub fn computeWithHash(
 ) Fingerprint {
     assert(position_in_parent < position_count_max);
 
-    // Prevents collisions across subtrees.
     const parent_contrib: u16 = if (parent_fingerprint) |pf| blk: {
         const pf_u64 = pf.toU64();
         break :blk @truncate(pf_u64 ^ (pf_u64 >> 16));
@@ -104,12 +87,10 @@ pub fn computeWithHash(
         .name_hash = name_hash,
     };
 
-    // Not INVALID unless inputs are pathological.
     assert(result.role != 0xFF or @backingInt(role) == 0xFF);
     return result;
 }
 
-/// Odd, so multiplying by it permutes `u16`; see `computeWithHash`.
 const position_spread_multiplier: u16 = 0x9E37;
 
 comptime {
@@ -144,10 +125,8 @@ test "fingerprint with parent" {
     const child2 = compute(.button, "OK", parent_fp, 1);
     const child3 = compute(.button, "OK", null, 0);
 
-    // Same name, different position.
     try std.testing.expect(!child1.eql(child2));
 
-    // Same name and position, but different parent.
     try std.testing.expect(!child1.eql(child3));
 }
 
@@ -158,7 +137,6 @@ test "fingerprint null name" {
 
     try std.testing.expect(fp1.eql(fp2));
 
-    // Null hashes as 0; the empty string hashes, so they differ.
     try std.testing.expect(!fp1.eql(fp3));
 }
 
@@ -194,8 +172,6 @@ test "fingerprint determinism across frames" {
 }
 
 test "siblings past position 255 keep distinct fingerprints" {
-    // Covers the pairs 255/256 and 0/256, which share a low byte or
-    // overflow the 8-bit position field.
     const parent = compute(.list, "Items", null, 0);
     var seen = std.AutoHashMap(u64, void).init(std.testing.allocator);
     defer seen.deinit();

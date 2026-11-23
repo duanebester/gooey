@@ -1,16 +1,3 @@
-//! The Vulkan backend of the core's `Renderer` contract
-//! (`core/backend.zig`), shared by Linux (Wayland) and Windows (Win32). It
-//! draws the packed frame (`core/packed_frame.zig`) as it is: each frame
-//! copies the used prefix of every instance array into that frame's storage
-//! buffers and records the draw list in order (`vk_draw.zig`).
-//!
-//! The frame's command buffer begins at the first `uploadAtlas` or at
-//! `draw`, after the frame's fence shows the GPU is done with its buffers
-//! and staging lane. When no swapchain image can be had (an out-of-date or
-//! unusable swapchain), `draw` still submits the uploads, so they are never
-//! lost or re-staged, and skips only the render pass; the host draws again
-//! once the swapchain is rebuilt.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
@@ -42,7 +29,6 @@ const swapchain_image_count_max = vk_swapchain.MAX_SWAPCHAIN_IMAGES;
 
 const pipeline_count = vk_draw.pipeline_count;
 
-/// The atlases the renderer samples, in descriptor binding order.
 const AtlasSlot = enum(u8) { glyph, svg, image };
 const atlas_slot_count: u32 = vk_descriptors.atlas_binding_count;
 
@@ -50,11 +36,7 @@ comptime {
     assert(@typeInfo(AtlasSlot).@"enum".field_names.len == atlas_slot_count);
 }
 
-/// Per-frame GPU resources, one set per frame in flight (two or three, from
-/// the window budget's `ResourceLimits.frame`). The CPU writes frame N's
-/// buffers while the GPU reads frame N-1 or N-2.
 const FrameResources = struct {
-    /// Host-visible storage buffers, persistently mapped; indexed by `FrameBuffer`.
     buffers: [vk_types.frame_buffer_count]vk.Buffer = @splat(null),
     mapped: [vk_types.frame_buffer_count][*]u8 = undefined,
     uniform_buffer: vk.Buffer = null,
@@ -65,14 +47,11 @@ const FrameResources = struct {
     command_buffer: vk.CommandBuffer = null,
 };
 
-/// Atlas regions staged for one atlas, recorded as one barrier-copy-barrier
-/// run when full and before the render pass.
 const UploadBatch = struct {
     regions: [vk_atlas.copy_region_count_max]vk.BufferImageCopy = undefined,
     len: u32 = 0,
 };
 
-/// The shaders and blend mode of each packed pipeline, indexed by `Pipeline`.
 const PipelineShaders = struct {
     vert: []align(4) const u8,
     frag: []align(4) const u8,
@@ -80,7 +59,6 @@ const PipelineShaders = struct {
 };
 
 fn spirv(comptime name: []const u8) []align(4) const u8 {
-    // Vulkan requires 4-byte aligned SPIR-V.
     return @alignCast(@embedFile("shaders/" ++ name ++ ".spv"));
 }
 
@@ -95,7 +73,6 @@ const pipeline_shaders = [pipeline_count]PipelineShaders{
 };
 
 comptime {
-    // `pipeline_shaders` is indexed by the packed pipeline's tag.
     assert(@backingInt(Pipeline.quad) == 0);
     assert(@backingInt(Pipeline.glyph) == 1);
     assert(@backingInt(Pipeline.svg) == 2);
@@ -110,8 +87,6 @@ pub const VulkanRenderer = struct {
         backend.verifyRenderer(@This());
     }
 
-    // Window-system objects the surface was created from; consulted again
-    // around swapchain destruction.
     native_surface: ?NativeSurface = null,
 
     instance: vk.Instance = null,
@@ -124,22 +99,12 @@ pub const VulkanRenderer = struct {
     graphics_family: u32 = 0,
     present_family: u32 = 0,
     mem_properties: vk.PhysicalDeviceMemoryProperties = undefined,
-    // `maxMemoryAllocationSize`; every reservation is checked against it.
     allocation_bytes_max: vk.DeviceSize = 0,
-    // `maxStorageBufferRange`; every frame buffer is checked against it.
     storage_range_bytes_max: u64 = 0,
 
     swapchain: vk.Swapchain = null,
     swapchain_images: [swapchain_image_count_max]vk.Image = @splat(null),
     swapchain_image_views: [swapchain_image_count_max]vk.ImageView = @splat(null),
-    /// What each image's present waits on, signalled by the submit that drew
-    /// it: one per image, not per frame in flight. A present waits on its
-    /// semaphore asynchronously, after the frame's fence has signalled, so a
-    /// per-frame semaphore could be signalled again while the present that
-    /// waits on it is still pending (VUID-vkQueueSubmit-pSignalSemaphores-00067).
-    /// An image is acquired again only after its last present has taken the
-    /// semaphore's signal, so its own semaphore is always unsignalled by then.
-    /// Made and destroyed with the swapchain, as its images are.
     present_semaphores: [swapchain_image_count_max]vk.Semaphore = @splat(null),
     swapchain_image_count: u32 = 0,
     swapchain_format: vk.Format = vk.VK_FORMAT_B8G8R8A8_UNORM,
@@ -148,13 +113,9 @@ pub const VulkanRenderer = struct {
     render_pass: vk.RenderPass = null,
     framebuffers: [swapchain_image_count_max]vk.Framebuffer = @splat(null),
 
-    // Largest framebuffer, from `ResourceLimits.window`; `resize` asserts it.
     window_limits: WindowLimits = undefined,
-    // The framebuffer size of the last `resize` (or init), which `draw`
-    // asserts. Zero on either axis while the window is minimised.
     size_px: backend.SizePx = .{ .width = 0, .height = 0 },
 
-    // Pipelines: one layout and one descriptor layout for all of them.
     pipeline_cache: vk.PipelineCache = null,
     pipeline_layout: vk.PipelineLayout = null,
     pipelines: [pipeline_count]vk.Pipeline = @splat(null),
@@ -162,24 +123,16 @@ pub const VulkanRenderer = struct {
     descriptor_pool: vk.DescriptorPool = null,
     atlas_sampler: vk.Sampler = null,
 
-    // Command pool (shared — frees all command buffers on destruction)
     command_pool: vk.CommandPool = null,
 
-    // Declared at the ceiling; only `frame_count` are created and rotated.
     frames: [frame_count_max]FrameResources = @splat(.{}),
     frame_count: u32 = 0,
     current_frame: u32 = 0,
-    // The current frame's command buffer has begun (uploads or a draw).
     recording: bool = false,
 
-    // Memory pool for per-frame buffer sub-allocation (one vkAllocateMemory).
     host_memory_pool: vk_buffers.MemoryPool = .{},
-    // Per-frame storage buffer capacities, from the window's paint limits.
-    // Set once in `initInPlace`; buffers never grow.
     capacity: FrameCapacity = undefined,
 
-    // Atlas staging: one lane of `staging_lane_bytes`
-    // (`ResourceLimits.atlas.upload_bytes_frame_max`) per frame in flight.
     staging_pool: vk_buffers.MemoryPool = .{},
     staging_buffer: vk.Buffer = null,
     staging_mapped: ?[*]u8 = null,
@@ -187,20 +140,15 @@ pub const VulkanRenderer = struct {
     staging_lane_used: vk.DeviceSize = 0,
     upload_batches: [atlas_slot_count]UploadBatch = @splat(.{}),
 
-    // Atlas images (glyph R8, SVG and image RGBA8), indexed by `AtlasSlot`.
     atlases: [atlas_slot_count]vk_atlas.AtlasResources = @splat(.{}),
 
     frame_number: u64 = 0,
-    // A frame skipped for an unusable swapchain was logged; reset on success.
     skip_logged: bool = false,
 
     initialized: bool = false,
 
     const Self = @This();
 
-    /// Create the device, swapchain, and every buffer the window's budget
-    /// needs. `surface.native` points at a `NativeSurface`, copied here; its
-    /// window-system objects must outlive the renderer.
     pub fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -213,8 +161,6 @@ pub const VulkanRenderer = struct {
         assert(surface.size_px.height > 0);
         assertFits(surface.size_px, &limits.window);
         self.size_px = surface.size_px;
-        // Every per-frame buffer and the staging lanes are sized from the
-        // window's budget here, once, before the first frame.
         self.capacity = FrameCapacity.fromPaintLimits(&limits.paint);
         self.window_limits = limits.window;
         self.staging_lane_bytes = limits.atlas.upload_bytes_frame_max;
@@ -273,8 +219,6 @@ pub const VulkanRenderer = struct {
         self.initialized = false;
     }
 
-    /// Copy `pixels`, tightly packed rows of `dirty`, into the frame's staging
-    /// lane and record the copy into the atlas before the next draw samples it.
     pub fn uploadAtlas(
         self: *Self,
         atlas: backend.AtlasKind,
@@ -294,8 +238,6 @@ pub const VulkanRenderer = struct {
         assert(pixels.len == @as(u64, dirty.width) * dirty.height * bytes_per_pixel);
 
         const frame = self.beginCommands();
-        // Buffer-to-image copies need 4-byte aligned offsets, as the journal
-        // that feeds this keeps them, so a lane holds what the journal holds.
         const offset = std.mem.alignForward(vk.DeviceSize, self.staging_lane_used, 4);
         if (offset > self.staging_lane_bytes or pixels.len > self.staging_lane_bytes - offset) {
             std.debug.panic("Vulkan atlas staging lane exhausted: capacity {d} B " ++
@@ -325,10 +267,6 @@ pub const VulkanRenderer = struct {
         if (batch.len == batch.regions.len) self.flushUploads(frame.command_buffer, slot);
     }
 
-    /// Render every draw of `frame` into the next swapchain image, cleared to
-    /// `clear`, and present it. `viewport.size_px / viewport.scale_factor` is
-    /// the frame's logical size. A zero-size viewport (a minimised window)
-    /// draws and presents nothing, but the staged atlas uploads are submitted.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -361,8 +299,6 @@ pub const VulkanRenderer = struct {
             });
         }
         _ = vk.vkEndCommandBuffer(cmd);
-        // Reset only now that the frame is certain to be submitted: a fence
-        // left unsignalled would block the next wait on it forever.
         _ = vk.vkResetFences(self.device, 1, (&resources.fence)[0..1]);
         self.submit(resources, image_index);
         if (image_index) |index| self.present(index);
@@ -371,9 +307,6 @@ pub const VulkanRenderer = struct {
         self.current_frame = (self.current_frame + 1) % self.frame_count;
     }
 
-    /// Rebuild the swapchain at `size_px`, within the window budget. A failed
-    /// rebuild is logged; `draw` retries it and skips frames until it works.
-    /// A zero-size window keeps its swapchain until it has an extent again.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.initialized);
         assertFits(size_px, &self.window_limits);
@@ -396,8 +329,6 @@ pub const VulkanRenderer = struct {
         return .{ .meshes = true };
     }
 
-    /// The current frame's resources, its command buffer begun. The first call
-    /// of a frame waits for the GPU to finish the frame that last used them.
     fn beginCommands(self: *Self) *FrameResources {
         const frame = &self.frames[self.current_frame];
         assert(frame.command_buffer != null);
@@ -417,8 +348,6 @@ pub const VulkanRenderer = struct {
         return frame;
     }
 
-    /// Record one atlas's staged regions: barrier, copies, barrier. The
-    /// barriers order the copies before every later fragment shader read.
     fn flushUploads(self: *Self, cmd: vk.CommandBuffer, slot: AtlasSlot) void {
         assert(self.recording);
         const batch = &self.upload_batches[@backingInt(slot)];
@@ -431,8 +360,6 @@ pub const VulkanRenderer = struct {
         assert(resources.layout_ready);
     }
 
-    /// The swapchain image to draw into, or null when there is none this
-    /// frame: the swapchain is out of date or could not be rebuilt.
     fn acquireImage(self: *Self, frame: *const FrameResources) ?u32 {
         if (self.swapchain_needs_recreate or !self.swapchainUsable()) {
             self.swapchain_needs_recreate = false;
@@ -462,7 +389,6 @@ pub const VulkanRenderer = struct {
         switch (result) {
             vk.SUCCESS => {},
             vk.SUBOPTIMAL_KHR => self.swapchain_needs_recreate = true,
-            // No image was acquired and the semaphore stays unsignalled.
             vk.ERROR_OUT_OF_DATE_KHR, vk.TIMEOUT, vk.NOT_READY => {
                 self.swapchain_needs_recreate = true;
                 return null;
@@ -475,13 +401,10 @@ pub const VulkanRenderer = struct {
 
     const PassOptions = struct {
         clear: backend.Color,
-        /// The frame's size in logical pixels, mapped onto the whole framebuffer.
         logical_width: f32,
         logical_height: f32,
     };
 
-    /// Begin the render pass on `image_index`, then record the frame's draws
-    /// over the whole framebuffer.
     fn recordRenderPass(
         self: *Self,
         resources: *const FrameResources,
@@ -520,9 +443,6 @@ pub const VulkanRenderer = struct {
         vk.vkCmdEndRenderPass(cmd);
     }
 
-    /// Submit the frame's command buffer. With an image, it waits for the
-    /// image and signals that image's present; without one it carries only
-    /// uploads.
     fn submit(self: *Self, frame: *const FrameResources, image_index: ?u32) void {
         assert(self.graphics_queue != null);
         const wait_stages = [_]u32{vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -564,8 +484,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// The semaphore between drawing swapchain image `image_index` and
-    /// presenting it (see `present_semaphores`).
     fn presentSemaphore(self: *const Self, image_index: u32) vk.Semaphore {
         assert(image_index < self.swapchain_image_count);
         const semaphore = self.present_semaphores[image_index];
@@ -573,9 +491,6 @@ pub const VulkanRenderer = struct {
         return semaphore;
     }
 
-    /// Fail fast on a Vulkan error the renderer cannot recover from, naming
-    /// the call and the result. Unlike `unreachable`, this stops every build
-    /// mode, including ReleaseFast.
     fn failFast(call: []const u8, result: vk.Result) noreturn {
         assert(call.len > 0);
         assert(!vk.succeeded(result));
@@ -586,8 +501,6 @@ pub const VulkanRenderer = struct {
         });
     }
 
-    /// A swapchain handle and one framebuffer per image. A failed rebuild
-    /// leaves the framebuffers destroyed.
     fn swapchainUsable(self: *const Self) bool {
         if (self.swapchain == null) return false;
         if (self.swapchain_image_count == 0) return false;
@@ -598,7 +511,6 @@ pub const VulkanRenderer = struct {
         return true;
     }
 
-    /// Block until the GPU finishes the last submit that used `frame`.
     fn waitFrame(self: *const Self, frame: *const FrameResources) void {
         assert(self.device != null);
         assert(frame.fence != null);
@@ -613,8 +525,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Wait for every frame but the one being recorded, whose fence was
-    /// waited when its recording began and stays signalled until its submit.
     fn waitOtherFrames(self: *Self) void {
         assert(self.recording);
         for (self.frames[0..self.frame_count], 0..) |*frame, index| {
@@ -623,21 +533,12 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Recreate the swapchain, its framebuffers, and its present semaphores
-    /// for a new extent.
-    ///
-    /// Nothing Gooey allocates is resized: the render pass depends only on the
-    /// format, there is no multisampled target, and the swapchain images belong
-    /// to the driver, bounded by the window budget and the frames in flight.
-    /// The present semaphores follow the images, at most
-    /// `swapchain_image_count_max`.
     fn recreateSwapchain(self: *Self, extent: vk.Extent2D) !void {
         assert(extent.width <= self.window_limits.framebuffer_width_max);
         assert(extent.height <= self.window_limits.framebuffer_height_max);
         vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
 
-        // Pass the old swapchain so the driver can recycle its resources.
         const old_swapchain = self.swapchain;
         const sc = try vk_swapchain.createSwapchain(
             self.device,
@@ -647,8 +548,6 @@ pub const VulkanRenderer = struct {
             self.frame_count,
             old_swapchain,
         );
-        // The frames' fences cover their submits but not their presents,
-        // which may still wait on the old swapchain's present semaphores.
         _ = vk.vkQueueWaitIdle(self.present_queue);
         vk_buffers.destroySemaphores(self.device, &self.present_semaphores);
         if (old_swapchain) |old| vk.vkDestroySwapchainKHR(self.device, old, null);
@@ -657,7 +556,6 @@ pub const VulkanRenderer = struct {
         self.swapchain_image_views = sc.image_views;
         self.swapchain_image_count = sc.image_count;
         self.swapchain_extent = sc.extent;
-        // The render pass was made for the format, which a resize keeps.
         assert(sc.format == self.swapchain_format);
         const count = self.swapchain_image_count;
         try vk_buffers.createSemaphores(self.device, self.present_semaphores[0..count]);
@@ -672,7 +570,6 @@ pub const VulkanRenderer = struct {
         );
     }
 
-    /// Instance, presentation surface, physical and logical device.
     fn initDevice(self: *Self) !void {
         assert(self.instance == null);
         const native = &self.native_surface.?;
@@ -696,12 +593,10 @@ pub const VulkanRenderer = struct {
         var properties: vk.PhysicalDeviceProperties = undefined;
         vk.vkGetPhysicalDeviceProperties(self.physical_device, &properties);
         self.storage_range_bytes_max = properties.limits.maxStorageBufferRange;
-        // The spec guarantees at least this much.
         assert(self.storage_range_bytes_max >= vk_types.storage_buffer_range_guaranteed_bytes);
         assert(self.device != null);
     }
 
-    /// Surface → device → debug → instance (reverse creation order).
     fn destroyDevice(self: *Self) void {
         if (self.device) |device| vk.vkDestroyDevice(device, null);
         self.device = null;
@@ -713,9 +608,6 @@ pub const VulkanRenderer = struct {
         self.instance = null;
     }
 
-    /// Swapchain, present semaphores, render pass and framebuffers. None of
-    /// them is Gooey memory: the swapchain images belong to the driver,
-    /// bounded by the window budget (extent) and the frames in flight (count).
     fn initSwapchainTargets(self: *Self, extent: vk.Extent2D) !void {
         assert(self.device != null);
         assert(self.swapchain == null);
@@ -749,9 +641,6 @@ pub const VulkanRenderer = struct {
         );
     }
 
-    /// Framebuffers, render pass, image views, present semaphores, then the
-    /// swapchain, bracketed by the window system's teardown hooks once the
-    /// device is idle.
     fn destroySwapchainTargets(self: *Self) void {
         assert(self.device != null);
         _ = vk.vkDeviceWaitIdle(self.device);
@@ -767,7 +656,6 @@ pub const VulkanRenderer = struct {
         if (self.native_surface) |*native| native.swapchainDestroyEnd();
     }
 
-    /// Command pool, one command buffer and one set of sync objects per frame.
     fn initCommands(self: *Self) !void {
         assert(self.command_pool == null);
         self.command_pool = try vk_buffers.createCommandPool(self.device, self.graphics_family);
@@ -786,7 +674,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Sync objects, then the pool, which frees the command buffers.
     fn destroyCommands(self: *Self) void {
         for (&self.frames) |*frame| {
             if (frame.fence) |fence| vk.vkDestroyFence(self.device, fence, null);
@@ -799,11 +686,7 @@ pub const VulkanRenderer = struct {
         self.command_pool = null;
     }
 
-    /// The two host-visible reservations: the per-frame storage and uniform
-    /// buffers, and the atlas staging lanes. Each is one `vkAllocateMemory`,
-    /// checked against the device's allocation and heap limits first.
     fn initHostReservations(self: *Self) !void {
-        // `AtlasLimits.check` proved a lane holds the largest glyph or icon.
         assert(self.staging_lane_bytes > 0);
         assert(self.allocation_bytes_max > 0);
         if (self.capacity.bufferPastRange(self.storage_range_bytes_max)) |buffer| {
@@ -826,7 +709,6 @@ pub const VulkanRenderer = struct {
         });
         errdefer self.destroyHostReservations();
 
-        // One lane per frame in flight, plus alignment slack for the buffer.
         const staging_bytes = @as(vk.DeviceSize, self.frame_count) * self.staging_lane_bytes;
         self.staging_pool = try vk_buffers.MemoryPool.init(self.device, properties, &.{
             .name = "atlas staging",
@@ -852,7 +734,6 @@ pub const VulkanRenderer = struct {
         self.host_memory_pool.destroy(self.device);
     }
 
-    /// The atlas images, created once at their budget sizes.
     fn createAtlasImages(self: *Self, limits: *const AtlasLimits) !void {
         assert(self.device != null);
         errdefer self.destroyAtlasImages();
@@ -868,8 +749,6 @@ pub const VulkanRenderer = struct {
         for (&self.atlases) |*atlas| atlas.destroy(self.device);
     }
 
-    /// Per-frame storage and uniform buffers, sub-allocated from the host pool:
-    /// one `VkBuffer` each, sharing the pool's single `VkDeviceMemory`.
     fn createFrameBuffers(self: *Self) !void {
         assert(self.host_memory_pool.offset == 0);
         errdefer self.destroyFrameBuffers();
@@ -895,7 +774,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Buffer handles only; the host pool owns their memory.
     fn destroyFrameBuffers(self: *Self) void {
         for (&self.frames) |*frame| {
             vk_buffers.destroyBufferOnly(self.device, frame.uniform_buffer);
@@ -908,8 +786,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// The frame layout, a pool, the atlas sampler, and one set per frame
-    /// written once: its buffers and the atlas images are never recreated.
     fn initDescriptors(self: *Self) !void {
         assert(self.descriptor_layout == null);
         self.descriptor_layout = try vk_descriptors.createFrameLayout(self.device);
@@ -943,7 +819,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// The pool frees the sets.
     fn destroyDescriptors(self: *Self) void {
         if (self.atlas_sampler) |sampler| vk.vkDestroySampler(self.device, sampler, null);
         self.atlas_sampler = null;
@@ -956,12 +831,9 @@ pub const VulkanRenderer = struct {
         self.descriptor_layout = null;
     }
 
-    /// The pipeline cache, the shared layout, and one pipeline per packed
-    /// pipeline, indexed by its tag.
     fn createPipelines(self: *Self) !void {
         assert(self.render_pass != null);
         assert(self.descriptor_layout != null);
-        // In-memory only; nothing is serialized across sessions.
         self.pipeline_cache = try vk_pipelines.createPipelineCache(self.device, null);
         errdefer self.destroyPipelines();
         self.pipeline_layout = try vk_pipelines.createPipelineLayout(
@@ -978,7 +850,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Pipelines first: they reference the layout.
     fn destroyPipelines(self: *Self) void {
         for (&self.pipelines) |*pipeline| {
             vk_pipelines.destroyPipeline(self.device, pipeline.*);
@@ -991,8 +862,6 @@ pub const VulkanRenderer = struct {
     }
 };
 
-/// The renderer's atlas for a contract atlas kind. Nothing emits colour
-/// glyphs yet, so there is no colour glyph atlas to upload into.
 fn atlasSlot(atlas: backend.AtlasKind) AtlasSlot {
     return switch (atlas) {
         .glyph => .glyph,
@@ -1003,14 +872,12 @@ fn atlasSlot(atlas: backend.AtlasKind) AtlasSlot {
     };
 }
 
-/// A framebuffer size the window budget allows (`resize` and `initInPlace`).
 fn assertFits(size_px: backend.SizePx, window: *const WindowLimits) void {
     assert(window.framebuffer_width_max > 0);
     assert(size_px.width <= window.framebuffer_width_max);
     assert(size_px.height <= window.framebuffer_height_max);
 }
 
-/// Logical pixels across `size_px` device pixels.
 fn logicalSize(size_px: u32, scale_factor: f32) f32 {
     assert(size_px > 0);
     assert(scale_factor > 0);
@@ -1018,15 +885,6 @@ fn logicalSize(size_px: u32, scale_factor: f32) f32 {
 }
 
 test "present semaphores are never signalled while a present still waits on them" {
-    // VUID-vkQueueSubmit-pSignalSemaphores-00067: a submit must not signal a
-    // binary semaphore that a present may still wait on. Methodology: a
-    // model presentation engine, where a present's wait on its semaphore is
-    // only known to be done once the engine hands its image out again. Each
-    // turn acquires an image, signals `presentSemaphore` for it, and rotates
-    // the frame in flight as `draw` does; the model fails on any signal of a
-    // semaphore whose last present has not released its image. Acquire
-    // orders cover FIFO round robin and a mailbox-like order, with more
-    // images than frames in flight, where per-frame semaphores collide.
     const handles: [swapchain_image_count_max]u8 = @splat(0);
     const orders = [_][]const u32{
         &.{ 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 },
@@ -1039,11 +897,9 @@ test "present semaphores are never signalled while a present still waits on them
         for (renderer.present_semaphores[0..4], 0..) |*semaphore, index| {
             semaphore.* = @ptrCast(@constCast(&handles[index]));
         }
-        // The semaphore each image's last present waits on, until released.
         var waiting: [swapchain_image_count_max]vk.Semaphore = @splat(null);
         for (order) |image_index| {
             assert(image_index < renderer.swapchain_image_count);
-            // Acquiring the image proves its last present is done.
             waiting[image_index] = null;
             const semaphore = renderer.presentSemaphore(image_index);
             for (waiting) |pending| try std.testing.expect(pending != semaphore);

@@ -1,5 +1,3 @@
-//! The core's public surface, re-exported as the `gooey` root.
-
 const std = @import("std");
 
 pub const id = @import("id.zig");
@@ -51,8 +49,6 @@ pub const ResourceLimits = @import("limits.zig").ResourceLimits;
 pub const FontLimits = app.FontLimits;
 pub const FontSource = app.FontSource;
 
-/// Element constructors and their types: `ui.box`, `ui.text`, `ui.paint`,
-/// `ui.when`, and `ui.Style`.
 pub const ui = struct {
     pub const box = element.box;
     pub const text = element.text;

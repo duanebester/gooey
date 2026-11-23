@@ -1,6 +1,3 @@
-//! Windows platform backend: Win32 windows rendered by the shared Vulkan
-//! renderer (`platform/linux/`) or by Direct3D 11. 64-bit targets only.
-
 const std = @import("std");
 
 pub const platform = @import("platform.zig");
@@ -12,7 +9,6 @@ pub const win32 = @import("win32.zig");
 pub const uia = @import("uia.zig");
 pub const vk_surface_win32 = @import("vk_surface_win32.zig");
 
-// The names `platform/mod.zig` aliases as `Platform` and `PlatformWindow`.
 pub const Platform = platform.WindowsPlatform;
 pub const PlatformWindow = window.Window;
 

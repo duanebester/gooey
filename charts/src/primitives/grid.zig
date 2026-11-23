@@ -99,7 +99,6 @@ pub const Grid = struct {
                 }
             },
             .band => {
-                // Band scale on Y-axis is unusual; fall back to simple grid
                 if (opts.show_horizontal) {
                     drawSimpleHorizontalLines(painter, bounds, tick_count, opts);
                 }

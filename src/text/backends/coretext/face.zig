@@ -17,10 +17,6 @@ pub const CoreTextFace = struct {
 
     const Self = @This();
 
-    /// The name resolves to a family; `font_match.select` picks one of its
-    /// faces by the CSS matching rule. Nothing is synthesized: a family
-    /// without the requested weight or slant renders with the face matching
-    /// picks, and `warnInexactFace` logs the difference.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         std.debug.assert(size > 0);
         std.debug.assert(name.len > 0);
@@ -38,13 +34,11 @@ pub const CoreTextFace = struct {
         };
     }
 
-    /// Load one variant of a system font, with the same policy as `init`.
     pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         std.debug.assert(size > 0);
 
         const base = switch (style) {
             .monospace => blk: {
-                // Use system API for monospace - SF Mono needs this to work correctly
                 const f = ct.CTFontCreateUIFontForLanguage(
                     ct.kCTFontUIFontUserFixedPitch,
                     @floatCast(size),
@@ -78,10 +72,6 @@ pub const CoreTextFace = struct {
         self.* = undefined;
     }
 
-    /// Take ownership of `base` and return the font for `variant`: `base`
-    /// itself for `.regular` or when no other face can be created, else a new
-    /// font (and `base` is released). Regular keeps the face the name resolved
-    /// to, but warns under the same rule when its weight class is not 400.
     fn selectVariant(base: ct.CTFontRef, size: f32, variant: FontVariant) ct.CTFontRef {
         const font = if (variant == .regular)
             base
@@ -95,14 +85,6 @@ pub const CoreTextFace = struct {
         return font;
     }
 
-    /// Create `variant` within `base`'s family, or null when CoreText cannot.
-    ///
-    /// Listed families pick a face by CSS matching. Hidden system families
-    /// (names starting with '.', such as `.AppleSystemUIFont` and the system
-    /// monospace) do not list through a family descriptor, so they request the
-    /// variant's weight and slant as traits on `base`'s own descriptor; SF has
-    /// real faces at every weight, so medium and semibold get their own faces
-    /// rather than the bold symbolic trait's on/off choice.
     fn createVariantFont(base: ct.CTFontRef, size: f32, variant: FontVariant) ?ct.CTFontRef {
         std.debug.assert(variant != .regular);
         std.debug.assert(size > 0);
@@ -114,14 +96,12 @@ pub const CoreTextFace = struct {
             return createFromBaseTraits(base, size, variant);
         }
 
-        // Keep the resolved face's width, so a condensed family stays condensed.
         const base_traits = ct.CTFontCopyTraits(base);
         defer ct.release(base_traits);
         const stretch = traitsCandidate(base_traits).stretch;
         return createFromFamilyList(family, size, variant, stretch);
     }
 
-    /// List `family`'s faces and create the one CSS matching picks.
     fn createFromFamilyList(
         family: ct.CFStringRef,
         size: f32,
@@ -175,7 +155,6 @@ pub const CoreTextFace = struct {
         return @constCast(ct.CFArrayGetValueAtIndex(matches, index));
     }
 
-    /// Copy `base`'s descriptor with the variant's weight and slant as traits.
     fn createFromBaseTraits(base: ct.CTFontRef, size: f32, variant: FontVariant) ?ct.CTFontRef {
         const weight_value: f64 = coreTextWeight(variant.weight().cssWeight());
         const weight = ct.CFNumberCreate(null, ct.kCFNumberFloat64Type, &weight_value) orelse
@@ -218,8 +197,6 @@ pub const CoreTextFace = struct {
         return first[0] == '.';
     }
 
-    /// A CoreText traits dictionary as a CSS match candidate. Missing traits
-    /// count as regular, upright, and normal width.
     fn traitsCandidate(traits: ct.CFDictionaryRef) font_match.Candidate {
         const weight = traitFloat(traits, ct.kCTFontWeightTrait) orelse 0.0;
         const width = traitFloat(traits, ct.kCTFontWidthTrait) orelse 0.0;
@@ -252,9 +229,6 @@ pub const CoreTextFace = struct {
         return result;
     }
 
-    /// `kCTFontWeightTrait` values of AppKit's `NSFontWeight` constants at
-    /// each CSS hundred, UltraLight (100) through Black (900). Weights convert
-    /// both ways by piecewise linear interpolation over this table.
     const weight_table = [_]struct { core_text: f64, css: f64 }{
         .{ .core_text = -0.8, .css = 100 },
         .{ .core_text = -0.6, .css = 200 },
@@ -267,7 +241,6 @@ pub const CoreTextFace = struct {
         .{ .core_text = 0.62, .css = 900 },
     };
 
-    /// CSS weight (100...900) for a `kCTFontWeightTrait` value.
     fn cssWeight(core_text: f64) u16 {
         const first = weight_table[0];
         const last = weight_table[weight_table.len - 1];
@@ -280,10 +253,9 @@ pub const CoreTextFace = struct {
                 return @intFromFloat(@round(lower.css + t * (upper.css - lower.css)));
             }
         }
-        unreachable; // The table is sorted and `core_text` is below its last entry.
+        unreachable;
     }
 
-    /// `kCTFontWeightTrait` value (-1...1) for a CSS weight (100...900).
     fn coreTextWeight(css: u16) f64 {
         std.debug.assert(css >= 100);
         std.debug.assert(css <= 900);
@@ -295,11 +267,9 @@ pub const CoreTextFace = struct {
                 return lower.core_text + t * (upper.core_text - lower.core_text);
             }
         }
-        unreachable; // 900 is the table's last CSS weight.
+        unreachable;
     }
 
-    /// CSS `font-stretch` percentage for a `kCTFontWidthTrait` value (-1...1):
-    /// -1 is ultra-condensed (50%), 0 normal (100%), 1 ultra-expanded (200%).
     fn cssStretch(width: f64) u16 {
         const clamped = std.math.clamp(width, -1.0, 1.0);
         const percent = if (clamped <= 0) 100 + clamped * 50 else 100 + clamped * 100;
@@ -309,8 +279,6 @@ pub const CoreTextFace = struct {
         return result;
     }
 
-    /// Log when the chosen face's weight class or slant differs from the
-    /// request, so a family without that face does not fall back silently.
     fn warnInexactFace(variant: FontVariant, chosen: font_match.Candidate) void {
         const weight_requested = variant.weight().cssWeight();
         if (font_match.weightClass(chosen.weight) != weight_requested) {
@@ -399,7 +367,6 @@ pub const CoreTextFace = struct {
         );
     }
 
-    /// Renders from a font not owned by this face (fallback path).
     pub fn renderGlyphFromFont(
         ct_font: ct.CTFontRef,
         glyph_id: u16,
@@ -506,7 +473,6 @@ fn renderGlyphInternal(
     std.debug.assert(font_size > 0);
     std.debug.assert(buffer.len >= buffer_size);
 
-    // Create scaled font first - we need metrics at the target size
     const scaled_font = ct.CTFontCreateCopyWithAttributes(
         ct_font,
         font_size * scale,
@@ -519,9 +485,7 @@ fn renderGlyphInternal(
     const padding: u32 = 2;
     const padding_f: f32 = @floatFromInt(padding);
 
-    // Handle empty glyphs (spaces, etc.)
     if (glyph_metrics.width < 1 or glyph_metrics.height < 1) {
-        // Return advance scaled back to logical units (font_size, not font_size * scale)
         return RasterizedGlyph{
             .width = 0,
             .height = 0,
@@ -532,18 +496,14 @@ fn renderGlyphInternal(
         };
     }
 
-    // Raster bounds in physical pixels
-    // Metrics are already at scaled size, so no additional scaling needed
     const raster_left = @floor(glyph_metrics.bearing_x);
     const raster_top = @floor(glyph_metrics.bearing_y);
     const raster_right = @ceil(glyph_metrics.bearing_x + glyph_metrics.width);
     const raster_bottom = @ceil(glyph_metrics.bearing_y - glyph_metrics.height);
 
-    // Bitmap size with padding for antialiasing
     var width: u32 = @intFromFloat(raster_right - raster_left + padding_f * 2);
     var height: u32 = @intFromFloat(raster_top - raster_bottom + padding_f * 2);
 
-    // Add extra pixel when subpixel variant is non-zero
     if (subpixel_x > 0) width += 1;
     if (subpixel_y > 0) height += 1;
 
@@ -577,7 +537,6 @@ fn renderGlyphInternal(
     ct.CGContextSetAllowsFontSubpixelQuantization(context, false);
     ct.CGContextSetShouldSubpixelQuantizeFonts(context, false);
 
-    // The context origin is bottom-left, Y increases upward
     ct.CGContextTranslateCTM(
         context,
         -raster_left + padding_f + subpixel_x,
@@ -589,9 +548,6 @@ fn renderGlyphInternal(
     const position = ct.CGPoint{ .x = 0, .y = 0 };
     ct.CTFontDrawGlyphs(scaled_font, @ptrCast(&glyph), @ptrCast(&position), 1, context);
 
-    // offset_x: where to place bitmap left edge relative to pen (physical pixels)
-    // offset_y: where to place bitmap top edge relative to baseline (physical pixels, positive = above)
-    // advance_x is returned in logical units (at font_size), not physical pixels
     return RasterizedGlyph{
         .width = clamped_w,
         .height = clamped_h,

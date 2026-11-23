@@ -1,6 +1,5 @@
 #version 450
 
-// The quad pipeline (unified.vert). Clipping is the draw's scissor.
 layout(location = 0) flat in uint in_shadow;
 layout(location = 1) in vec4 in_color;
 layout(location = 2) in vec4 in_border_color;
@@ -12,7 +11,6 @@ layout(location = 7) in vec2 in_content_size;
 layout(location = 8) in vec2 in_local_pos;
 layout(location = 9) in float in_blur_radius;
 
-// Output color
 layout(location = 0) out vec4 out_color;
 
 float rounded_rect_sdf(vec2 pos, vec2 half_size, float radius) {
@@ -22,11 +20,11 @@ float rounded_rect_sdf(vec2 pos, vec2 half_size, float radius) {
 
 float pick_corner_radius(vec2 pos, vec4 radii) {
     if (pos.x < 0.0) {
-        if (pos.y < 0.0) { return radii.x; }  // top-left
-        else { return radii.w; }               // bottom-left
+        if (pos.y < 0.0) { return radii.x; }
+        else { return radii.w; }
     } else {
-        if (pos.y < 0.0) { return radii.y; }  // top-right
-        else { return radii.z; }               // bottom-right
+        if (pos.y < 0.0) { return radii.y; }
+        else { return radii.z; }
     }
 }
 
@@ -38,7 +36,7 @@ void main() {
     if (in_shadow == 0u) {
         vec2 size = in_quad_size;
         vec2 half_size = size / 2.0;
-        vec2 pos = in_quad_coord;  // Pixels from the quad origin, fringe included.
+        vec2 pos = in_quad_coord;
         vec2 centered = pos - half_size;
 
         float radius = pick_corner_radius(centered, in_corner_radii);
@@ -49,17 +47,12 @@ void main() {
 
         vec4 color = in_color;
         if (has_border) {
-            // bw: x=top, y=right, z=bottom, w=left
-            // Construct inner rounded rect by insetting each side independently.
-            // This handles both per-side borders (e.g. bottom-only navbar) and
-            // uniform borders on rounded corners correctly.
             vec2 inner_min = vec2(-half_size.x + bw.w, -half_size.y + bw.x);
             vec2 inner_max = vec2(half_size.x - bw.y, half_size.y - bw.z);
             vec2 inner_center = (inner_min + inner_max) * 0.5;
             vec2 inner_half_size = max(vec2(0.0), (inner_max - inner_min) * 0.5);
             vec2 inner_pos = centered - inner_center;
 
-            // Per-corner inner radii: reduce by the max of the two adjacent border widths.
             vec4 cr = in_corner_radii;
             vec4 inner_radii = vec4(
                 max(0.0, cr.x - max(bw.x, bw.w)),

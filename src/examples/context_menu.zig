@@ -120,7 +120,6 @@ const Card = struct {
                 .border = .{ .width = 1, .color = .border },
                 .corner_radius = .all(8),
             },
-            // Focusable, so Tab reaches it and Shift+F10 opens its menu.
             .focusable = true,
             .a11y = .{ .role = .group, .label = self.title },
         }, .{

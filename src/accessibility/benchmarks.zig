@@ -1,14 +1,9 @@
-//! Measures the per-frame a11y diff (`tree.zig` + `fingerprint.zig`) against
-//! the frame budget; run via `zig build bench-accessibility`.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
 const Allocator = std.mem.Allocator;
 
-/// Shim over `std.Io.Clock.awake`; the monotonic clock means deltas here can
-/// never go negative regardless of NTP or sysadmin clock edits.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -34,10 +29,8 @@ const Tree = a11y.Tree;
 const fingerprint = a11y.fingerprint;
 const Fingerprint = fingerprint.Fingerprint;
 
-/// The `standard` profile's tree: 2,048 elements, enough for every case below.
 const capacity = a11y.TreeCapacity.standard;
 
-/// Adaptive warmup iterations based on operation count.
 fn getWarmupIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
     if (operation_count >= 10000) return 2;
@@ -45,7 +38,6 @@ fn getWarmupIterations(operation_count: u32) u32 {
     return 5;
 }
 
-/// Adaptive minimum sample iterations based on operation count.
 fn getMinSampleIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
     if (operation_count >= 10000) return 5;
@@ -53,8 +45,6 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Zero in the Cachegrind gate's fixed-iteration build (see
-/// `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 const MAX_SAMPLE_COUNT: u32 = 4096;
@@ -62,13 +52,10 @@ const MAX_SAMPLE_COUNT: u32 = 4096;
 const FRAME_BUDGET_60HZ_NS: f64 = 16_666_667.0;
 const FRAME_BUDGET_120HZ_NS: f64 = 8_333_333.0;
 
-/// Wide enough to hold "a11y_elem_" plus a multi-digit index without truncation.
 const NAME_STRIDE: u32 = 20;
 
 const TABLE_WIDTH = 99;
 
-/// Per-iteration timing data for percentile analysis. Fixed capacity avoids
-/// dynamic allocation during benchmark runs.
 const IterationSamples = struct {
     times_ns: [MAX_SAMPLE_COUNT]u64,
     count: u32,
@@ -181,10 +168,6 @@ fn makeResult(
     };
 }
 
-// Fingerprints fold in the element name hash, so giving every child a unique,
-// frame-stable name keeps fingerprints distinct independently of sibling
-// positions. Names are generated once and reused across frames so the diff
-// sees a stable structure.
 const NameTable = struct {
     backing: []u8,
     names: [][]const u8,
@@ -212,15 +195,6 @@ fn freeNames(allocator: Allocator, table: NameTable) void {
     allocator.free(table.backing);
 }
 
-// Build one frame's tree: a root group containing `names.len` children. The
-// first `churn_count` children are live `.status` regions whose `value`
-// toggles each frame (driving the dirty-detection + auto-announce path); the
-// rest are stable `.button`s whose content never changes.
-//
-// Fingerprints stay stable frame-to-frame because role/name/position are
-// fixed; only the non-fingerprinted `value` changes, so churn elements take
-// the "existed, content changed" branch rather than being seen as removed +
-// new.
 fn buildTree(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) void {
     std.debug.assert(names.len >= 1);
     std.debug.assert(churn_count <= names.len);
@@ -242,8 +216,6 @@ fn buildTree(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) v
     tree.popElement();
 }
 
-/// Run one full diff frame and return the observed dirty + removed counts so
-/// the timed caller can keep the work from being optimized away.
 fn runDiffFrame(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) u32 {
     std.debug.assert(names.len >= 1);
     tree.beginFrame();
@@ -254,9 +226,6 @@ fn runDiffFrame(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool
     return dirty + removed;
 }
 
-/// Compute `count` fingerprints, varying the position so the call is not folded
-/// to a constant, and sum the results so the work is observable. `position`
-/// stays in `[0, 254]`, below `fingerprint.position_count_max`.
 fn fingerprintSum(count: u32, name: []const u8, parent: ?Fingerprint) u64 {
     std.debug.assert(count > 0);
     var sum: u64 = 0;
@@ -303,7 +272,6 @@ fn benchFingerprint(comptime name: []const u8, count: u32, with_parent: bool) Be
     return makeResult(name, count, total_time_ns, iterations, percentiles);
 }
 
-/// `operation_count` is total elements (children + the root group).
 fn benchFrameDiff(allocator: Allocator, comptime name: []const u8, child_count: u32, churn_count: u32) !BenchmarkResult {
     std.debug.assert(child_count > 0);
     std.debug.assert(churn_count <= child_count);
@@ -318,7 +286,7 @@ fn benchFrameDiff(allocator: Allocator, comptime name: []const u8, child_count: 
     try tree.initInPlace(&capacity);
     defer tree.deinit();
 
-    const operation_count = child_count + 1; // children + the root group
+    const operation_count = child_count + 1;
     const warmup_iters = getWarmupIterations(operation_count);
     const min_sample_iters = getMinSampleIterations(operation_count);
 
@@ -349,10 +317,6 @@ fn benchFrameDiff(allocator: Allocator, comptime name: []const u8, child_count: 
     return makeResult(name, operation_count, total_time_ns, iterations, percentiles);
 }
 
-// These tests do not time anything: they assert the diff produces the
-// dirty/removed counts the timed runners assume, so a structural regression
-// fails the build.
-
 test "validate: a stable rebuild reports zero dirty after the first frame" {
     const allocator = std.testing.allocator;
 
@@ -365,7 +329,6 @@ test "validate: a stable rebuild reports zero dirty after the first frame" {
     try tree.initInPlace(&capacity);
     defer tree.deinit();
 
-    // First frame: everything is new, so every element is dirty.
     _ = runDiffFrame(tree, table.names, 0, false);
     try std.testing.expectEqual(@as(usize, 65), tree.getDirtyElements().len);
 
@@ -388,13 +351,10 @@ test "validate: churn marks exactly the changed elements dirty" {
 
     const churn_count: u32 = 8;
 
-    // Settle the structure first (toggle=false), then flip the churn subset.
     _ = runDiffFrame(tree, table.names, churn_count, false);
     _ = runDiffFrame(tree, table.names, churn_count, false);
     const changed = runDiffFrame(tree, table.names, churn_count, true);
 
-    // Only the churn elements changed content; fingerprints are stable, so
-    // they are dirty (not removed).
     try std.testing.expectEqual(@as(u32, churn_count), changed);
     try std.testing.expectEqual(@as(usize, 0), tree.getRemovedFingerprints().len);
 }
@@ -410,7 +370,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.p99_per_op_ns,
     ));
     result.print();
-    // Printing stays outside the next benchmark's Cachegrind region.
     reporter.beginBenchmark();
 }
 
@@ -425,7 +384,6 @@ fn collectFrame(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.p99_per_op_ns,
     ));
     result.printFrameBudget();
-    // Printing stays outside the next benchmark's Cachegrind region.
     reporter.beginBenchmark();
 }
 

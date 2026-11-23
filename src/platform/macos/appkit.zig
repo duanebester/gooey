@@ -19,11 +19,11 @@ pub const NSRect = extern struct {
 
 pub const NSEventModifierFlags = packed struct(c_ulong) {
     _reserved0: u16 = 0,
-    caps_lock: bool = false, // 1 << 16
-    shift: bool = false, // 1 << 17
-    control: bool = false, // 1 << 18
-    option: bool = false, // 1 << 19
-    command: bool = false, // 1 << 20
+    caps_lock: bool = false,
+    shift: bool = false,
+    control: bool = false,
+    option: bool = false,
+    command: bool = false,
     _reserved1: u43 = 0,
 
     pub fn from(flags: c_ulong) NSEventModifierFlags {
@@ -44,8 +44,6 @@ pub const NSTrackingAreaOptions = struct {
     pub const enabled_during_mouse_drag: c_ulong = 0x400;
 };
 
-/// NSUInteger is `c_ulong`, not `usize`, for Objective-C runtime
-/// compatibility.
 pub const NSRange = extern struct {
     location: c_ulong,
     length: c_ulong,
@@ -62,6 +60,6 @@ pub const NSRange = extern struct {
 };
 
 pub const NSModalResponse = enum(isize) {
-    OK = 1, // NSModalResponseOK
-    Cancel = 0, // NSModalResponseCancel
+    OK = 1,
+    Cancel = 0,
 };

@@ -1,12 +1,3 @@
-//! Software SVG rasterization for Linux and Windows.
-//! Output format: R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke).
-//!
-//! Every allocation comes from the caller's allocator, reserved up front from
-//! `RasterBudget` and the icon's side, and nothing grows after that: the
-//! total is exactly what `scratchBytes` reports, so an `SvgAtlas` scratch of
-//! that size is never exhausted. A path past its budget fails with
-//! `PathTooComplex` before it can use more.
-
 const std = @import("std");
 const svg_mod = @import("../path.zig");
 
@@ -20,18 +11,11 @@ pub const RasterizedSvg = struct {
 };
 
 pub const RasterizeError = error{
-    /// SVG rasterization failed
     PlatformNotSupported,
-    /// Failed to allocate memory
     OutOfMemory,
-    /// Invalid or empty path data
     EmptyPath,
-    /// The path exceeds `RasterBudget`: too many bytes, or too many vertices
-    /// once flattened at this size.
     PathTooComplex,
-    /// Graphics error during rasterization
     GraphicsError,
-    /// Buffer too small for requested size
     BufferTooSmall,
 };
 
@@ -46,7 +30,7 @@ const Edge = struct {
     y_min: i32,
     y_max: i32,
     x_at_y_min: f32,
-    inv_slope: f32, // dx/dy
+    inv_slope: f32,
 
     fn lessThan(_: void, a: Edge, b: Edge) bool {
         if (a.y_min != b.y_min) return a.y_min < b.y_min;
@@ -64,14 +48,8 @@ const ActiveEdge = struct {
     }
 };
 
-/// Alignment padding between the reservations: at most `@alignOf - 1` bytes
-/// before each of the eight, all aligned to at most 4.
 const scratch_alignment_slack_bytes: u32 = 8 * 3;
 
-/// Bytes one rasterization of an icon at most `device_size_max` pixels on a
-/// side allocates: the parsed path, the flattened points and polygons, one
-/// edge and one active edge per point (each point starts one segment), a row
-/// of coverage, and the stroke buffer used when fill and stroke combine.
 pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     assert(device_size_max > 0);
     assert(budget.vertex_count_max > 0);
@@ -126,7 +104,6 @@ pub fn rasterizeWithOptions(
     defer path.deinit();
     try svg_mod.parseBounded(allocator, &path, path_data);
 
-    // Flatten to polygons with a tolerance of half a device pixel.
     var points: std.ArrayList(svg_mod.Vec2) = .empty;
     defer points.deinit(allocator);
     var polygons: std.ArrayList(svg_mod.IndexSlice) = .empty;
@@ -159,18 +136,13 @@ pub fn rasterizeWithOptions(
     };
 }
 
-/// A flattened icon and how it maps to device pixels.
 const Geometry = struct {
     points: *const std.ArrayList(svg_mod.Vec2),
     polygons: *const std.ArrayList(svg_mod.IndexSlice),
-    /// Device pixels per viewbox unit.
     scale: f32,
-    /// Icon side in device pixels.
     size: i32,
 };
 
-/// Two-channel mode: fill into `buffer`, stroke into a scratch buffer, then
-/// R = fill alpha, G = stroke alpha, A = their maximum.
 fn renderFillAndStroke(
     allocator: std.mem.Allocator,
     geometry: *const Geometry,
@@ -199,8 +171,6 @@ fn renderFillAndStroke(
     assert(index == buffer.len);
 }
 
-/// Single-channel mode: copy each pixel's alpha into `channel` (0 for fill,
-/// 1 for stroke) and clear the other two color channels.
 fn moveAlphaToChannel(buffer: []u8, channel: u2) void {
     assert(channel <= 1);
     assert(buffer.len % 4 == 0);
@@ -215,12 +185,8 @@ fn moveAlphaToChannel(buffer: []u8, channel: u2) void {
     assert(index == buffer.len);
 }
 
-/// Vertical samples per pixel for the fill's anti-aliasing.
 const fill_samples_y: i32 = 4;
 
-/// Render polygons with anti-aliased scanline fill algorithm using vertical
-/// supersampling. Allocates one edge and one active edge per point and a row
-/// of coverage, all reserved before the scan, so the scan cannot allocate.
 fn renderPolygonsFill(
     allocator: std.mem.Allocator,
     geometry: *const Geometry,
@@ -230,8 +196,6 @@ fn renderPolygonsFill(
     const size_u: u32 = @intCast(geometry.size);
     assert(buffer.len >= size_u * size_u * 4);
 
-    // Each polygon's points start one segment each, and polygons do not share
-    // points, so no path has more edges than points.
     var edges: std.ArrayList(Edge) = .empty;
     defer edges.deinit(allocator);
     edges.ensureTotalCapacityPrecise(allocator, geometry.points.items.len) catch
@@ -251,8 +215,6 @@ fn renderPolygonsFill(
     scanFill(edges.items, &active_edges, row_coverage, buffer);
 }
 
-/// Build the edge table at supersampled resolution, skipping horizontal edges
-/// and polygons of fewer than three points. `edges` has room for every point.
 fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
     assert(edges.items.len == 0);
     assert(edges.capacity >= geometry.points.items.len);
@@ -265,7 +227,6 @@ fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
         for (0..pts.len) |i| {
             const p0 = pts[i];
             const p1 = pts[(i + 1) % pts.len];
-            // Scale to device coordinates (Y is supersampled)
             const x0 = p0.x * scale;
             const y0 = p0.y * scale * samples_f;
             const x1 = p1.x * scale;
@@ -296,8 +257,6 @@ fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
     assert(edges.items.len <= geometry.points.items.len);
 }
 
-/// Scan the sorted edges one supersampled row at a time, accumulating each
-/// pixel row's coverage and writing it to the alpha channel.
 fn scanFill(
     edges: []const Edge,
     active_edges: *std.ArrayList(ActiveEdge),
@@ -320,8 +279,6 @@ fn scanFill(
             current_pixel_row = pixel_row;
         }
 
-        // Remove edges that end at or before this scanline. Each pass either
-        // removes one or advances, so it is bounded by the active count.
         var i: usize = 0;
         while (i < active_edges.items.len) {
             if (active_edges.items[i].y_max <= y_super) {
@@ -331,7 +288,6 @@ fn scanFill(
             }
         }
 
-        // Add edges that start at this scanline; each edge is added once.
         while (edge_index < edges.len and edges[edge_index].y_min <= y_super) {
             const e = edges[edge_index];
             edge_index += 1;
@@ -353,8 +309,6 @@ fn scanFill(
     if (current_pixel_row >= 0) writeRowCoverage(row_coverage, current_pixel_row, buffer);
 }
 
-/// Add the horizontal coverage between each pair of sorted active edges
-/// (even-odd rule), anti-aliased in x.
 fn accumulateSpans(active_edges: []const ActiveEdge, row_coverage: []f32) void {
     assert(active_edges.len >= 2);
     assert(row_coverage.len > 0);
@@ -364,8 +318,6 @@ fn accumulateSpans(active_edges: []const ActiveEdge, row_coverage: []f32) void {
         const x0_f = active_edges[pair_index].x;
         const x1_f = active_edges[pair_index + 1].x;
 
-        // Clamp in float space first: `@intFromFloat` of NaN, infinity, or an
-        // out-of-range value is illegal behavior.
         const x_start_f = @max(@as(f32, 0.0), @floor(x0_f));
         const x_end_f = @min(size_f, @ceil(x1_f));
         if (!(x_start_f < x_end_f)) continue;
@@ -382,8 +334,6 @@ fn accumulateSpans(active_edges: []const ActiveEdge, row_coverage: []f32) void {
     }
 }
 
-/// Write one pixel row's accumulated coverage into the alpha channel, keeping
-/// the larger of the existing and new alpha.
 fn writeRowCoverage(row_coverage: []const f32, pixel_row: i32, buffer: []u8) void {
     assert(pixel_row >= 0);
     const size_u: usize = row_coverage.len;
@@ -418,10 +368,6 @@ fn renderPolygonsStroke(geometry: *const Geometry, stroke_width: f32, buffer: []
 
         const pts = points.items[start..end];
 
-        // For closed subpaths (explicit Z command), draw all N segments
-        // including the closing segment from last point back to first.
-        // For open subpaths (arcs, curves without Z), draw only N-1
-        // segments — do NOT connect the endpoints.
         const segment_count: usize = if (poly.closed) pts.len else pts.len -| 1;
 
         for (0..segment_count) |i| {
@@ -433,7 +379,6 @@ fn renderPolygonsStroke(geometry: *const Geometry, stroke_width: f32, buffer: []
             const x1 = p1.x * scale;
             const y1 = p1.y * scale;
 
-            // Skip lines with NaN/Inf coordinates or entirely outside the buffer
             if (!std.math.isFinite(x0) or !std.math.isFinite(y0) or
                 !std.math.isFinite(x1) or !std.math.isFinite(y1)) continue;
             if (@min(x0, x1) > size_f + half_width or @max(x0, x1) < -half_width) continue;
@@ -465,17 +410,11 @@ fn drawThickLine(
     const expand = half_width + 1.0;
     const size_f: f32 = @floatFromInt(size);
 
-    // Clamp all four bounds to [0, size] using floats first.
-    // This prevents negative values from ever reaching @intFromFloat → usize,
-    // where they would overflow and crash.
     const min_x_f = @max(@as(f32, 0.0), @floor(@min(x0, x1) - expand));
     const max_x_f = @min(size_f, @ceil(@max(x0, x1) + expand));
     const min_y_f = @max(@as(f32, 0.0), @floor(@min(y0, y1) - expand));
     const max_y_f = @min(size_f, @ceil(@max(y0, y1) + expand));
 
-    // Early exit when bounding box is empty or any coordinate is NaN.
-    // Using negated comparisons so NaN (which fails all ordered comparisons)
-    // correctly triggers the early return.
     if (!(min_x_f < max_x_f) or !(min_y_f < max_y_f)) return;
 
     const min_x: usize = @intFromFloat(min_x_f);

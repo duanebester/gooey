@@ -1,5 +1,3 @@
-//! The retained store: size-class slabs with generation-checked handles.
-
 const std = @import("std");
 const id_mod = @import("id.zig");
 const handler_mod = @import("handler.zig");
@@ -14,8 +12,6 @@ pub const Lifetime = union(enum) {
     owned,
 };
 
-// Handles are the same type as entity handles, so a retained engine can be a
-// handler target.
 pub fn Handle(comptime T: type) type {
     return handler_mod.Entity(T);
 }
@@ -54,10 +50,8 @@ pub const Slab = struct {
     bytes: []align(slab_alignment) u8,
     meta: []Meta,
     generations: []u32,
-    /// Free slots, used as a stack.
     free: []u32,
     free_count: u32,
-    /// Open addressing over slots: 0 is empty, else slot + 1.
     index: []u32,
 
     pub fn initInPlace(
@@ -131,10 +125,9 @@ pub const Slab = struct {
             if (meta.id == id and meta.type_id == type_id) return entry - 1;
             position = (position + 1) & mask;
         }
-        unreachable; // The index is at most half full.
+        unreachable;
     }
 
-    // The caller initializes the slot's bytes.
     pub fn claim(self: *Slab, id: ElementId, type_id: usize, lifetime: Lifetime, frame: u64) u32 {
         assert(self.find(id, type_id) == null);
         if (self.free_count == 0) {
@@ -170,19 +163,16 @@ pub const Slab = struct {
         meta.touched_frame = frame;
     }
 
-    /// Release `slot`; its generation advances so old handles fail.
     pub fn releaseSlot(self: *Slab, slot: u32) void {
         assert(self.meta[slot].in_use);
         assert(self.free_count < self.meta.len);
         self.meta[slot].in_use = false;
         self.generations[slot] +%= 1;
-        // Zero the bytes before another owner can read them.
         @memset(self.slotBytes(slot), 0);
         self.free[self.free_count] = slot;
         self.free_count += 1;
     }
 
-    // `rendered` answers whether a scope id was rendered this frame.
     pub fn sweep(self: *Slab, frame: u64, delay_frames: u32, rendered: anytype) u32 {
         var released: u32 = 0;
         for (self.meta, 0..) |*meta, slot| {
@@ -284,15 +274,11 @@ pub const Retained = struct {
         return .{ .slot = slot, .generation = slab.generations[slot] };
     }
 
-    // Does not touch the entry, for the router: it reads state the last build
-    // retained.
     pub fn find(self: *Retained, comptime T: type, id: ElementId) ?*T {
         const value = self.findConst(T, id) orelse return null;
-        // The caller holds `self` mutably, so the value is mutable too.
         return @constCast(value);
     }
 
-    // The const variant for readers that must not change the state (`Query`).
     pub fn findConst(self: *const Retained, comptime T: type, id: ElementId) ?*const T {
         assert(id.isKeyed());
         const slab = &self.slabs[comptime classOf(T)];
@@ -301,8 +287,6 @@ pub const Retained = struct {
         return @ptrCast(slab.slotBytes(slot).ptr);
     }
 
-    // The generation is checked before the slot is read: a handler in the
-    // frame on screen may name state a later sweep released.
     pub fn get(self: *Retained, comptime T: type, handle: Handle(T)) *T {
         const slab = &self.slabs[comptime classOf(T)];
         assert(handle.slot < slab.slotCount());
@@ -362,9 +346,7 @@ test "retained entries live by lifetime and old handles fail" {
             return self.scope != null and self.scope.? == id;
         }
     };
-    // Frame 3: the frame entry is within its delay; the scope is rendered.
     try std.testing.expectEqual(@as(u32, 0), retained.sweep(3, Rendered{ .scope = parent }));
-    // Frame 4: the frame entry expires and the scope is gone.
     try std.testing.expectEqual(@as(u32, 2), retained.sweep(4, Rendered{ .scope = null }));
     const again = retained.retain(Counter, frame_id, .frame, Counter.init, 4);
     try std.testing.expect(again.generation != frame_handle.generation);

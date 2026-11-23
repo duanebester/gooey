@@ -1,6 +1,3 @@
-//! One untyped `Cx` serves every app; the build turns each element into one
-//! layout element and one node in pre-order, so node `i` is layout element `i`.
-
 const std = @import("std");
 const id_mod = @import("id.zig");
 const records = @import("records.zig");
@@ -17,7 +14,6 @@ const text_mod = @import("../text/mod.zig");
 
 const assert = std.debug.assert;
 
-/// The bytes of a text a declaration panic names it by.
 const text_name_bytes_max: usize = 32;
 
 pub const ElementId = id_mod.ElementId;
@@ -28,25 +24,16 @@ const ResourceLimits = window_mod.ResourceLimits;
 const Node = window_mod.Node;
 const index_none = records.index_none;
 
-/// What `Cx.drag` reports about a drag in progress.
 pub fn Drag(comptime T: type) type {
     return struct {
         payload: T,
-        /// The drop target of this payload type under the pointer, or
-        /// `.root` over none.
         over: ElementId,
-        /// The pointer, in window coordinates; it may lie outside the window.
-        /// In a keyboard drag, the centre of `over`, or of the source over
-        /// none, so a preview placed here follows the keys.
         x: f32,
         y: f32,
-        /// Started by `effects.startDrag`, not by the pointer.
         keyboard: bool,
     };
 }
 
-/// A `*Cx` is the window's address under an opaque type, so an app or
-/// component holding one reaches only `Cx`'s methods.
 pub fn windowOf(cx: *const Cx) *Window {
     const window: *Window = @ptrCast(@alignCast(@constCast(cx)));
     assert(window.phase != .idle);
@@ -57,28 +44,17 @@ pub fn of(window: *Window) *Cx {
     return @ptrCast(window);
 }
 
-/// Opaque, so the window behind it stays internal: what an app or component
-/// reads during a build is these methods.
 pub const Cx = opaque {
     pub const ScrollPosition = struct {
-        /// How far the content is scrolled, in pixels from its start.
         offset_x: f32,
         offset_y: f32,
-        /// The box's bounds at the last emit, unclipped; zero before its first.
         viewport: records.Rect,
-        /// An `Effects.scrollTo` this build's layout will resolve, with a
-        /// child's key resolved to its id and an index key kept, so a
-        /// windowed list builds the row it names.
         target: ?Target,
-        /// The offset rests at the content's end; a box anchored `.end`
-        /// follows the end while this holds. True before the first emit.
         at_end: bool,
 
         pub const Target = window_mod.ScrollState.Target;
     };
 
-    /// The app's root state. In Debug and ReleaseSafe a wrong `T` panics on
-    /// the first frame.
     pub fn state(self: *Cx, comptime T: type) *T {
         const store = windowOf(self).store;
         if (comptime std.debug.runtime_safety) {
@@ -96,10 +72,6 @@ pub const Cx = opaque {
         return windowOf(self).theme;
     }
 
-    /// The window controls a transparent title bar draws over the content
-    /// (`Config.title_bar`), so the app can keep its own controls clear of
-    /// them and line them up with the traffic lights. All zero for a
-    /// standard title bar, off macOS, and in full screen.
     pub fn titleBarInset(self: *const Cx) events.TitleBar.Inset {
         const inset = windowOf(self).title_bar_inset;
         assert(inset.top >= 0);
@@ -108,14 +80,11 @@ pub const Cx = opaque {
         return inset;
     }
 
-    /// The text system's base font metrics, for components that size boxes
-    /// around a line of text.
     pub fn fontMetrics(self: *const Cx) text_mod.Metrics {
         return windowOf(self).resources.text_system.getMetrics() orelse
             std.debug.panic("cx.fontMetrics: no font is loaded", .{});
     }
 
-    /// The id a child box with `key` gets under the box being built.
     pub fn id(self: *const Cx, key: Key) ElementId {
         const window = windowOf(self);
         window.assertPhase(.build);
@@ -128,10 +97,6 @@ pub const Cx = opaque {
         return windowOf(self).isHovered(target);
     }
 
-    /// Render again no later than `delay_ms` from now, for a view that
-    /// changes with the clock alone. Call it each build
-    /// while the view depends on the clock: the window keeps the earliest
-    /// request of the last build, and a build that asks for none clears it.
     pub fn requestRenderAfter(self: *Cx, delay_ms: u32) void {
         const window = windowOf(self);
         window.assertPhase(.build);
@@ -140,29 +105,18 @@ pub const Cx = opaque {
         window.build_deadline_ns = @min(window.build_deadline_ns, deadline);
     }
 
-    /// The tick's clock in nanoseconds: the time the host stamped on this
-    /// frame. Every read in one build returns the same value, and it never
-    /// decreases from frame to frame. Its zero is the host's, so use
-    /// differences, and `requestRenderAfter` while a view follows it.
     pub fn now(self: *const Cx) u64 {
         const window = windowOf(self);
         window.assertPhase(.build);
         return window.now_ns;
     }
 
-    /// The app's resource budget (`Config.limits`), for a component that
-    /// bounds its own per-frame work by the same fields the core enforces.
     pub fn limits(self: *const Cx) *const ResourceLimits {
         const window = windowOf(self);
         assert(window.limits.build.element_count_frame_max > 0);
         return &window.limits;
     }
 
-    /// Keyed element `target`'s bounds in the last laid-out frame, as
-    /// `effects.bounds` reports them to handlers, or null when that frame
-    /// did not have it. After a resize the first build still reads the old
-    /// layout, so a read then asks for one more render: a view sized from
-    /// these bounds settles at the new size in the next build.
     pub fn bounds(self: *Cx, target: ElementId) ?records.Rect {
         assert(target.isKeyed());
         const window = windowOf(self);
@@ -180,10 +134,6 @@ pub const Cx = opaque {
         return null;
     }
 
-    /// Keyed scroll box `target`'s offset and last measured viewport, or null
-    /// before it first renders. A component reads it before rendering the
-    /// box, for example to build only the rows in view (`List`); the offset
-    /// is the one the wheel, scrollbar, and last emit left.
     pub fn scroll(self: *const Cx, target: ElementId) ?ScrollPosition {
         assert(target.isKeyed());
         const window = windowOf(self);
@@ -206,18 +156,11 @@ pub const Cx = opaque {
         return windowOf(self).isFocused(target);
     }
 
-    /// Whether keyboard focus, drawn with its ring, is on `target` or inside
-    /// it in the frame on screen (CSS `:focus-visible` within
-    /// `:focus-within`). False after a pointer press moves focus, so a
-    /// tooltip shown for keyboard focus does not stay up after a click.
     pub fn focusVisibleWithin(self: *const Cx, target: ElementId) bool {
         windowOf(self).assertPhase(.build);
         return windowOf(self).isFocusVisibleWithin(target);
     }
 
-    /// The drag in progress, once past its threshold, if its payload is a
-    /// `T`: for dimming its source, restyling the target it is `over`, and
-    /// placing a preview at `x`, `y` on a `.drag` layer.
     pub fn drag(self: *const Cx, comptime T: type) ?Drag(T) {
         const active = &windowOf(self).drag;
         if (active.phase != .active) return null;
@@ -233,10 +176,6 @@ pub const Cx = opaque {
         };
     }
 
-    /// Build a handler for `method`. Its state is the root
-    /// state, an entity (`.entity`), or state retained with `cx.retain`
-    /// (`.entity` with the retained handle), which lets a component handle
-    /// events on state of its own.
     pub fn on(self: *Cx, comptime method: anytype, options: anytype) Handler {
         const handler = handler_mod.bind(method, options);
         if (comptime std.debug.runtime_safety) {
@@ -262,7 +201,6 @@ pub const Cx = opaque {
                 "cx.on({s}): {s} is neither an entity type nor retained state",
                 .{ name, handler_mod.typeName(target.type_id) },
             );
-            // Retained state: `get` panics on a stale handle.
             const handle = retained.Handle(State){
                 .slot = target.slot,
                 .generation = target.generation,
@@ -276,8 +214,6 @@ pub const Cx = opaque {
         std.debug.panic("cx.on({s}): entity slot {d} is stale", .{ name, target.slot });
     }
 
-    /// Find or create retained `T` for keyed `target`. Text
-    /// engines come from their dedicated pool.
     pub fn retain(
         self: *Cx,
         comptime T: type,
@@ -309,8 +245,6 @@ pub const Cx = opaque {
         if (T == text_engine.InputEngine) return window.inputs.get(handle);
         if (T == text_engine.AreaEngine) return window.areaPool().get(handle);
         if (T == text_engine.EditorEngine) return window.editorPool().get(handle);
-        // An entity from `Config.entities`: checked in every
-        // build mode, since handles outlive the frame they were read in.
         if (window.store.findPool(handler_mod.typeId(T))) |pool| {
             assert(pool.app_pool != null);
             const value = pool.checkedValue(handle.slot, handle.generation, "cx.get");
@@ -327,8 +261,6 @@ pub const Cx = opaque {
         windowOf(self).retained.release(T, handle);
     }
 
-    /// Render a child: an element, a component, a tuple, an optional, or an
-    /// array or slice of components.
     pub fn render(self: *Cx, child: anytype) void {
         const window = windowOf(self);
         window.assertPhase(.build);
@@ -361,8 +293,6 @@ pub const Cx = opaque {
             .null => {},
             .array => for (child) |item| self.renderChild(item),
             .pointer => |pointer| {
-                // `comptime`: a call result is runtime-known otherwise, so the
-                // error below would fire for every slice of components.
                 if (comptime pointer.child == u8 or isByteArray(pointer.child)) {
                     @compileError("a string is not a child; wrap it in ui.text(\"...\", .{})");
                 }
@@ -397,7 +327,6 @@ pub const Cx = opaque {
             .scroll = scroll_state,
             .layer = box.layer,
         });
-        // A layer floats outside its parent's flow, so it is never revealed.
         if (box.key != null and box.layer == null) revealChild(window, parent_index, index, box_id);
         const node = window.node(index);
         const frame = window.built();
@@ -426,8 +355,6 @@ pub const Cx = opaque {
         for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
         node.actions_len = @intCast(box.actions.len);
         node.cursor = box.style.cursor;
-        // `on_pointer_drag`, `draggable`, and `drop_target` require a key
-        // (`checkKeyed`), so each takes a record.
         node.hit = box.key != null or scroll_handle != null or box.focusable or
             box.on_click != null or box.on_click_outside != null or box.on_key != null or
             box.on_context_menu != null or box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
@@ -460,12 +387,6 @@ pub const Cx = opaque {
         };
     }
 
-    /// The size `ui.text(content, style)` takes in a parent whose content is
-    /// `max_width` wide, measured as layout will size it: wrapped at the same
-    /// words when `style.wrap` wraps, one line when it does not. For sizing a
-    /// row from its content during render, such as a `List` row's `height`.
-    /// Allocates nothing and adds no element; each call measures each word
-    /// once through the text system's shaped-run cache.
     pub fn measureText(
         self: *Cx,
         content: []const u8,
@@ -502,7 +423,6 @@ pub const Cx = opaque {
 
     pub const TextSize = struct { width: f32, height: f32 };
 
-    /// The layout engine's text configuration for a `ui.text` style.
     fn textConfig(window: *const Window, style: *const element.Text) layout_mod.TextConfig {
         const size = style.size orelse window.theme.font_size_base;
         assert(size > 0);
@@ -530,9 +450,6 @@ pub const Cx = opaque {
         };
     }
 
-    /// The truncation fields' misuse, at declaration: a clamp needs a wrap
-    /// to have lines to count, and keeps at least one. Names the text by its
-    /// first bytes, since a `ui.text` has no `source`.
     fn checkTextStyle(content: []const u8, style: *const element.Text) void {
         const count = style.line_count_max orelse return;
         const name = content[0..@min(content.len, text_name_bytes_max)];
@@ -549,9 +466,6 @@ pub const Cx = opaque {
         assert(style.wrap != .none);
     }
 
-    /// The layout engine's line height is a percent of the font size; the
-    /// element's is a percent of the font's line height.
-    /// Wrapped boxes and emit both pitch lines by this one value, so they agree.
     fn lineHeightPercent(metrics: *const text_mod.Metrics, font_percent: u16) u16 {
         assert(font_percent > 0);
         assert(metrics.point_size > 0);
@@ -581,8 +495,6 @@ pub const Cx = opaque {
     }
 };
 
-/// Start a frame's build: the window root is node 0, a column the size of
-/// the window, so a root box may `grow` or use `percent`.
 pub fn beginBuild(window: *Window) void {
     window.assertPhase(.build);
     window.node_count = 0;
@@ -609,7 +521,6 @@ pub fn endBuild(window: *Window) void {
     window.render_deadline_ns = window.build_deadline_ns;
 }
 
-/// Deepest component nesting seen, and the stack it took.
 fn noteDepth(window: *Window) void {
     const address = @frameAddress();
     if (window.component_depth == 1) window.depth_base_address = address;
@@ -620,9 +531,6 @@ fn noteDepth(window: *Window) void {
     }
 }
 
-/// Copy a box's accessibility annotation into the frame, strings included.
-/// The value keeps at most `value_bytes_max` bytes around its selection
-/// (`a11y_value.window`), so a long document cannot exhaust the frame's text.
 fn copyA11y(
     frame: *records.Frame,
     a11y: *const element.A11y,
@@ -657,11 +565,6 @@ fn copyA11y(
     };
 }
 
-/// A pointer capture finds its box again by id at every step, and a drag
-/// names its source and the target it is `over` by id, which only a key
-/// keeps stable across frames: an auto id is a sibling position, so it
-/// could name another box after the rows above it change. A press arms
-/// either a capture or a drag, so one box cannot ask for both.
 fn checkKeyed(window: *const Window, box: *const element.Box) void {
     const message = gestureMisuse(box) orelse return;
     assert(message.len > 0);
@@ -679,7 +582,6 @@ fn checkKeyed(window: *const Window, box: *const element.Box) void {
     });
 }
 
-/// What is wrong with a box's gesture fields, or null when nothing is.
 fn gestureMisuse(box: *const element.Box) ?[]const u8 {
     if (box.draggable != null and box.on_pointer_drag != null) {
         return "Box.draggable and Box.on_pointer_drag on one box; a press starts one " ++
@@ -790,10 +692,7 @@ fn openNode(
 }
 
 const OpenOptions = struct {
-    /// A scroll box's retained state, whose offset the layout applies to its
-    /// children; null for every other box.
     scroll: ?*const window_mod.ScrollState,
-    /// A layer box floats at its anchor, outside its parent's layout.
     layer: ?element.Layer,
 };
 
@@ -832,9 +731,6 @@ fn openNodeWith(
     return index;
 }
 
-/// What the layout resolves a scroll box's offset against this frame: a
-/// pending `Effects.scrollTo`, else the end while an `.end` anchor is
-/// pinned. A child target waits for its child to open (`revealChild`).
 fn scrollTarget(state: *const window_mod.ScrollState) layout_mod.ScrollTarget {
     if (state.target) |target| return switch (target) {
         .start => .start,
@@ -846,9 +742,6 @@ fn scrollTarget(state: *const window_mod.ScrollState) layout_mod.ScrollTarget {
     return .none;
 }
 
-/// When the box just opened at `index` is the child a pending
-/// `Effects.scrollTo` names in its parent scroll box, hand the parent's
-/// layout its element index, so this frame's layout brings it into view.
 fn revealChild(window: *Window, parent_index: u32, index: u32, box_id: ElementId) void {
     assert(parent_index < index);
     const handle = window.nodes[parent_index].scroll orelse return;
@@ -863,8 +756,6 @@ fn revealChild(window: *Window, parent_index: u32, index: u32, box_id: ElementId
     parent.config.scroll.?.target = .{ .child = .{ .index = index, .alignment = alignment } };
 }
 
-/// A layer's anchor as layout floating: its top-left corner at the offset
-/// from the opener's top-left corner, or from the window's.
 fn floating(anchor: element.Anchor) layout_mod.FloatingConfig {
     const config: layout_mod.FloatingConfig = switch (anchor) {
         .parent => |offset| .{
@@ -884,9 +775,6 @@ fn floating(anchor: element.Anchor) layout_mod.FloatingConfig {
     return config;
 }
 
-/// A scroll box's offset, retained by its key for as long as it renders.
-/// The last emit's measurement clamps it, so content that
-/// shrank never shows past its end.
 fn retainScroll(
     window: *Window,
     box: *const element.Box,
@@ -911,10 +799,6 @@ fn retainScroll(
     return handle;
 }
 
-/// A box or paint opens a layout element, so its depth is checked before the
-/// layout engine's open stack, sized from the same field, takes it: past the
-/// bound it fails fast here with the frame number. The window root holds one
-/// level, so an app nests `box_depth_max - 1` levels inside it.
 fn checkBoxDepth(window: *Window) void {
     const depth_max = window.limits.build.box_depth_max;
     assert(depth_max == window.open_stack.len);
@@ -929,7 +813,6 @@ fn checkBoxDepth(window: *Window) void {
 }
 
 fn pushOpen(window: *Window, index: u32) void {
-    // `openNodeWith` checked the depth before opening this box.
     assert(window.open_depth < window.open_stack.len);
     assert(index < window.node_count);
     window.open_stack[window.open_depth] = index;
@@ -948,8 +831,6 @@ fn handlerIndex(frame: *records.Frame, handler: ?Handler) u32 {
     return frame.appendHandler(value);
 }
 
-/// `Style.opacity`, checked: a value outside 0 to 1 is a programmer error in
-/// every build mode, since a renderer would draw it as garbage alpha.
 fn styleOpacity(window: *const Window, opacity: f32) f32 {
     if (opacity >= 0 and opacity <= 1) return opacity;
     std.debug.panic("Style.opacity {d} is outside 0 to 1 (frame {d})", .{
@@ -976,7 +857,6 @@ fn layoutFailed(window: *const Window, err: anyerror) noreturn {
     std.debug.panic("layout failed in frame {d}: {s}", .{ window.frame_number, @errorName(err) });
 }
 
-/// Text measurement over the window's text system.
 fn measureText(
     content: []const u8,
     font_id: u16,
@@ -989,7 +869,6 @@ fn measureText(
     const text_system = window.resources.text_system;
     if (text_system.getMetrics() == null) std.debug.panic("no font loaded", .{});
     assert(font_size > 0);
-    // Each family measures and sizes lines by its own regular face.
     const family = text_mod.FontFamily.fromFontId(font_id);
     const variant = text_mod.FontFamily.variantFromFontId(font_id);
     const metrics = text_system.getMetricsFor(family);
@@ -1002,8 +881,6 @@ fn measureText(
 
 fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
     const grid_role = gridRole(style);
-    // A grid's rows, and a row box's cells, run across: it ignores
-    // `direction`, as Taffy ignores `flex-direction` in a grid.
     const flow_direction: element.Direction = if (grid_role == .none) style.direction else .row;
     const direction: layout_mod.LayoutDirection = switch (flow_direction) {
         .row => .left_to_right,
@@ -1032,9 +909,6 @@ fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
             .grid = grid_role,
         },
     };
-    // A fixed width fixes the height too, so the layout's minimums, which a
-    // fit-content parent is sized from, already hold it. Any other width is
-    // known only after sizing, which grows such parents to the height.
     if (decl.layout.aspect_ratio) |ratio| {
         if (style.width == .fixed) decl.layout.sizing.height = .fixed(style.width.fixed / ratio);
     }
@@ -1052,7 +926,6 @@ fn gridRole(style: *const element.Style) layout_mod.GridRole {
     return if (style.grid != null) .grid else .none;
 }
 
-/// A grid's tracks as the layout sizes them, each checked as `Sizing` is.
 fn gridTrack(track: element.Track, index: usize) layout_mod.Track {
     if (!(track.min >= 0 and track.min <= track.max) or std.math.isNan(track.max)) {
         std.debug.panic("Grid track {d}: min {d} and max {d} must satisfy 0 <= min <= max", .{
@@ -1096,9 +969,6 @@ fn gridTrack(track: element.Track, index: usize) layout_mod.Track {
     return .{ .axis = axis, .alignment = alignment };
 }
 
-/// The tracks of `style.grid` in `columns` and `rows`, which the layout
-/// copies when the box opens. Too many tracks panics in the layout with the
-/// count; here they are cut to the arrays only after that check would fire.
 const GridTracks = struct {
     columns: [element.grid_track_count_max]layout_mod.Track,
     rows: [element.grid_track_count_max]layout_mod.Track,
@@ -1134,8 +1004,6 @@ fn gridConfig(
     };
 }
 
-/// The layout derives an aspect box's height from its width, so a height of
-/// its own would contradict the ratio rather than bound it.
 fn aspectRatio(style: *const element.Style) ?f32 {
     const ratio = style.aspect_ratio orelse return null;
     if (!(ratio > 0 and std.math.isFinite(ratio))) {
@@ -1152,8 +1020,6 @@ fn aspectRatio(style: *const element.Style) ?f32 {
     return ratio;
 }
 
-/// Lines stack down the cross axis, whose height the layout derives from
-/// them after widths are known; a column's would need its width derived.
 fn wrapsRow(style: *const element.Style) bool {
     if (!style.wrap) return false;
     if (style.direction != .row) {
@@ -1220,7 +1086,6 @@ fn childAlignment(
     };
 }
 
-/// Layout padding and gaps are whole pixels.
 fn pixels(value: f32) u16 {
     assert(value >= 0);
     assert(value <= std.math.maxInt(u16));

@@ -20,7 +20,6 @@ pub fn encodeDraws(
     var bound: ?Pipeline = null;
     for (frame.drawList()) |*draw| {
         assert(draw.clip < frame.clip_count);
-        // Pack emits no draw under a zero-area clip.
         assert(frame.clips[draw.clip][2] > 0);
         assert(frame.clips[draw.clip][3] > 0);
         if (bound != draw.pipeline) {
@@ -42,8 +41,6 @@ pub fn encodeDraws(
     }
 }
 
-/// `instance_id` counts from the base instance, so shaders index the frame's
-/// array directly.
 fn drawInstances(encoder: objc.Object, draw: *const packed_frame.Draw) void {
     assert(draw.count > 0);
     assert(draw.pipeline.kind() != .mesh);
@@ -64,13 +61,11 @@ fn drawMesh(encoder: objc.Object, pipeline: Pipeline, mesh: *const packed_frame.
     });
     const vertex_start: u64, const vertex_count: u64, const instance_count: u64 =
         switch (pipeline) {
-            // `vid / 21` is the triangle's index into the frame's edge modes.
             .triangles => .{
                 @as(u64, mesh.edge_first) * shaders.triangle_draw_vertex_count,
                 @as(u64, @divExact(mesh.count, 3)) * shaders.triangle_draw_vertex_count,
                 1,
             },
-            // One instance per segment; a line has at least two points.
             .strip_expanded => .{ 0, shaders.instance_vertex_count, mesh.count - 1 },
             .point_instanced => .{ 0, shaders.instance_vertex_count, mesh.count },
             .quad, .glyph, .svg, .image => unreachable,
@@ -89,7 +84,6 @@ fn setBytes(
     comptime selector: [:0]const u8,
     options: struct { bytes: []const u8, index: u32 },
 ) void {
-    // Metal's inline data limit is 4 KiB; these are 8 to 32 B.
     assert(options.bytes.len > 0);
     assert(options.bytes.len <= 4096);
     encoder.msgSend(void, selector, .{

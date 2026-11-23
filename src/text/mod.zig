@@ -37,7 +37,6 @@ pub const CachedGlyph = cache.CachedGlyph;
 const text_system = @import("text_system.zig");
 pub const TextSystem = text_system.TextSystem;
 pub const TextSizeKey = text_system.TextSizeKey;
-/// True in builds that select the deterministic synthetic text backend.
 pub const is_synthetic = text_system.is_synthetic;
 pub const ShapedRunCache = text_system.ShapedRunCache;
 pub const run_codepoint_count_max = text_system.run_codepoint_count_max;
@@ -50,8 +49,6 @@ const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
 const is_windows = platform.is_windows;
 
-/// Always compiled so its tests run on every host; `text_backend =
-/// .synthetic` makes `TextSystem` use it.
 pub const synthetic_backend = @import("backends/synthetic/mod.zig");
 
 pub const backends = if (is_wasm)

@@ -12,9 +12,6 @@ pub const Class = struct {
     const msg_send = MsgSend(Class);
     pub const msgSend = msg_send.msgSend;
 
-    /// `imp` must be a C-calling-convention function whose first two
-    /// parameters are `c.id` (self) and `c.SEL`. Only valid between
-    /// `allocateClassPair` and `registerClassPair`.
     pub fn addMethod(self: Class, name: [:0]const u8, imp: anytype) bool {
         const Fn = @TypeOf(imp);
         const fn_info = @typeInfo(Fn).@"fn";
@@ -32,7 +29,6 @@ pub const Class = struct {
         ));
     }
 
-    /// Only valid between `allocateClassPair` and `registerClassPair`.
     pub fn addIvar(self: Class, name: [:0]const u8) bool {
         const result = c.class_addIvar(self.value, name.ptr, @sizeOf(c.id), @alignOf(c.id), "@");
         return boolResult(result);
@@ -44,7 +40,6 @@ pub fn getClass(name: [:0]const u8) ?Class {
     return .{ .value = c.objc_getClass(name.ptr) orelse return null };
 }
 
-/// Call `registerClassPair` once all ivars and methods have been added.
 pub fn allocateClassPair(superclass: ?Class, name: [:0]const u8) ?Class {
     assert(name.len > 0);
     if (superclass) |cls| assert(cls.value != null);

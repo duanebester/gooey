@@ -1,29 +1,3 @@
-//! A reference model of the drag_drop example for the VOPR: which list holds
-//! each item, in what order, updated from every action the harness performs
-//! and compared with `app.state` after every step; a mismatch panics with
-//! the step and both states. Written from drag_drop's intended behaviour,
-//! not from its code. Every item is in exactly one list, with no duplicates,
-//! checked on the app's own state every step before it is compared. A drop
-//! moves the item to the end of the target list, keeping the order of the
-//! rest of both lists. A pointer drag is armed by a press on a card and
-//! starts once the pointer is more than `click_slop_px` from the press; a
-//! release over a list drops the card's payload there, a release anywhere
-//! else drops nothing, and a release before it started is a click, which
-//! nothing handles; Escape cancels it. Any mouse button presses as the left
-//! does, and only a release of the drag's own button ends it. From the
-//! keyboard, Space on a focused card picks it up; during the drag every key
-//! is the drag's: Tab and the arrows choose the next or previous list in
-//! tree order, Space or Enter drops on it, Escape cancels and focuses the
-//! card, and a press cancels it and lands as usual. Space announces a
-//! pick-up only when the keyboard drag starts.
-//!
-//! It does not model the core: the focus a drain starts from, hit records,
-//! payloads (`drag_payload`), and drop targets are read from the window. It
-//! folds consecutive moves as the queue does (`EventQueue.coalesce`), so a
-//! drag that leaves the slop and comes back within one drain stays armed.
-//! drag_drop's announcements are all assertive, so only the newest one made
-//! since the last build survives, however many were made.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const drag_drop = @import("drag_drop_example");
@@ -47,10 +21,7 @@ const nextTabStop = vopr_frame.nextTabStop;
 const index_none = records.index_none;
 
 const item_count: u32 = drag_drop.items.len;
-/// Events one drain holds: the model folds them as the queue does, so it
-/// holds exactly the queue's events.
 const event_count_max: u32 = drag_drop.App.limits.events.queue_count_max;
-/// Pending announcements at most: the polite FIFO and the assertive slot.
 const announcement_count_max: u32 =
     drag_drop.App.limits.a11y.announcement_polite_pending_max + 1;
 const click_slop_px: f32 = internals.window.Capture.click_slop_px;
@@ -63,51 +34,34 @@ comptime {
 }
 
 pub const DragDropModel = struct {
-    /// Item ids in each list, by `Side`, in display order.
     lists: [2]List,
-    /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
-    /// The drag as the model expects it, across drains.
     drag: Drag,
     events: [event_count_max]Event,
     event_count: u32,
-    /// The rendered frame when the drain began, to see the tick's flip.
     frame_number_begin: u64,
-    /// Announcements expected pending for the next build, in order.
     announced: [announcement_count_max]Announcement,
     announced_count: u32,
-    /// Announcements made since the last build, replaced ones included.
     announced_build_count: u32,
-    /// Ticks the current drag has been active for, for `Stats`.
     drag_tick_count: u32,
     counts: Stats,
     step_last: u64,
 
-    /// The kinds drag_drop's swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present, .drag,
         .resize,
     };
 
     pub const Stats = struct {
-        /// Pointer drags past the slop, and keyboard pick-ups that started.
         drags_started: u32,
-        /// Drops delivered to a list, by pointer or keyboard.
         drags_completed: u32,
-        /// Started drags that ended with no drop.
         drags_cancelled: u32,
         keyboard_drags: u32,
         keyboard_drops: u32,
-        /// Presses on a card released before the drag started.
         clicks: u32,
-        /// The most ticks one drag stayed active.
         drag_ticks_max: u32,
-        /// The most announcements one drain made.
         announcements_drain_max: u32,
-        /// The most announcements made between two builds, replaced ones
-        /// included: what the pool held before the live-region rules.
         announcements_build_max: u32,
-        /// The most announcements pending for a build at once.
         announcements_pending_max: u32,
 
         const zero: Stats = .{
@@ -155,9 +109,7 @@ pub const DragDropModel = struct {
         payload: ItemId,
         type_id: usize,
         start: Point,
-        /// The pointer button that armed it; a keyboard drag's is `.left`.
         button: MouseButton,
-        /// The list a keyboard drag would drop on, or `.root`.
         over: ElementId,
 
         const idle: Drag = .{
@@ -174,7 +126,6 @@ pub const DragDropModel = struct {
 
     const Press = struct { point: Point, button: MouseButton };
 
-    /// A queued input event, as far as drag_drop can tell them apart.
     const Event = union(enum) {
         moved: Point,
         dragged: Press,
@@ -182,11 +133,8 @@ pub const DragDropModel = struct {
         up: Press,
         key_down: Action.Chord,
         key_up,
-        /// Committed text or a composition: no handler of drag_drop's
-        /// reads them.
         text,
         scroll,
-        /// A window event, which the queue never folds into an input.
         resize,
     };
 
@@ -274,13 +222,10 @@ pub const DragDropModel = struct {
             .text, .compose => self.push(.text),
             .scroll => self.push(.scroll),
             .resize => self.push(.resize),
-            // Drag_drop's swarm draws no `.cancel` (`action_kinds`).
             .wait_ns, .tick_main, .present, .cancel, .image, .dialog, .job => unreachable,
         }
     }
 
-    /// Append an event, folding a move into a move, a held move into a
-    /// held move, and a scroll into a scroll that it directly follows.
     fn push(self: *DragDropModel, event: Event) void {
         assert(self.event_count <= event_count_max);
         if (self.event_count > 0) {
@@ -301,7 +246,6 @@ pub const DragDropModel = struct {
         self.event_count += 1;
     }
 
-    /// Before `tickMain`: the focus the drain starts from is the core's.
     pub fn beginDrain(self: *DragDropModel, window: *Window) void {
         assert(window.phase == .idle);
         if (window.queue.count != self.event_count) {
@@ -317,8 +261,6 @@ pub const DragDropModel = struct {
         self.frame_number_begin = window.rendered().frame_number;
     }
 
-    /// After `tickMain`: apply the drained events in order against the frame
-    /// the drain routed against, then compare with the core.
     pub fn endDrain(self: *DragDropModel, window: *Window, published: bool) void {
         assert(window.phase == .idle);
         const frame = window.rendered();
@@ -359,8 +301,6 @@ pub const DragDropModel = struct {
         }
     }
 
-    /// The tick flipped to a new frame: a keyboard drag's list that it no
-    /// longer renders leaves the drag over nothing and focus on the card.
     fn followFlip(self: *DragDropModel, frame: *const records.Frame) void {
         if (!self.drag.keyboard) return;
         assert(self.drag.phase == .active);
@@ -389,13 +329,10 @@ pub const DragDropModel = struct {
                     }
                 }
             },
-            // A key's release, text, and the wheel reach no handler of
-            // drag_drop's, and a keyboard drag takes them all.
             .key_up, .text, .scroll, .resize => {},
         }
     }
 
-    /// An armed pointer drag starts once the pointer is past the slop.
     fn pointerMoved(self: *DragDropModel, point: Point) void {
         if (self.drag.phase != .armed) return;
         assert(!self.drag.keyboard);
@@ -406,8 +343,6 @@ pub const DragDropModel = struct {
         self.counts.drags_started += 1;
     }
 
-    /// A press ends a keyboard drag, arms a drag of the card under it when
-    /// no drag holds the gesture, and focuses the innermost focusable.
     fn press(self: *DragDropModel, frame: *const records.Frame, event: Press) void {
         const point = event.point;
         if (self.drag.keyboard) {
@@ -444,9 +379,6 @@ pub const DragDropModel = struct {
         self.focus = focus_id;
     }
 
-    /// A release of the drag's button ends a pointer drag: a started one
-    /// drops on the list under it, or on nothing; an armed one is a click,
-    /// which nothing handles. Another button's release clicks nothing here.
     fn release(self: *DragDropModel, frame: *const records.Frame, event: Press) void {
         const point = event.point;
         if (self.drag.phase == .idle or self.drag.keyboard) return;
@@ -454,7 +386,6 @@ pub const DragDropModel = struct {
         const ended = self.drag;
         self.drag = .idle;
         if (ended.phase == .armed) {
-            // Only a left release clicks, and nothing here handles it.
             if (event.button == .left) self.counts.clicks += 1;
             return;
         }
@@ -480,8 +411,6 @@ pub const DragDropModel = struct {
         self.drag = .idle;
     }
 
-    /// A key outside a keyboard drag: the focused card's handler, then Tab
-    /// moves focus. No element of drag_drop's handles a click.
     fn keyToFocus(self: *DragDropModel, frame: *const records.Frame, chord: Action.Chord) void {
         const target = findHit(frame, self.focus) orelse {
             if (chord.key == .tab) {
@@ -494,16 +423,12 @@ pub const DragDropModel = struct {
         while (index != index_none) : (depth += 1) {
             assert(depth <= frame.hit_count);
             const record = &frame.hits[index];
-            // Only a card handles keys (`State.pickUp`), and it never stops
-            // the key going further.
             if (record.on_key != index_none) self.pickUp(frame, record, chord);
             index = record.parent;
         }
         if (chord.key == .tab) self.focus = nextTabStop(frame, self.focus, chord.modifiers.shift);
     }
 
-    /// Space on a card starts a keyboard drag of it and announces the pick-up,
-    /// unless a drag already holds the gesture: then neither happens.
     fn pickUp(
         self: *DragDropModel,
         frame: *const records.Frame,
@@ -530,7 +455,6 @@ pub const DragDropModel = struct {
         self.announce(.pick_up);
     }
 
-    /// During a keyboard drag every key is the drag's.
     fn keyboardDragKey(
         self: *DragDropModel,
         frame: *const records.Frame,
@@ -555,8 +479,6 @@ pub const DragDropModel = struct {
         }
     }
 
-    /// Choose the next list in tree order after the chosen one, or else the
-    /// card (the previous with `backward`), wrapping, and focus it.
     fn moveOver(self: *DragDropModel, frame: *const records.Frame, backward: bool) void {
         const count = frame.hit_count;
         if (count == 0) return;
@@ -574,7 +496,6 @@ pub const DragDropModel = struct {
         }
     }
 
-    /// Drop on the chosen list, if it still renders; focus stays on it.
     fn keyboardDrop(self: *DragDropModel, frame: *const records.Frame) void {
         if (self.drag.over == .root) return;
         const target = findHit(frame, self.drag.over) orelse return;
@@ -606,8 +527,6 @@ pub const DragDropModel = struct {
         if (keyboard) self.announce(.{ .drop = .{ .side = side, .id = id } });
     }
 
-    /// Remove `id` from whichever list holds it, keeping the rest in order,
-    /// and append it to `side`'s list.
     fn move(self: *DragDropModel, id: ItemId, side: Side) void {
         assert(id < item_count);
         var removed = false;
@@ -629,8 +548,6 @@ pub const DragDropModel = struct {
         assert(self.lists[0].count + self.lists[1].count == item_count);
     }
 
-    /// drag_drop's announcements are all assertive: a newer one replaces the
-    /// pending one, and survivors keep their order, so it goes last.
     fn announce(self: *DragDropModel, announcement: Announcement) void {
         assert(self.announced_count <= 1);
         self.announced[0] = announcement;
@@ -639,8 +556,6 @@ pub const DragDropModel = struct {
         assert(self.announced_count <= announcement_count_max);
     }
 
-    /// After every step: the app's lists must hold every item once, and
-    /// exactly the model's lists.
     pub fn check(self: *DragDropModel, state: *const drag_drop.State, step: u64) void {
         self.step_last = step;
         checkPartition(state, step);
@@ -686,7 +601,6 @@ pub const DragDropModel = struct {
         });
     }
 
-    /// The pool holds the pending announcements in order, all assertive.
     fn checkAnnouncements(self: *const DragDropModel, pool: *const records.Announcements) void {
         assert(self.announced_count <= announcement_count_max);
         if (pool.count != self.announced_count) {
@@ -732,7 +646,6 @@ fn centreOf(bounds: records.Rect) DragDropModel.Point {
     return .{ .x = bounds.x + bounds.width / 2, .y = bounds.y + bounds.height / 2 };
 }
 
-/// "<item> moved to <list title>", as a keyboard drop announces it.
 fn isDropMessage(text: []const u8, side: Side, id: ItemId) bool {
     assert(id < item_count);
     const name = drag_drop.items[id].name;
@@ -744,8 +657,6 @@ fn isDropMessage(text: []const u8, side: Side, id: ItemId) bool {
     return std.mem.endsWith(u8, text, title);
 }
 
-/// A card's payload is its item id, and its accessibility label the item's
-/// name.
 fn checkCard(frame: *const records.Frame, record: *const records.HitRecord) ItemId {
     assert(record.drag_type != 0);
     if (record.drag_payload >= item_count) {
@@ -768,7 +679,6 @@ fn checkCard(frame: *const records.Frame, record: *const records.HitRecord) Item
     return id;
 }
 
-/// Which list a drop target is, by its accessibility label.
 fn sideOf(frame: *const records.Frame, target: u32) Side {
     assert(target < frame.hit_count);
     const record = &frame.hits[target];
@@ -782,8 +692,6 @@ fn sideOf(frame: *const records.Frame, target: u32) Side {
     std.debug.panic("vopr model: a drop target is labelled \"{s}\"", .{label});
 }
 
-/// What the model assumes of drag_drop's frames: no click handlers, pointer
-/// captures, or scroll boxes, which it would otherwise have to model.
 fn checkFrameShape(frame: *const records.Frame) void {
     assert(frame.hit_count <= frame.hits.len);
     for (frame.hits[0..frame.hit_count]) |*record| {
@@ -796,7 +704,6 @@ fn checkFrameShape(frame: *const records.Frame) void {
     }
 }
 
-/// Every item is in exactly one list, once.
 fn checkPartition(state: *const drag_drop.State, step: u64) void {
     var seen: [item_count]u32 = @splat(0);
     var total: u32 = 0;

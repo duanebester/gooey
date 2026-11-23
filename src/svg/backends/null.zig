@@ -10,15 +10,10 @@ pub const RasterizedSvg = struct {
 
 pub const RasterizeError = error{
     PlatformNotSupported,
-    /// Failed to allocate memory
     OutOfMemory,
-    /// The path parsed to no commands.
     EmptyPath,
-    /// The path exceeds its `RasterBudget`
     PathTooComplex,
-    /// Graphics error
     GraphicsError,
-    /// Buffer too small
     BufferTooSmall,
 };
 
@@ -29,7 +24,6 @@ pub const StrokeOptions = struct {
 
 pub const RasterBudget = svg_mod.RasterBudget;
 
-/// Rasterizes nothing, so it needs no scratch.
 pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     _ = budget;
     _ = device_size_max;

@@ -60,7 +60,6 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     try testing.expectApproxEqAbs(@as(f32, 83.6), empty.y, 0.001);
 
     driver.deliver(.{ .composition = .{ .text = "ca" } });
-    // Before the tick the query still describes the frame on screen.
     try testing.expectEqual(@as(f32, 33), query.imeCursorRect().?.x);
     driver.frame();
     try testing.expectEqual(@as(f32, 49), query.imeCursorRect().?.x);
@@ -72,8 +71,6 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     try testing.expectApproxEqAbs(@as(f32, 33 + 35.2), query.imeCursorRect().?.x, 0.001);
     try testing.expectEqual(@as(u32, 5), query.imeSelectedRange().?.offset);
 
-    // The range is the selection, not just the caret, so VoiceOver can read
-    // it: Shift+Left selects the two-byte é.
     driver.deliver(.{ .key_down = chord(.left, .{ .shift = true }) });
     driver.frame();
     const selected = query.imeSelectedRange().?;
@@ -97,8 +94,6 @@ fn areaRender(cx: *Cx) void {
     }));
 }
 
-/// A filling TextArea 20 px inside the window, holding a line longer than
-/// any width the check resizes to.
 const FillAreaState = struct {
     notes: []const u8 = &(@as([200]u8, @splat('a')) ++ "\nb".*),
 };
@@ -121,7 +116,6 @@ fn fillAreaRender(cx: *Cx) void {
     }));
 }
 
-/// The clip the frame's first glyph draws in: the latest one pushed before it.
 fn glyphClip(frame: *const internals.records.Frame) ?internals.records.Rect {
     var clip: ?internals.records.Rect = null;
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -162,8 +156,6 @@ test "one shaped run holds run_codepoint_count_max codepoints and no more" {
     );
 }
 
-/// One run one glyph longer than the text system's 128-glyph stack buffers,
-/// shown as a text element or as a TextArea line.
 const LongRunState = struct {
     area: bool = false,
     notes: []const u8 = &long_run,
@@ -220,8 +212,6 @@ test "a run past 128 glyphs places every glyph, as text and as a TextArea line" 
     }
 }
 
-/// 750 copies of "abc ", 3,000 codepoints: past one shaping run, as one
-/// unwrapped line or wrapped at 400 px.
 const LongTextState = struct {
     wrap: bool = false,
 
@@ -242,8 +232,6 @@ const LongTextApp = gooey.App(LongTextState, longTextRender, .{
 
 fn longTextRender(cx: *Cx) void {
     const state = cx.state(LongTextState);
-    // Unwrapped, the text is 21,000 px wide in a 400 px window: a box that
-    // scrolls along x keeps it whole instead of cutting it at its edge.
     const scroll: ?ui.Scroll = if (state.wrap) null else .{ .x = true, .y = false };
     const key: ?gooey.Key = if (state.wrap) null else .{ .name = "long" };
     cx.render(ui.box(.{ .key = key, .style = .{ .width = .{ .grow = 1 }, .scroll = scroll } }, .{
@@ -260,8 +248,6 @@ test "a text past one shaping run draws and wraps as one run would" {
         app.state.wrap = wrap;
         app.tick(0);
         const frame = app.window.rendered();
-        // The synthetic face draws a box for a space too, and every line,
-        // the last included, draws its spaces.
         try testing.expectEqual(@as(u32, 3_000), spriteCount(frame));
         var first: ?internals.records.Rect = null;
         var codepoint: u32 = 0;
@@ -426,22 +412,17 @@ fn truncateRender(cx: *Cx) void {
 }
 
 test "an ellipsis cuts a line at the shaped glyph that passes its width" {
-    // Goal: emit's cut, on the synthetic face, whose "a" advances 5 px at
-    // size 10, a space 2.5, "é" and "…" 7 (a 6 px sprite; "a" is 4). Each
-    // case is the glyph count drawn, where "…" starts after the first glyph,
-    // and the first glyph's x; -1 where no "…" is drawn.
     const Expect = struct { count: u32, ellipsis_x: f32, first_x: f32 = 0 };
     const expected = [TruncateState.cases.len]Expect{
-        .{ .count = 10, .ellipsis_x = -1 }, // 50 px fits 50 exactly: uncut.
-        .{ .count = 9, .ellipsis_x = 40 }, // 8 "a" and "…" in 49.
-        .{ .count = 5, .ellipsis_x = 20 }, // Spaces before the cut trimmed.
-        .{ .count = 6, .ellipsis_x = 27 }, // "aaaaé", never half an "é".
-        .{ .count = 0, .ellipsis_x = -1 }, // Narrower than "…": nothing.
-        // Line 2 filled to "aaaa aaaa", then "…"; a space draws a 2 px sprite.
+        .{ .count = 10, .ellipsis_x = -1 },
+        .{ .count = 9, .ellipsis_x = 40 },
+        .{ .count = 5, .ellipsis_x = 20 },
+        .{ .count = 6, .ellipsis_x = 27 },
+        .{ .count = 0, .ellipsis_x = -1 },
         .{ .count = 20, .ellipsis_x = 42.5 },
-        .{ .count = 9, .ellipsis_x = 40, .first_x = 2 }, // Right-aligned.
-        .{ .count = 9, .ellipsis_x = -1 }, // `.clip`: nine "a", no mark.
-        .{ .count = 10, .ellipsis_x = -1 }, // `.clip` that fits: uncut.
+        .{ .count = 9, .ellipsis_x = 40, .first_x = 2 },
+        .{ .count = 9, .ellipsis_x = -1 },
+        .{ .count = 10, .ellipsis_x = -1 },
     };
     for (expected, 0..) |want, case| {
         const app = try testing.allocator.create(TruncateApp);
@@ -467,7 +448,6 @@ test "an ellipsis cuts a line at the shaped glyph that passes its width" {
         const first = sprites[0];
         const last = sprites[count - 1];
         try testing.expectApproxEqAbs(want.first_x, first.x, 1);
-        // Neither overflow draws past the box.
         try testing.expect(last.x + last.width <= TruncateState.cases[case].width);
         if (want.ellipsis_x < 0) {
             try testing.expectEqual(first.width, last.width);
@@ -498,7 +478,6 @@ test "cx.measureText sizes a text as layout lays it out" {
     const line_height = measured[1].height;
     try testing.expectEqual(@as(f32, 56), measured[0].width);
     try testing.expectApproxEqAbs(line_height * 2, measured[0].height, 0.5);
-    // A one-line text wider than its parent is cut at the parent's width.
     try testing.expectEqual(@as(f32, 60), measured[1].width);
     try testing.expectApproxEqAbs(line_height * 3, measured[2].height, 1);
     try testing.expect(measured[3].height > measured[0].height);
@@ -558,7 +537,6 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     });
     try testing.expectEqualStrings(full[0..1021] ++ "\u{6771}\u{4eac}!", app.state.notes);
 
-    // A new line starts empty, so a paste fills it to the bound and no more.
     const pasted: [1030]u8 = @splat('p');
     app.window.clipboard.write(&pasted);
     deliverAll(app, &now, &.{
@@ -569,9 +547,6 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     const newline = std.mem.indexOfScalar(u8, notes, '\n').?;
     try testing.expectEqualStrings(pasted[0..1024], notes[newline + 1 ..]);
 
-    // Two full lines: removing the newline between them, by Backspace, by
-    // typing over a selection that holds it, or by cutting it, would join
-    // 2048 codepoints. The refused cut leaves the clipboard alone too.
     var writes: u32 = 0;
     app.window.clipboard.service = .{
         .context = &writes,
@@ -599,7 +574,7 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     const query = internals.Query{ .window = &app.window };
     var now: u64 = 0;
     app.tick(now);
-    const inset: f32 = 9; // The default padding and border.
+    const inset: f32 = 9;
     app.window.queue.push(.{ .input = .{ .mouse_down = mouse(inset + 1, inset + 1) } });
     app.window.queue.push(.{ .input = .{ .mouse_up = mouse(inset + 1, inset + 1) } });
     for ([_][]const u8{ "one", "two", "three" }, 0..) |line, index| {
@@ -618,7 +593,6 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     try testing.expectApproxEqAbs(inset + line_height, caret.y, 0.001);
     try testing.expectApproxEqAbs(inset + 5 * 8, caret.x, 0.001);
 
-    // The delta is inverted by `window.wheel_delta_inverted`, as `ScrollState.wheel` reads it.
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     const wheel_events = [_]struct { x: f32, y: f32, down: f32, caret_y: f32 }{
         .{ .x = inset + 1, .y = inset + 1, .down = -20, .caret_y = inset + 2 * line_height },
@@ -660,7 +634,7 @@ test "a filling TextArea draws at the window's new width in the resize's own fra
     const query = internals.Query{ .window = &app.window };
     var now: u64 = 0;
     app.tick(now);
-    const inset: f32 = 9; // The default padding and border.
+    const inset: f32 = 9;
     const click = mouse(20 + inset + 3 * 8, 20 + inset + 1);
     app.window.queue.push(.{ .input = .{ .mouse_down = click } });
     app.window.queue.push(.{ .input = .{ .mouse_up = click } });
@@ -685,7 +659,6 @@ test "a filling TextArea draws at the window's new width in the resize's own fra
         const caret = query.imeCursorRect().?;
         try testing.expectApproxEqAbs(20 + inset + 3 * 8, caret.x, 0.001);
         try testing.expectEqual(@as(u32, 3), query.imeSelectedRange().?.offset);
-        // Only the caret's blink, a third of a second or more away, is due.
         const deadline = app.window.renderDeadlineNs().?;
         try testing.expect(deadline >= now + 300 * std.time.ns_per_ms);
         try testing.expect(!app.window.render_requested);
@@ -752,7 +725,6 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectEqual(@as(u32, 12), selected.offset);
     try testing.expectEqual(@as(u32, 5), selected.len);
 
-    // The delta is inverted by `window.wheel_delta_inverted`.
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = text_x + 1, .y = text_y + 1 },
@@ -836,7 +808,6 @@ const ScrollView = struct {
 };
 
 fn scrollWheel(app: *ScrollApp, now: *u64, x: f32, y: f32, down: f32) void {
-    // Offsets follow the delta, inverted by `window.wheel_delta_inverted`.
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = x, .y = y },
@@ -854,8 +825,6 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    // The first emit measures the overflow, so the scrollbar's clip needs one
-    // more frame; after it the content is steady and nothing re-renders.
     try testing.expect(app.window.render_requested);
     now += 1;
     app.tick(now);
@@ -868,7 +837,6 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     view = ScrollView.read(&app.window);
     try testing.expectEqual(@as(f32, 20), view.inner_offset);
     try testing.expectEqual(@as(f32, 0), view.outer_offset);
-    // The inner box moved 10 of the 50 to its end, so it keeps the wheel.
     scrollWheel(app, &now, inner_x, inner_y, 50);
     view = ScrollView.read(&app.window);
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
@@ -1135,7 +1103,6 @@ fn followRowTop(app: *FollowApp, index: u32) f32 {
     for (frame.hits[0..frame.hit_count]) |*record| {
         if (record.id == log) box_top = record.bounds.y;
     }
-    // A row's hit is clipped by the box, so read its laid-out top instead.
     for (app.window.nodes[0..app.window.node_count], 0..) |*node, position| {
         if (node.id != log.child(.{ .index = index })) continue;
         row_top = app.window.layout.elements.items()[position].computed.bounding_box.y;
@@ -1260,7 +1227,6 @@ fn mouseWith(x: f32, y: f32, button: gooey.input.MouseButton) gooey.input.MouseE
     return event;
 }
 
-/// The scroll check's app, ticked twice so the outer box's bar is laid out.
 fn scrollAppReady(app: *ScrollApp, now: *u64) !void {
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     app.tick(now.*);
@@ -1399,8 +1365,6 @@ const ReadsApp = gooey.App(ReadsState, readsRender, .{
     .limits = gooey.ResourceLimits.small,
 });
 
-/// A 60 px scroll box of three 30 px rows under a 20 px spacer, which reads
-/// its own position and bounds before rendering, as `List` does.
 fn readsRender(cx: *Cx) void {
     const state = cx.state(ReadsState);
     const key = gooey.Key{ .name = "reads" };
@@ -1594,9 +1558,6 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     try testing.expect(!comboboxState(app).expanded);
 }
 
-/// A button in content beside a small modal that does not cover it, for the
-/// modal blocking check: the modal's own records never reach the button, so
-/// only the blocking rule keeps the pointer off it.
 const BlockState = struct {
     modal_open: bool = true,
     below_clicks: u32 = 0,
@@ -1672,7 +1633,7 @@ fn overlayCombobox(app: *nested_overlay.App) *const internals.records.A11yNode {
     for (frame.a11y[0..frame.a11y_count]) |*node| {
         if (node.role == .combobox) return node;
     }
-    unreachable; // The example's modal always shows its Select.
+    unreachable;
 }
 
 fn overlayComboboxExpanded(app: *nested_overlay.App) bool {
@@ -1691,7 +1652,6 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
     clickAt(app, &now, combobox.x + combobox.width / 2, combobox.y + combobox.height / 2);
     try testing.expect(overlayComboboxExpanded(app));
     const frame = app.window.rendered();
-    // Content has no hit records here, so the modal's are the first.
     const modal_start = frame.modal_hit_start;
     const modal_fragment = frame.hits[modal_start].fragment;
     try testing.expect(modal_fragment > 0);
@@ -1814,7 +1774,6 @@ const ScriptedDialog = struct {
                 @memcpy(self.saved_name[0..name.len], name);
                 self.saved_name_len = @intCast(name.len);
                 std.debug.assert(std.mem.eql(u8, options.directory.?, "/tmp"));
-                // The window's copy, not the handler's state.
                 const copy = self.window.dialog_request_bytes;
                 std.debug.assert(name.ptr == copy.ptr + "/tmp".len);
             },
@@ -1853,7 +1812,6 @@ test "a file dialog opened from a handler runs on the main thread after the hand
         const built = app.window.frame_number;
         now += 1;
         app.tick(now);
-        // No frame of the state before the outcome; the render waits for it.
         try testing.expectEqual(built, app.window.frame_number);
         try testing.expect(app.window.render_requested);
         now += 1;
@@ -1876,12 +1834,6 @@ test "a file dialog opened from a handler runs on the main thread after the hand
 }
 
 test "a second request for a file dialog is refused, not a panic" {
-    // Two clicks on Open queued before one tick once panicked: the second
-    // handler found the first's request waiting (found by the VOPR's
-    // file_dialog app). Now the second is refused with DialogBusy, at the
-    // call site. Then the dialog table fills exactly: with both of `nano`'s
-    // slots held, a click is refused; an answer frees a slot for a click
-    // routed after it in the same drain, but not for one routed before.
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1900,22 +1852,22 @@ test "a second request for a file dialog is refused, not a panic" {
     try testing.expectEqual(@as(u32, 0), app.window.queue.count);
     try testing.expectEqual(built + 1, app.window.frame_number);
 
-    pushClicks(app, 1); // The last free slot.
+    pushClicks(app, 1);
     now += 1;
     app.tick(now);
     try testing.expectEqual(@as(u32, 2), service.count);
-    pushClicks(app, 1); // One past the table.
+    pushClicks(app, 1);
     now += 1;
     app.tick(now);
     try testing.expectEqual(@as(u32, 2), service.count);
     try testing.expectEqual(@as(u32, 2), app.state.refused);
 
-    pushClicks(app, 1); // Before the answer: still refused.
+    pushClicks(app, 1);
     app.window.queue.push(.{ .completion = .{
         .request_id = service.ids[0],
         .outcome = .cancelled,
     } });
-    pushClicks(app, 1); // After it: opens in the freed slot.
+    pushClicks(app, 1);
     now += 1;
     app.tick(now);
     try testing.expectEqual(@as(u32, 1), app.state.cancelled);
@@ -1936,12 +1888,6 @@ fn pushClicks(app: *DialogApp, count: u32) void {
 }
 
 test "a dialog's paths reach the app after typed text filled the queue's text bytes" {
-    // The Linux host queues a portal dialog's outcome between ticks
-    // (`pollDialog`). Paths once shared the queue's text bytes with typed
-    // text, which is cut to the room left and so can fill them: the
-    // outcome then panicked with "text bytes exhausted". Each request id
-    // now has its own path room in the queue. The ring's route, which
-    // copies into the queue at the drain, is checked the same way.
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1976,7 +1922,6 @@ test "a dialog's paths reach the app after typed text filled the queue's text by
     app.tick(now);
     try testing.expect(app.window.dialog_handlers[service.ids[0]] == null);
     try testing.expect(app.window.dialog_handlers[service.ids[1]] == null);
-    // The ring's completion is routed after the queue's, so it shows.
     try testing.expectEqual(@as(u32, 2), app.state.path_count);
     try testing.expectEqualStrings(ringed.bytes, app.state.path_bytes[0..app.state.path_len]);
 }
@@ -1998,7 +1943,6 @@ test "a file dialog that stays open completes later through the queue" {
         const built = app.window.frame_number;
         now += 1;
         app.tick(now);
-        // Nothing waited on the dialog, so the click's frame is built.
         try testing.expectEqual(built + 1, app.window.frame_number);
         try testing.expectEqual(opened + 1, service.count);
         try testing.expect(app.window.dialog_handlers[service.ids[opened]] != null);
@@ -2033,8 +1977,6 @@ test "a file dialog that stays open completes later through the queue" {
 }
 
 test "counter and todo run their traces with no allocation after init" {
-    // The lifecycle guard panics on any allocation while running, so finishing a
-    // trace proves none happened.
     inline for (.{
         .{ counter.App, counter.render, &traces.counter },
         .{ todo.App, todo.render, &traces.todo },
@@ -2093,7 +2035,6 @@ test "a frame in flight defers the next build while input keeps draining" {
 
     tick.presentBuilt(window);
     try testing.expect(!window.frame_in_flight.load(.acquire));
-    // Presented but not yet flipped: the query still sees the old frame.
     try testing.expectEqual(first, window.rendered().frame_number);
     try testing.expect(tick.tickMain(&driver.app, window, now + 3));
     try testing.expectEqual(first + 1, window.rendered().frame_number);
@@ -2210,8 +2151,6 @@ fn deepRender(cx: *Cx) void {
     cx.render(DeepBoxes{ .remaining = gooey.ResourceLimits.nano.build.box_depth_max - 1 });
 }
 
-/// Two padded boxes per component level, so the component depth budget
-/// (64) is not what limits the nesting; a 10 px box at the bottom.
 const DeepBoxes = struct {
     remaining: u32,
 
@@ -2417,8 +2356,6 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     var starts: [8]internals.records.Rect = undefined;
     try testing.expectEqual(@as(u32, 5), lineStarts(&app.window, &starts));
     const reference = starts[4];
-    // The last line, 103.5 px, is cut to 95.5 at the 100 px content width
-    // and centred there.
     const expected_x = [_]f32{ 20.5, 76, 42, 2.25 };
     const expected_y = [_]f32{ -60, -42, -24, -12 };
     for (starts[0..4], expected_x, expected_y) |start, x, y| {
@@ -2434,7 +2371,6 @@ const AlignCase = struct {
     scrolled: bool = false,
 
     pub fn render(self: AlignCase, cx: *Cx) void {
-        // A scroll box retains its offset under its key.
         const key: ?gooey.Key = if (self.scrolled) .{ .name = "scrolled" } else null;
         cx.render(ui.box(.{ .key = key, .style = .{
             .direction = self.direction,
@@ -2703,7 +2639,6 @@ test "pressClaims takes presses on controls and leaves empty chrome to the windo
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    // The first emit measures the list's overflow; its track needs a second.
     now += 1;
     app.tick(now);
     const query = internals.Query{ .window = &app.window };
@@ -2730,7 +2665,6 @@ test "pressClaims takes presses on controls and leaves empty chrome to the windo
 
 const InsetState = struct {};
 
-/// Headless, the host is the test.
 const InsetApp = gooey.App(InsetState, insetRender, .{
     .title = "Inset",
     .width = 300,
@@ -3011,7 +2945,7 @@ fn animationSettle(app: *animation.App, now: *u64) u32 {
     const built = app.window.frame_number;
     var ticks: u32 = 0;
     while (app.window.renderDeadlineNs() != null or app.window.render_requested) : (ticks += 1) {
-        assert(ticks < 240); // Four seconds: every animation here is shorter.
+        assert(ticks < 240);
         now.* += 16 * std.time.ns_per_ms;
         app.tick(now.*);
     }
@@ -3165,7 +3099,6 @@ test "accessible_form validates, announces, and submits on the core" {
     try testing.expectEqual(@as(?u16, 3), radio.set_size);
     try testing.expect(!radio.state.checked);
 
-    // The announcement rides the one frame the submit builds.
     const submit = formReveal(app, &now, .button, "Submit registration form");
     const submit_x = submit.x + submit.width / 2;
     const submit_y = submit.y + submit.height / 2;
@@ -3221,8 +3154,6 @@ const FolderDialog = struct {
     }
 };
 
-/// A dialog service whose dialogs stay open: it records each request id and
-/// returns no outcome, as Linux's portal host does.
 const DeferredDialog = struct {
     ids: [3]u32 = undefined,
     count: u32 = 0,
@@ -3256,7 +3187,6 @@ fn nodeNamed(
     return null;
 }
 
-/// The file rows the list built this frame: buttons other than the dialog's.
 fn editorRowsBuilt(app: *code_editor.App) u32 {
     const frame = app.window.rendered();
     var count: u32 = 0;
@@ -3273,8 +3203,6 @@ fn editorClickRow(app: *code_editor.App, now: *u64, name: []const u8) void {
     clickAt(app, now, row.x + row.width / 2, row.y + row.height / 2);
 }
 
-/// Resize the window to `height` and settle: the resize renders, then the
-/// emit that measures the list's new viewport may ask for one more.
 fn editorResize(app: *code_editor.App, now: *u64, height: f32) void {
     app.window.queue.push(.{ .window = .{ .resized = .{
         .width = 1000,
@@ -3305,8 +3233,6 @@ fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
     }
 }
 
-/// `line1024.txt` holds a line of 1024 two-byte codepoints, at the shaping
-/// bound in codepoints but twice it in bytes; `line1025.txt` is one past.
 fn editorFolder(dir: std.Io.Dir) !void {
     const io = testing.io;
     var name_buffer: [16]u8 = undefined;
@@ -3346,8 +3272,6 @@ test "code_editor's editor fills its panel at any window height" {
         const panel_bottom = height - 16 - 8;
         try testing.expect(editor.y + editor.height <= panel_bottom);
         try testing.expect(editor.y + editor.height > panel_bottom - line_height);
-        // Settled: the one render the stale height asked for is spent, and
-        // nothing more is pending, so an idle window draws no more frames.
         now += 1;
         app.tick(now);
         try testing.expect(app.window.renderDeadlineNs() == null);
@@ -3387,8 +3311,6 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     try testing.expect(built >= 10);
     try testing.expect(built < 30);
     try testing.expect(nodeNamed(&app.window, .button, "Notes.md") == null);
-    // A taller window shows more rows: its render builds against the old
-    // viewport, and the emit that measures the new one asks for another.
     editorResize(app, &now, 1000);
     try testing.expect(editorRowsBuilt(app) >= built + 10);
     try testing.expect(nodeNamed(&app.window, .button, "Notes.md") == null);
@@ -3432,8 +3354,6 @@ fn editorLines(dir: std.Io.Dir, name: []const u8, bytes: usize) !void {
     try dir.writeFile(testing.io, .{ .sub_path = name, .data = data });
 }
 
-/// The editor's accessibility value, which must be whole lines of `source`
-/// within `a11y.value_bytes_max`; returns where it starts in `source`.
 fn editorValueStart(app: *code_editor.App) !usize {
     const node = nodeNamed(&app.window, .textarea, "Enter your code here...").?;
     const value = app.window.rendered().text(node.value).?;
@@ -3752,7 +3672,6 @@ test "a List of one row height takes its gap and padding into the rows in view" 
     try testing.expectEqual(@as(f32, 1000 * 38 - 8 + 16), listOffset(&app.window).content_height);
 }
 
-/// The list's spacers have no width, so they are not counted.
 fn listChildren(window: *internals.window.Window, rows: []internals.records.Rect) struct {
     list: internals.records.Rect,
     count: u32,
@@ -3795,7 +3714,6 @@ test "virtual_list sizes each chat bubble to its measured text, to the last" {
     children = listChildren(&app.window, &rows);
     const end = rows[children.count - 1];
     const list_bottom = children.list.y + children.list.height - 8;
-    // The offset sums 1,000 measured heights in f32: within a hundredth of a pixel.
     try testing.expectApproxEqAbs(list_bottom, end.y + end.height, 0.01);
     try expectBubblesFit(&app.window);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
@@ -4045,7 +3963,6 @@ test "lucide_demo builds the icon rows in view and lights the cell under the poi
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     var now: u64 = 0;
-    // Rasterization is budgeted per frame; settle until every icon is drawn.
     var settle: u32 = 0;
     while (settle < 200) : (settle += 1) {
         app.tick(now);
@@ -4063,8 +3980,6 @@ test "lucide_demo builds the icon rows in view and lights the cell under the poi
     for (frame.paint[0..frame.paint_count]) |record| {
         if (record == .sprite and record.sprite.atlas == .svg) sprites += 1;
     }
-    // Rows past the clip are built and drawn but hit nothing, so every
-    // whole row in view has a sprite per cell, and some rows below do too.
     try testing.expectEqual(@as(u32, 0), sprites % 16);
     try testing.expect(sprites >= count);
     try testing.expect(sprites <= count + 3 * 16);
@@ -4091,7 +4006,6 @@ test "lucide_demo builds the icon rows in view and lights the cell under the poi
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// Counts the image worker's wakes, as a host's `scheduleTick` would.
 const WakeCounter = struct {
     count: std.atomic.Value(u32) = .init(0),
 
@@ -4126,8 +4040,6 @@ fn imageSprites(
     return count;
 }
 
-/// Resize the window to `height` before its first frame, so a test that
-/// checks every element's paint sees content a scroll box would cull.
 fn showWhole(app: anytype, height: f32) void {
     assert(app.window.frame_number == 0);
     assert(height > app.window.height);
@@ -4146,7 +4058,6 @@ test "images: one decode lands off the main thread and draws every cell" {
     var wake = WakeCounter{};
     app.window.images.bindWake(.{ .context = &wake, .wake = WakeCounter.wake });
     defer app.window.images.bindWake(null);
-    // Tall enough to show every cell: a cell scrolled out draws nothing.
     showWhole(app, 2_000);
     var now: u64 = 0;
     app.tick(now);
@@ -4235,7 +4146,6 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 2 });
     defer app.deinitHeadless();
-    // Tall enough to show every chart: a chart scrolled out draws nothing.
     showWhole(app, 2_000);
     app.tick(0);
 
@@ -4289,12 +4199,6 @@ fn isRevenueArea(fill: ui.Color) bool {
         @abs(fill.b - line.b) < 0.001;
 }
 
-/// The revenue area must be triangles that tile the region under its line
-/// exactly once: abutting quads left anti-aliased seams (vertical stripes),
-/// and overlapping triangles would blend twice. Methodology: no quad has the
-/// area's colour, and the area's triangles sum to the trapezoids between the
-/// revenue polyline (the frame's first) and the baseline, the area's lowest
-/// point, worked out from the polyline's own points.
 fn checkRevenueArea(frame: *const internals.records.Frame) !void {
     var line: ?[]const internals.records.MeshPoint = null;
     var area_triangles: f32 = 0;
@@ -4470,8 +4374,6 @@ test "the inspector selects the element under a press and shows its source" {
     try testing.expect(app.window.debugger.info == null);
 }
 
-/// `.nano` with records cut to what `fullPaint` fills: every quad, glyph, and
-/// paint record the app declares.
 const full_limits = blk: {
     var limits = gooey.ResourceLimits.nano;
     limits.records.paint_record_count_frame_max = 4_096;
@@ -4507,8 +4409,6 @@ fn paintCounts(frame: *const internals.records.Frame) PaintCounts {
     return counts;
 }
 
-/// Fill the frame to exactly its declared glyphs, then quads, then records, all
-/// in view so none is culled when packed.
 fn fullPaint(_: *const u8, painter: *ui.Painter) void {
     const paint_limits = full_limits.paint;
     const frame = internals.emit.targetOf(painter).window.built();
@@ -4692,7 +4592,6 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     app.tick(now);
     try testing.expectEqual(@as(u32, 20), app.state.count);
     try testing.expectEqual(add_before, todoButton(app, "Add").?);
-    // "20 left" is wider than "0 left", so only Clear completed's row holds.
     try testing.expectApproxEqAbs(clear_before.y, todoButton(app, "Clear completed").?.y, 0.01);
     try testing.expect(add_before.x + add_before.width <= 480 - 24);
     try testing.expect(clear_before.y + clear_before.height <= 560 - 24);
@@ -4701,7 +4600,6 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     _ = todoRowCount(app, &first_top);
     const all = todoButton(app, "All").?;
     try testing.expect(first_top > all.y + all.height);
-    // Offsets follow the delta, inverted by `window.wheel_delta_inverted`.
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 100, .y = 300 },
@@ -4758,8 +4656,6 @@ fn expectFocused(window: *internals.window.Window, role: gooey.ui.Role, name: []
     try testing.expectEqual(role, node.role);
 }
 
-/// The focus rings in the frame on screen: transparent quads with a 2 px
-/// border in the theme's `border_focus`. Returns how many, and the last.
 fn focusRings(window: *internals.window.Window, ring: *internals.records.Rect) u32 {
     const frame = window.rendered();
     const color = window.theme.border_focus;
@@ -4775,7 +4671,6 @@ fn focusRings(window: *internals.window.Window, ring: *internals.records.Rect) u
     return count;
 }
 
-/// A ring 2 px outside `bounds` and 2 px wide.
 fn expectRingAround(window: *internals.window.Window, bounds: internals.records.Rect) !void {
     var ring: internals.records.Rect = undefined;
     try testing.expectEqual(@as(u32, 1), focusRings(window, &ring));
@@ -4812,8 +4707,6 @@ test "Tab walks accessible_form's controls in tree order and draws the focus rin
     for (order) |stop| {
         pressKey(app, &now, .tab, .{});
         try expectFocused(&app.window, stop.role, stop.name);
-        // The form scrolls each control and its 4 px ring into the window,
-        // up to float rounding of the offset.
         const bounds = focusedNode(&app.window).?.bounds;
         try testing.expect(bounds.y - 4 >= -0.01);
         try testing.expect(bounds.y + bounds.height + 4 <= 800.01);
@@ -4860,13 +4753,10 @@ test "Enter and Space click the focused control once per press" {
 
     pressKey(app, &now, .tab, .{ .shift = true });
     try expectFocused(&app.window, .radio, "Email");
-    // Unselect it behind the frame's back, so the click shows.
     app.state.contact_method = .phone;
     pressKey(app, &now, .keypad_enter, .{});
     try testing.expect(formNode(app, .radio, "Email").?.state.checked);
 
-    // A text field has no `on_click`, so Space there clicks nothing; its
-    // text arrives as text input.
     formClick(app, &now, .textbox, "Full name, required field");
     pressKey(app, &now, .space, .{});
     app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "Ada" } } });
@@ -4989,8 +4879,6 @@ test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
     try testing.expectApproxEqAbs(content_height, scroll.content_height, 0.01);
     const offset_max = content_height - scroll.viewport.height;
     try testing.expectApproxEqAbs(offset_max, scroll.offset_y, 0.01);
-    // Laid out at the new offset, the content may measure an ulp shorter,
-    // and the clamp moves down that ulp once; then nothing is requested.
     const settle_frame_max: u32 = 2;
     var frame: u32 = 0;
     while (frame < settle_frame_max and app.window.render_requested) : (frame += 1) {
@@ -5170,8 +5058,6 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .combobox, "Level");
 
-    // Reopening starts on the chosen option, which alone is selected for
-    // the screen reader; Esc closes without choosing.
     pressKey(app, &now, .space, .{});
     try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .option, "Three");
@@ -5333,7 +5219,7 @@ fn controlNode(
         if (node.role != role) continue;
         if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
     }
-    unreachable; // Every control the tests name is always built.
+    unreachable;
 }
 
 fn controlValue(app: *ControlsApp, name: []const u8) []const u8 {
@@ -5341,8 +5227,6 @@ fn controlValue(app: *ControlsApp, name: []const u8) []const u8 {
     return app.window.rendered().text(node.value) orelse "";
 }
 
-/// Window x of `fraction` along a slider's travel: its thumb's centre spans
-/// the slider less half a 20 px thumb at each end.
 fn sliderX(bounds: internals.records.Rect, fraction: f32) f32 {
     assert(fraction >= 0);
     assert(fraction <= 1);
@@ -5373,7 +5257,6 @@ test "a Switch flips on a click, Enter, and Space, and a disabled one takes neit
     clickAt(app, &now, wifi.x + 10, wifi.y + wifi.height / 2);
     try testing.expect(app.state.wifi);
 
-    // The disabled switch is no tab stop and ignores a press.
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .slider, "Volume");
     const lock = controlNode(app, .switch_, "Locked").bounds;
@@ -5394,7 +5277,6 @@ test "a Slider moves by stops from the keyboard and reports its value and range"
     try expectFocused(&app.window, .slider, "Volume");
     try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     const Step = struct { key: gooey.input.KeyCode, value: f32 };
-    // Step 5 over 0 to 100: a page is 2 steps, a tenth of the range.
     const steps = [_]Step{
         .{ .key = .right, .value = 55 },
         .{ .key = .up, .value = 60 },
@@ -5423,7 +5305,6 @@ test "a Slider moves by stops from the keyboard and reports its value and range"
     try testing.expectEqual(@as(f32, 5), range.now);
     try testing.expectEqual(gooey.ui.Orientation.horizontal, range.orientation);
 
-    // A continuous slider moves a hundredth of its range, a tenth per page.
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .slider, "Level");
     pressKey(app, &now, .right, .{});
@@ -5434,8 +5315,6 @@ test "a Slider moves by stops from the keyboard and reports its value and range"
     pressKey(app, &now, .end, .{});
     try testing.expectEqual(@as(f32, 1), app.state.level);
 
-    // Step 3 over 0 to 10 stops at 9; a value between stops moves first to
-    // the stop on the key's side.
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .slider, "Rating");
     pressKey(app, &now, .left, .{});
@@ -5447,7 +5326,6 @@ test "a Slider moves by stops from the keyboard and reports its value and range"
     pressKey(app, &now, .right, .{});
     try testing.expectEqual(@as(f32, 9), app.state.rating);
 
-    // The disabled slider is no tab stop.
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "After");
     try testing.expect(controlNode(app, .slider, "Frozen").state.disabled);
@@ -5467,7 +5345,6 @@ test "a Slider jumps to a press, follows a drag, clamps, and Escape restores it"
     scrollMouse(app, &now, .{ .mouse_down = mouse(sliderX(bounds, 0.25), y) });
     try testing.expectEqual(@as(f32, 25), app.state.volume);
     try testing.expect(controlNode(app, .slider, "Volume").state.focused);
-    // 0.62 of the way lands nearer 60 than 65.
     scrollMouse(app, &now, dragged(sliderX(bounds, 0.62), y));
     try testing.expectEqual(@as(f32, 60), app.state.volume);
     scrollMouse(app, &now, dragged(-500, y + 300));
@@ -5479,7 +5356,6 @@ test "a Slider jumps to a press, follows a drag, clamps, and Escape restores it"
     try testing.expectEqual(@as(f32, 40), app.state.volume);
     try testing.expectEqualStrings("40", controlValue(app, "Volume"));
 
-    // Escape mid-drag restores the value the press began with.
     scrollMouse(app, &now, .{ .mouse_down = mouse(sliderX(bounds, 0.8), y) });
     scrollMouse(app, &now, dragged(sliderX(bounds, 0.9), y));
     try testing.expectEqual(@as(f32, 90), app.state.volume);
@@ -5495,7 +5371,6 @@ test "a Slider jumps to a press, follows a drag, clamps, and Escape restores it"
     scrollMouse(app, &now, .{ .mouse_up = right });
     try testing.expectEqual(@as(f32, 40), app.state.volume);
 
-    // A disabled slider ignores a press and a drag.
     const frozen = controlNode(app, .slider, "Frozen").bounds;
     const frozen_y = frozen.y + frozen.height / 2;
     scrollMouse(app, &now, .{ .mouse_down = mouse(sliderX(frozen, 1), frozen_y) });
@@ -5951,8 +5826,6 @@ test "splitter: the sidebar follows a drag from its press, clamped, outside the 
     try testing.expectEqual(@as(f32, 270), app.state.sidebar_width);
     try testing.expectEqual(gooey.ElementId.root, app.window.capture.id);
     try testing.expectEqual(CursorShape.resize_left_right, app.window.cursor);
-    // AppKit delivers the first move after a drag that left the window as an
-    // entry, not a move: it must resolve the cursor all the same.
     scrollMouse(app, &now, .{ .mouse_entered = mouse(600, y) });
     try testing.expectEqual(CursorShape.default, app.window.cursor);
     scrollMouse(app, &now, dragged(700, y));
@@ -6170,7 +6043,6 @@ fn dragDropRecord(
     right: bool,
 ) *const internals.records.HitRecord {
     const frame = app.window.rendered();
-    // The lists render left, then right, so tree order tells them apart.
     var lists_seen: u32 = 0;
     for (frame.hits[0..frame.hit_count]) |*record| {
         if (id) |card| {
@@ -6261,7 +6133,6 @@ const DropProbe = struct {
     other_drops: u32 = 0,
     blocked_drops: u32 = 0,
     dropped: ?u32 = null,
-    /// `dropPayload` of another type than the payload's gave null.
     other_type_null: bool = false,
     preview_clicks: u32 = 0,
 
@@ -6597,11 +6468,6 @@ const KeyProbeApp = gooey.App(KeyProbe, keyProbeRender, .{
 });
 
 test "a key's characters reach the app after typed text filled the queue's text bytes" {
-    // macOS key events carry `characters`. They once shared the queue's
-    // text bytes with typed text, which is cut to the room left and so can
-    // fill them: a key pressed before the next tick then panicked with
-    // "text bytes exhausted". Each event slot now keeps its key's
-    // characters, so the handler reads exactly what the key typed.
     const app = try testing.allocator.create(KeyProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6626,7 +6492,6 @@ test "a key's characters reach the app after typed text filled the queue's text 
         .characters_ignoring_modifiers = "e",
         .is_repeat = false,
     } } });
-    // The platform's string is gone by the drain, as an autoreleased one is.
     @memset(&characters, 0);
     now += 1;
     app.tick(now);
@@ -6815,8 +6680,6 @@ test "drag_drop: keyboard drags during one frame in flight keep only the newest 
     try testing.expect(tick.tickMain(app, window, now));
     try testing.expectEqual(@as(u32, 0), window.announcements.count);
     tick.presentBuilt(window);
-    // The flip at the start of this tick hands the frame to the screen
-    // reader (`screen_reader.publish` reads the rendered frame).
     _ = tick.tickMain(app, window, now + 1);
     const delivered = window.rendered();
     try testing.expectEqual(@as(u32, 1), delivered.announcements.count);

@@ -1,20 +1,13 @@
-//! Long values are cut to whole lines around their selection, stable while the caret moves.
-
 const std = @import("std");
 const TextSelection = @import("../accessibility/element.zig").TextSelection;
 
 const assert = std.debug.assert;
 
-/// A byte range of a value, `start <= end`.
 pub const Window = struct {
     start: u32,
     end: u32,
 };
 
-/// The bytes of `value` a frame keeps: all of it within `bytes_max`, else at
-/// most `bytes_max` bytes of whole lines around `selection`, cut at code
-/// point boundaries where a line is longer. A selection longer than the
-/// budget keeps its start. `selection` ends must be code point boundaries.
 pub fn window(value: []const u8, selection: ?TextSelection, bytes_max: u32) Window {
     assert(bytes_max > 0);
     assert(value.len <= std.math.maxInt(u32));
@@ -31,7 +24,6 @@ pub fn window(value: []const u8, selection: ?TextSelection, bytes_max: u32) Wind
     const raw_end = raw_start + bytes_max;
     assert(raw_start <= focus.start);
     assert(raw_end <= len);
-    // A selection past the budget keeps the bytes from its start.
     const focus_end = if (focus.end <= raw_end)
         focus.end
     else
@@ -54,10 +46,6 @@ pub fn relative(selection: TextSelection, kept: Window) TextSelection {
     return .{ .start = start, .end = end };
 }
 
-/// The window's start before snapping to a line: stable while the caret
-/// moves within half the budget, or centred on a selection longer than a
-/// quarter of the budget. Never past `len - bytes_max`, so the window ends
-/// inside the value.
 fn rawStart(len: u32, focus: TextSelection, bytes_max: u32) u32 {
     assert(len > bytes_max);
     assert(focus.end <= len);
@@ -72,9 +60,6 @@ fn rawStart(len: u32, focus: TextSelection, bytes_max: u32) u32 {
     return result;
 }
 
-/// The start of the first whole line in `[start, limit]`, or the first code
-/// point boundary at or after `start` when no line begins there. A window
-/// that starts the value keeps its start.
 fn lineStartFrom(value: []const u8, start: u32, limit: u32) u32 {
     assert(start <= limit);
     assert(limit <= value.len);
@@ -83,7 +68,6 @@ fn lineStartFrom(value: []const u8, start: u32, limit: u32) u32 {
         return start + @as(u32, @intCast(offset)) + 1;
     }
     var result = start;
-    // A UTF-8 code point has at most three continuation bytes.
     while (result < limit and !isBoundary(value, result)) : (result += 1) {
         assert(result - start < 3);
     }
@@ -91,7 +75,6 @@ fn lineStartFrom(value: []const u8, start: u32, limit: u32) u32 {
     return result;
 }
 
-/// The last code point boundary in `[floor, index]`; `floor` is one.
 fn boundaryAtOrBefore(value: []const u8, index: u32, floor: u32) u32 {
     assert(floor <= index);
     assert(isBoundary(value, floor));
@@ -103,9 +86,6 @@ fn boundaryAtOrBefore(value: []const u8, index: u32, floor: u32) u32 {
     return result;
 }
 
-/// The end of the last whole line in `[limit, end]`, or the last code point
-/// boundary at or before `end` when no line ends there. A window that ends
-/// the value keeps its end.
 fn lineEndBefore(value: []const u8, limit: u32, end: u32) u32 {
     assert(limit <= end);
     assert(end <= value.len);

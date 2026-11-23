@@ -50,7 +50,6 @@ pub fn createInstance(surface_extension_name: [*:0]const u8) InstanceError!Insta
         .applicationVersion = 1,
         .pEngineName = "Gooey",
         .engineVersion = 1,
-        // 1.1 for `vkGetPhysicalDeviceProperties2` (`maxMemoryAllocationSize`).
         .apiVersion = vk.API_VERSION_1_1,
     };
 
@@ -59,7 +58,6 @@ pub fn createInstance(surface_extension_name: [*:0]const u8) InstanceError!Insta
         std.log.warn("Validation layers requested but VK_LAYER_KHRONOS_validation not available", .{});
     }
 
-    // `VK_EXT_debug_utils` is last so dropping it is a shorter count.
     const extensions = [_][*:0]const u8{
         "VK_KHR_surface",
         surface_extension_name,
@@ -265,7 +263,6 @@ fn debugCallback(
 ) callconv(.c) vk.Bool32 {
     _ = msg_type;
 
-    // The loader owns `callback_data`; treat both pointers as untrusted.
     const data = callback_data orelse return vk.FALSE;
     const message: [*:0]const u8 = data.pMessage orelse "unknown";
 

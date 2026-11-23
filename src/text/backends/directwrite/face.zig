@@ -1,7 +1,3 @@
-//! Units match the CoreText backend: one font size unit is one logical pixel
-//! (one DirectWrite DIP), and rasterization runs at `font_size * scale` device
-//! pixels.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const dw = @import("bindings.zig");
@@ -19,19 +15,12 @@ const FontFace = font_face_mod.FontFace;
 
 const log = std.log.scoped(.directwrite);
 
-/// Longest family name `init` accepts, in UTF-8 bytes. A UTF-8 name never has
-/// more UTF-16 code units than bytes, so the UTF-16 buffer is this plus one
-/// for the terminator. Installed family names are far shorter.
 const family_name_bytes_max: u32 = 255;
 
-/// Families for the system styles and the CSS generic names. These ship with
-/// every supported Windows release.
 const family_sans_serif = "Segoe UI";
 const family_monospace = "Consolas";
 const family_serif = "Times New Roman";
 
-/// CSS `font-stretch` percentage for each `DWRITE_FONT_STRETCH` value, with
-/// Fontconfig's rounding of the fractional widths so equal requests rank alike.
 const stretch_percent_by_dwrite_stretch = [_]u16{ 100, 50, 63, 75, 87, 100, 113, 125, 150, 200 };
 
 comptime {
@@ -40,29 +29,21 @@ comptime {
 }
 
 pub const DirectWriteFace = struct {
-    /// The process-wide shared factory; this face holds one reference.
     factory: *dw.IDWriteFactory2,
     font_face: *dw.IDWriteFontFace,
-    /// Stateless and thread-safe; the shaper borrows it.
     text_analyzer: *dw.IDWriteTextAnalyzer,
     metrics: Metrics,
     design_units_per_em: u16,
-    /// Glyph ids at or past this are not in the font.
     glyph_count: u16,
 
     const Self = @This();
 
-    /// The name resolves to an installed family; `font_match.select` picks one
-    /// of its real faces by the CSS matching rule, as the other backends do.
-    /// Nothing is synthesized, and DirectWrite's simulated faces are skipped.
-    /// An uninstalled family renders as Segoe UI, with a warning.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         assert(name.len > 0);
         assert(size > 0);
         return initFamily(familyForGenericName(name), size, variant);
     }
 
-    /// Load one variant of a system family, with the same policy as `init`.
     pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         assert(size > 0);
         const family = switch (style) {
@@ -132,8 +113,6 @@ pub const DirectWriteFace = struct {
             1,
             &glyph_ids,
         );
-        // Fails only for invalid arguments: a codepoint the font lacks maps
-        // to glyph 0 with S_OK, and every argument here is valid by type.
         assert(dw.succeeded(result));
         if (glyph_ids[0] != 0) assert(glyph_ids[0] < self.glyph_count);
         return glyph_ids[0];
@@ -143,7 +122,6 @@ pub const DirectWriteFace = struct {
         return self.glyphMetrics(glyph_id).advance_x;
     }
 
-    /// A glyph id outside the font reports zero metrics.
     pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
         if (glyph_id < self.glyph_count) {
             const design = designGlyphMetrics(self.font_face, glyph_id);
@@ -161,15 +139,6 @@ pub const DirectWriteFace = struct {
         }
     }
 
-    /// Render a glyph at `font_size * scale` device pixels, shifted right by
-    /// `subpixel_x` and up by `subpixel_y` device pixels, into `buffer` as
-    /// tightly packed 8-bit coverage rows.
-    ///
-    /// `buffer_size` is the capacity of `buffer` in bytes. A glyph wider or
-    /// taller than `limits.MAX_GLYPH_SIZE` comes back blank, with its advance,
-    /// rather than cropped, so only that glyph is missing from its run. One
-    /// within the limit that does not fit `buffer_size` fails with
-    /// `GlyphTooLarge`.
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
@@ -219,12 +188,8 @@ pub const DirectWriteFace = struct {
             .advance_x = advance_x,
             .is_color = false,
         };
-        // Spaces and other blank glyphs cover no pixels.
         if (bounds.right <= bounds.left or bounds.bottom <= bounds.top) return blank;
         if (!fitsGlyphLimit(&bounds)) {
-            // Drawn blank rather than failed: an error fails the glyph's
-            // whole run in `resolveGlyphBatch`, and the cache keeps a blank
-            // glyph, so this warns once per glyph size, not every frame.
             log.warn("glyph {d} at {d:.1} px is {d}x{d} device pixels, over " ++
                 "MAX_GLYPH_SIZE {d}; drawing it blank", .{
                 glyph_id,
@@ -237,8 +202,6 @@ pub const DirectWriteFace = struct {
         }
 
         try rasterize(analysis, &bounds, buffer[0..buffer_size]);
-        // Bounds are relative to the pen in device pixels, y down; the cache
-        // wants the top edge as a height above the baseline.
         return .{
             .width = @intCast(bounds.right - bounds.left),
             .height = @intCast(bounds.bottom - bounds.top),
@@ -249,7 +212,6 @@ pub const DirectWriteFace = struct {
         };
     }
 
-    /// Design units to logical pixels at `font_size`.
     fn unitScale(self: *const Self, font_size: f32) f32 {
         assert(font_size > 0);
         assert(self.design_units_per_em > 0);
@@ -257,7 +219,6 @@ pub const DirectWriteFace = struct {
     }
 };
 
-/// The family that stands in for a CSS generic name, or `name` itself.
 fn familyForGenericName(name: []const u8) []const u8 {
     assert(name.len > 0);
     if (std.ascii.eqlIgnoreCase(name, "monospace")) return family_monospace;
@@ -267,8 +228,6 @@ fn familyForGenericName(name: []const u8) []const u8 {
     return name;
 }
 
-/// A reference to the process-wide shared factory. DirectWrite owns the
-/// singleton; each caller holds and releases one reference.
 fn createFactory() !*dw.IDWriteFactory2 {
     var factory: ?*anyopaque = null;
     const result = dw.DWriteCreateFactory(
@@ -277,7 +236,6 @@ fn createFactory() !*dw.IDWriteFactory2 {
         &factory,
     );
     if (!dw.succeeded(result)) {
-        // IDWriteFactory2 needs Windows 8.1; Gooey supports Windows 10 and later.
         logFailure("DWriteCreateFactory(IDWriteFactory2)", result);
         return error.DirectWriteUnavailable;
     }
@@ -285,8 +243,6 @@ fn createFactory() !*dw.IDWriteFactory2 {
     return @ptrCast(@alignCast(factory.?));
 }
 
-/// The font face CSS matching selects for `variant` within `family`, or
-/// within Segoe UI when `family` is not installed.
 fn createFontFace(
     factory: *dw.IDWriteFactory2,
     family: []const u8,
@@ -323,8 +279,6 @@ fn createFontFace(
     return font_face.?;
 }
 
-/// `family` from the collection, or Segoe UI with a warning when `family` is
-/// not installed.
 fn findFamily(collection: *dw.IDWriteFontCollection, family: []const u8) !*dw.IDWriteFontFamily {
     assert(family.len > 0);
     var index = try findFamilyIndex(collection, family);
@@ -350,7 +304,6 @@ fn findFamily(collection: *dw.IDWriteFontCollection, family: []const u8) !*dw.ID
     return font_family.?;
 }
 
-/// Index of the family named `family` (UTF-8), or null when not installed.
 fn findFamilyIndex(collection: *dw.IDWriteFontCollection, family: []const u8) !?u32 {
     assert(family.len > 0);
     if (family.len > family_name_bytes_max) return error.FontNameTooLong;
@@ -377,8 +330,6 @@ fn findFamilyIndex(collection: *dw.IDWriteFontCollection, family: []const u8) !?
     return if (exists != dw.FALSE) index else null;
 }
 
-/// The face of `font_family` CSS matching picks for `variant`. Simulated
-/// faces are skipped: nothing is synthesized, as on the other backends.
 fn selectFont(
     font_family: *dw.IDWriteFontFamily,
     family: []const u8,
@@ -433,8 +384,6 @@ fn familyFont(font_family: *dw.IDWriteFontFamily, index: u32) !*dw.IDWriteFont {
     return font.?;
 }
 
-/// A face's CSS weight, slant, and width. DirectWrite weights are already
-/// CSS weights; its nine widths map to CSS `font-stretch` percentages.
 fn fontCandidate(font: *dw.IDWriteFont) font_match.Candidate {
     const weight = std.math.clamp(font.vtable.GetWeight(font), 1, 1000);
     const stretch_raw = font.vtable.GetStretch(font);
@@ -458,8 +407,6 @@ fn fontCandidate(font: *dw.IDWriteFont) font_match.Candidate {
     return candidate;
 }
 
-/// Log when the chosen face's weight class or slant differs from the
-/// request, so a family without that face does not fall back silently.
 fn warnInexactFace(family: []const u8, variant: FontVariant, chosen: font_match.Candidate) void {
     const weight_requested = variant.weight().cssWeight();
     if (font_match.weightClass(chosen.weight) != weight_requested) {
@@ -491,7 +438,6 @@ fn computeMetrics(
 
     const ascender = @as(f32, @floatFromInt(font_metrics.ascent)) * unit_scale;
     const descender = @as(f32, @floatFromInt(font_metrics.descent)) * unit_scale;
-    // A negative line gap is malformed; CoreText and FreeType report >= 0.
     const line_gap = @as(f32, @floatFromInt(@max(0, font_metrics.lineGap))) * unit_scale;
 
     const glyph_m = glyphForCodepoint(font_face, 'M');
@@ -509,7 +455,6 @@ fn computeMetrics(
         .line_gap = line_gap,
         .cap_height = @as(f32, @floatFromInt(font_metrics.capHeight)) * unit_scale,
         .x_height = @as(f32, @floatFromInt(font_metrics.xHeight)) * unit_scale,
-        // Positive is above the baseline, as in `Metrics`.
         .underline_position = @as(f32, @floatFromInt(underline_position)) * unit_scale,
         .underline_thickness = @as(f32, @floatFromInt(underline_thickness)) * unit_scale,
         .line_height = ascender + descender + line_gap,
@@ -526,13 +471,10 @@ fn glyphForCodepoint(font_face: *dw.IDWriteFontFace, codepoint: u21) u16 {
     const codepoints = [1]u32{codepoint};
     var glyph_ids = [1]u16{0};
     const result = font_face.vtable.GetGlyphIndices(font_face, &codepoints, 1, &glyph_ids);
-    // Fails only for invalid arguments; see `DirectWriteFace.glyphIndex`.
     assert(dw.succeeded(result));
     return glyph_ids[0];
 }
 
-/// `IsMonospacedFont` lives on `IDWriteFontFace1`, which every face has on
-/// the Windows releases that provide `IDWriteFactory2`.
 fn isMonospaced(font_face: *dw.IDWriteFontFace) bool {
     var face1: ?*anyopaque = null;
     const result = font_face.vtable.QueryInterface(font_face, &dw.IID_IDWriteFontFace1, &face1);
@@ -546,7 +488,6 @@ fn isMonospaced(font_face: *dw.IDWriteFontFace) bool {
     return font_face1.vtable.IsMonospacedFont(font_face1) != dw.FALSE;
 }
 
-/// Design metrics for a glyph id the caller has checked against the font.
 fn designGlyphMetrics(font_face: *dw.IDWriteFontFace, glyph_id: u16) dw.DWRITE_GLYPH_METRICS {
     const glyph_ids = [1]u16{glyph_id};
     var design: [1]dw.DWRITE_GLYPH_METRICS = undefined;
@@ -557,7 +498,6 @@ fn designGlyphMetrics(font_face: *dw.IDWriteFontFace, glyph_id: u16) dw.DWRITE_G
         &design,
         dw.FALSE,
     );
-    // Fails only for a glyph id outside the font, which callers rule out.
     assert(dw.succeeded(result));
     return design[0];
 }
@@ -568,8 +508,6 @@ fn scaleGlyphMetrics(
     unit_scale: f32,
 ) GlyphMetrics {
     assert(unit_scale > 0);
-    // Ink box from the bearings: advance minus both side bearings. Signed
-    // 64-bit so negative bearings cannot overflow.
     const advance_width: i64 = design.advanceWidth;
     const advance_height: i64 = design.advanceHeight;
     const ink_width = advance_width - design.leftSideBearing - design.rightSideBearing;
@@ -592,15 +530,11 @@ fn scaleGlyphMetrics(
 
 const GlyphRunOptions = struct {
     glyph_id: u16,
-    /// Em size in device pixels.
     size_px: f32,
     subpixel_x: f32,
     subpixel_y: f32,
 };
 
-/// Grayscale, unhinted analysis of one glyph. Symmetric antialiasing with
-/// grid fitting disabled keeps the outline faithful to the subpixel origin,
-/// which the cache relies on to tell its subpixel variants apart.
 fn createGlyphRunAnalysis(
     factory: *dw.IDWriteFactory2,
     font_face: *dw.IDWriteFontFace,
@@ -632,7 +566,6 @@ fn createGlyphRunAnalysis(
         dw.DWRITE_GRID_FIT_MODE_DISABLED,
         dw.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
         options.subpixel_x,
-        // DirectWrite's y axis points down; `subpixel_y` raises the glyph.
         -options.subpixel_y,
         &analysis,
     );
@@ -644,20 +577,14 @@ fn createGlyphRunAnalysis(
     return analysis.?;
 }
 
-/// Whether non-empty glyph `bounds` fit `limits.MAX_GLYPH_SIZE` on both axes.
 fn fitsGlyphLimit(bounds: *const dw.RECT) bool {
     assert(bounds.right > bounds.left);
     assert(bounds.bottom > bounds.top);
-    // Subtracted in 64 bits: DirectWrite bounds span the whole `i32` range
-    // for degenerate outlines.
     const width: i64 = @as(i64, bounds.right) - bounds.left;
     const height: i64 = @as(i64, bounds.bottom) - bounds.top;
     return width <= limits.MAX_GLYPH_SIZE and height <= limits.MAX_GLYPH_SIZE;
 }
 
-/// Write `bounds`' coverage into `target` as packed rows of `width` bytes.
-/// `bounds` must fit `limits.MAX_GLYPH_SIZE`; a `target` smaller than the
-/// glyph is refused rather than overrun.
 fn rasterize(
     analysis: *dw.IDWriteGlyphRunAnalysis,
     bounds: *const dw.RECT,

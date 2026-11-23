@@ -1,12 +1,3 @@
-//! The swapchain, its framebuffers, and the renderer's per-image present
-//! semaphores are the only objects re-created on resize: the WSI requires a
-//! new swapchain per extent, and its images belong to the driver. Gooey
-//! bounds them instead: the extent never exceeds `ResourceLimits.window` (the
-//! caller fits it) and the image count follows the frames in flight. There is
-//! no multisampled target: the renderer draws at one sample per pixel and
-//! every pipeline anti-aliases analytically, so nothing Gooey allocates
-//! depends on the window size.
-
 const std = @import("std");
 const limits_mod = @import("../../core/limits.zig");
 const vk = @import("vulkan.zig");
@@ -28,7 +19,6 @@ pub const SwapchainResult = struct {
 pub const SwapchainError = error{
     SwapchainCreationFailed,
     ImageViewCreationFailed,
-    /// The surface offers no 8-bit UNORM format; see `chooseFormat`.
     NoUnormSurfaceFormat,
 };
 
@@ -40,17 +30,11 @@ pub const FramebufferError = error{
     FramebufferCreationFailed,
 };
 
-/// `width` and `height` are physical pixels already fitted to the window
-/// budget. The driver's own minimum image count wins when it is higher than
-/// `frame_count`. On initial creation, pass `null` for `old_swapchain`; on
-/// resize, pass the previous swapchain handle — Vulkan can recycle internal
-/// resources.
 pub fn createSwapchain(
     device: vk.Device,
     physical_device: vk.PhysicalDevice,
     surface: vk.Surface,
     extent: vk.Extent2D,
-    /// The window budget's `ResourceLimits.frame.in_flight_count`.
     frame_count: u32,
     old_swapchain: vk.Swapchain,
 ) SwapchainError!SwapchainResult {
@@ -77,22 +61,6 @@ pub fn createSwapchain(
     };
 }
 
-/// Create the single-subpass render pass: one single-sample swapchain image,
-/// cleared on load, stored, and handed to presentation.
-///
-/// Two external dependencies make every hazard on the attachment explicit:
-///
-/// - Incoming: the previous use of the image was a colour write (an earlier
-///   frame's store) followed by presentation. The acquire semaphore waits at
-///   `COLOR_ATTACHMENT_OUTPUT`, so this dependency chains from that stage and
-///   orders the load-op clear and the layout transition after the earlier
-///   write (`srcAccessMask = COLOR_ATTACHMENT_WRITE`). The old dependency had
-///   `srcAccessMask = 0`, which is the WRITE_AFTER_WRITE hazard
-///   synchronization validation reported at `vkCmdBeginRenderPass` on the
-///   shared MSAA image.
-/// - Outgoing: the store and the transition to `PRESENT_SRC_KHR` complete
-///   before anything after the pass; presentation waits on a semaphore that
-///   is signalled after `BOTTOM_OF_PIPE`.
 pub fn createRenderPass(device: vk.Device, format: vk.Format) RenderPassError!vk.RenderPass {
     std.debug.assert(device != null);
     std.debug.assert(format != vk.VK_FORMAT_UNDEFINED);
@@ -232,10 +200,6 @@ fn querySwapchainConfig(
 
 const FormatChoice = struct { format: vk.Format, color_space: vk.ColorSpaceKHR };
 
-/// An 8-bit UNORM format, preferring BGRA. Colours are sRGB-encoded and
-/// blended in gamma space, so the framebuffer must store them as written: an
-/// `_SRGB` format would encode them a second time on write and blend in
-/// linear space. Null when the surface offers none.
 fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) ?FormatChoice {
     var format_count: u32 = 0;
     _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &format_count, null);
@@ -268,7 +232,6 @@ fn choosePresentMode(physical_device: vk.PhysicalDevice, surface: vk.Surface) vk
 
     std.debug.assert(pm_count > 0);
 
-    // Prefer MAILBOX (triple-buffer vsync), fall back to FIFO (always available per spec)
     for (present_modes[0..pm_count]) |mode| {
         if (mode == vk.VK_PRESENT_MODE_MAILBOX_KHR) return mode;
     }
@@ -287,15 +250,9 @@ fn chooseCompositeAlpha(capabilities: vk.SurfaceCapabilitiesKHR) vk.CompositeAlp
     for (preferred) |alpha_mode| {
         if ((capabilities.supportedCompositeAlpha & alpha_mode) != 0) return alpha_mode;
     }
-    // Per Vulkan spec, at least one mode must be supported — assert covers this
     unreachable;
 }
 
-/// The requested extent, already fitted to the window budget by the caller,
-/// clamped to what the surface accepts. A surface that dictates its extent
-/// (`currentExtent` defined) can only be smaller than the budget-fitted
-/// request when it is also smaller than the window, so it is honoured only
-/// when it fits inside the request.
 fn chooseExtent(capabilities: vk.SurfaceCapabilitiesKHR, requested: vk.Extent2D) vk.Extent2D {
     std.debug.assert(requested.width > 0);
     std.debug.assert(requested.height > 0);
@@ -311,10 +268,6 @@ fn chooseExtent(capabilities: vk.SurfaceCapabilitiesKHR, requested: vk.Extent2D)
     return extent;
 }
 
-/// The driver's minimum image count plus one spare image per frame in flight
-/// above `MIN_FRAMES_IN_FLIGHT`: the minimum at two frames (`nano`, `small`),
-/// and the minimum plus one at three, the count every budget used before
-/// frames in flight became a budget field.
 fn chooseImageCount(capabilities: vk.SurfaceCapabilitiesKHR, frame_count: u32) u32 {
     std.debug.assert(frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
     var count = capabilities.minImageCount + (frame_count - limits_mod.MIN_FRAMES_IN_FLIGHT);

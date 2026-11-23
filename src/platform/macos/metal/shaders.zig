@@ -1,11 +1,3 @@
-//! One Metal source, compiled once at init, with one vertex and one fragment
-//! function per `packed_frame.Pipeline`.
-//!
-//! The structs mirror `packed_frame.zig` field for field, so `Renderer.draw`
-//! copies each instance array into its buffer unchanged. Colours arrive as
-//! straight RGBA. Every fragment function discards pixels whose centre lies
-//! outside its draw's clip rectangle (fragment `buffer(0)`), edges inclusive.
-
 const std = @import("std");
 const packed_frame = @import("../../../core/packed_frame.zig");
 const mesh_edges = @import("../../mesh_edges.zig");
@@ -23,13 +15,10 @@ pub const texture_glyph: u32 = 0;
 pub const texture_svg: u32 = 1;
 pub const texture_image: u32 = 2;
 
-/// Draw vertices per triangle: the triangle, then a fringe quad per edge.
 pub const triangle_draw_vertex_count: u32 = 21;
-/// Vertices per quad, sprite, line segment, or point instance.
 pub const instance_vertex_count: u32 = 6;
 
 comptime {
-    // The source hard-codes these layouts and counts.
     assert(mesh_edges.triangle_draw_vertex_count == triangle_draw_vertex_count);
     assert(@sizeOf(packed_frame.Quad) == 96);
     assert(@offsetOf(packed_frame.Quad, "offset") == 80);

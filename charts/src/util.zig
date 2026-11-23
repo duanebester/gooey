@@ -4,8 +4,6 @@ const constants = @import("constants.zig");
 const MAX_TICKS = constants.MAX_TICKS;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 
-/// A "nice" number: 1, 2, or 5 times a power of 10; nearest when `round`,
-/// else ceiling.
 pub fn niceNumber(value: f32, round: bool) f32 {
     std.debug.assert(!std.math.isNan(value));
     std.debug.assert(!std.math.isInf(value));
@@ -48,7 +46,6 @@ pub const NiceRangeResult = struct {
     tick_count: u32,
 };
 
-/// A "nice" range: rounded min/max and a nice step size.
 pub fn niceRange(min: f32, max: f32, target_ticks: u32) NiceRangeResult {
     std.debug.assert(!std.math.isNan(min) and !std.math.isNan(max));
     std.debug.assert(target_ticks > 0 and target_ticks <= MAX_TICKS);
@@ -57,7 +54,6 @@ pub fn niceRange(min: f32, max: f32, target_ticks: u32) NiceRangeResult {
         if (min == 0) {
             return .{ .min = 0, .max = 1, .step = 0.2, .tick_count = 6 };
         }
-        // Expand range by 10% on each side
         const delta = @abs(min) * 0.1;
         return niceRange(min - delta, max + delta, target_ticks);
     }
@@ -226,17 +222,10 @@ pub const DecimationPoint = struct {
     y: f32,
 };
 
-/// Returns twice the area (avoids division by 2 for comparison purposes).
 pub fn triangleArea(p1: DecimationPoint, p2: DecimationPoint, p3: DecimationPoint) f32 {
-    // Shoelace formula; 2*Area avoids the division (comparison only).
     return @abs((p1.x - p3.x) * (p2.y - p1.y) - (p1.x - p2.x) * (p3.y - p1.y));
 }
 
-/// Largest-Triangle-Three-Buckets (LTTB) downsampling: divide the data into
-/// buckets and keep, per bucket, the point forming the largest triangle with
-/// the selected points of adjacent buckets, preserving visual shape.
-/// Reference: Sveinn Steinarsson, "Downsampling Time Series for Visual
-/// Representation".
 pub fn decimateLTTB(
     data: []const DecimationPoint,
     data_len: u32,

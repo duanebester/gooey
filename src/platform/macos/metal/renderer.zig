@@ -1,12 +1,3 @@
-//! The Metal renderer: it draws the packed frame into a `CAMetalLayer`.
-//!
-//! A frame is one command buffer. It begins at the first `uploadAtlas` or
-//! `draw` after the previous present: that call waits for the frame slot's
-//! previous reader (`frame_slots.zig`) and creates the command buffer.
-//! Uploads stage their pixels in the slot and encode blits; `draw` copies the
-//! packed instance arrays into the slot, encodes one render pass over the
-//! draws, presents, and commits. The packed frame is read only during `draw`.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const objc = @import("objc");
@@ -29,17 +20,12 @@ pub const Renderer = struct {
     pipelines: pipelines_mod.Pipelines,
     atlas: atlas_textures.AtlasTextures,
     slots: frame_slots.FrameSlots,
-    /// The frame being encoded (retained), from its first upload or draw
-    /// until it is committed; null between frames.
     command_buffer: ?objc.Object,
     blit: ?objc.Object,
     staging_used_bytes: u32,
     size_px: backend.SizePx,
     limits: backend.RenderLimits,
     frame_skip_logged: bool,
-    /// The drawable the last `draw` presented, not retained (it lives until
-    /// the caller's autorelease pool drains); null when it presented none.
-    /// The frame trace reads its `presentedTime` (`-Dframe-trace`).
     last_drawable: ?objc.Object,
 
     const Self = @This();
@@ -48,7 +34,6 @@ pub const Renderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// `surface.native` is the window's `CAMetalLayer`.
     pub noinline fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -87,7 +72,6 @@ pub const Renderer = struct {
         assert(self.slots.count == render_limits.frame.in_flight_count);
     }
 
-    /// Finish any frame begun by uploads alone, wait for the GPU, release.
     pub fn deinit(self: *Self) void {
         assert(self.device.value != null);
         if (self.command_buffer != null) self.commitWithoutDrawing();
@@ -116,9 +100,6 @@ pub const Renderer = struct {
         }});
     }
 
-    /// Stage `pixels` in this frame's slot and encode their blit into the
-    /// atlas texture. The staging is the journal's per-frame byte budget,
-    /// which every frame's uploads fit by construction.
     pub fn uploadAtlas(
         self: *Self,
         kind: backend.AtlasKind,
@@ -130,7 +111,6 @@ pub const Renderer = struct {
         assert(pixels.len == byte_count);
         assert(byte_count > 0);
         const command_buffer = self.beginFrame();
-        // Every record starts 4-byte aligned, as in the journal.
         const offset = std.mem.alignForward(u64, self.staging_used_bytes, 4);
         const capacity = self.slots.capacity.staging_bytes;
         if (offset + byte_count > capacity) {
@@ -150,9 +130,6 @@ pub const Renderer = struct {
         });
     }
 
-    /// Render every draw of `frame` into the next drawable, cleared to
-    /// `clear`, and present it. With no drawable the frame is skipped,
-    /// logged once, and its atlas uploads still reach the GPU.
     pub fn draw(
         self: *Self,
         frame: *const backend.PackedFrame,
@@ -165,7 +142,6 @@ pub const Renderer = struct {
         self.last_drawable = null;
         const command_buffer = self.beginFrame();
         self.endBlit();
-        // A minimized window has nothing to draw into; its uploads still land.
         if (viewport.size_px.width == 0 or viewport.size_px.height == 0) {
             self.commitWithoutDrawing();
             return;
@@ -206,7 +182,6 @@ pub const Renderer = struct {
         if (self.command_buffer) |command_buffer| return command_buffer;
         assert(self.blit == null);
         self.slots.acquire();
-        // Retained: the frame can outlive the caller's autorelease pool.
         const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{})
             .msgSend(objc.Object, "retain", .{});
         self.command_buffer = command_buffer;
@@ -233,8 +208,6 @@ pub const Renderer = struct {
 
     const Pass = struct { encoder: objc.Object, drawable: objc.Object };
 
-    /// The render pass over the next drawable, or null when the layer has
-    /// none to give (an operating failure: the frame is skipped).
     fn beginPass(self: *Self, command_buffer: objc.Object, clear: geometry.Color) ?Pass {
         assert(self.blit == null);
         assert(self.command_buffer != null);
@@ -249,8 +222,6 @@ pub const Renderer = struct {
         return .{ .encoder = encoder, .drawable = drawable.drawable };
     }
 
-    /// Commit the open frame with only its uploads, so no staged record is
-    /// lost when nothing is drawn.
     fn commitWithoutDrawing(self: *Self) void {
         const command_buffer = self.command_buffer.?;
         self.endBlit();
@@ -274,14 +245,6 @@ pub const Renderer = struct {
     }
 };
 
-/// Drawables the layer keeps, in every profile. Core Animation holds one on the
-/// glass and one queued to present, so with two, `nextDrawable` blocks the
-/// render thread until the display releases one: frame traces on a 120 Hz
-/// panel measured 2-11 ms waits there in the 2-slot profiles, and none with
-/// three. Frame slots do not depend on this count (`frame_slots.zig` waits on
-/// command buffers), so it stays at Core Animation's maximum. Cost: one
-/// window-sized drawable more than a 2-slot profile's slots, owned by Core
-/// Animation, 4 B per pixel (3.2 MB for a 1160 x 700 px window).
 const drawable_count: u32 = 3;
 
 comptime {

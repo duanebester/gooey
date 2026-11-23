@@ -1,6 +1,3 @@
-//! Compile-time pin list for Gooey's public API, enforced in both directions:
-//! a missing pinned name and an unpinned public name each fail `zig build test`.
-
 const std = @import("std");
 const gooey = @import("root.zig");
 
@@ -76,7 +73,6 @@ fn pinUi() void {
     }
 }
 
-/// A rename breaks every literal naming the field, so each is pinned by name.
 fn pinFields() void {
     comptime {
         const Box = gooey.ui.Box;
@@ -236,7 +232,6 @@ fn pinNamespaces() void {
     }
 }
 
-/// `Cx` is opaque, so these are everything a render function or component reaches.
 fn pinCx() void {
     comptime {
         const Cx = gooey.Cx;
@@ -271,9 +266,7 @@ fn pinCx() void {
         const measure: fn (*Cx, []const u8, gooey.ui.Text, f32) Cx.TextSize = Cx.measureText;
         _ = measure;
         _ = @as(Cx.TextSize, .{ .width = 0, .height = 0 });
-        // Opaque: no field, `window` included, is reachable from a `*Cx`.
         if (@typeInfo(Cx) != .@"opaque") @compileError("gooey.Cx must stay opaque");
-        // A `Painter` exposes only the paint element's bounds.
         if (@typeInfo(gooey.Painter).@"struct".field_names.len != 1) {
             @compileError("gooey.Painter must carry only its bounds");
         }
@@ -339,7 +332,6 @@ fn expectDecls(
     comptime name: []const u8,
     comptime names: []const []const u8,
 ) void {
-    // Each name is compared with every pinned one: at most 40 by 40 here.
     @setEvalBranchQuota(100_000);
     const decls = switch (@typeInfo(T)) {
         .@"struct" => |info| info.decl_names,

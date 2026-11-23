@@ -46,7 +46,6 @@ echo "Starting Gooey..."
 amp orb service start gooey-app --command \
     'export XDG_RUNTIME_DIR=/tmp/gooey-runtime WAYLAND_DISPLAY=wayland-gooey; exec dbus-run-session -- ./zig-out/bin/gooey-todo'
 
-# Software Vulkan needs several frames to populate the first presentation.
 sleep 5
 if ! amp orb service status gooey-app | grep -Fq 'Active: active (running)'; then
     amp orb service logs gooey-app | tail -n 120 >&2

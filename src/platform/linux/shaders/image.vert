@@ -2,7 +2,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "packed.glsl"
 
-// The image pipeline: RGBA sprites with tint, rounding, grayscale, opacity.
 layout(location = 0) out vec2 out_tex_coord;
 layout(location = 1) out vec4 out_tint_rgba;
 layout(location = 2) out vec2 out_screen_pos;

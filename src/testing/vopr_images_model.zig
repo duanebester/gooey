@@ -1,24 +1,3 @@
-//! The VOPR's images app and its model. The images example paints one file
-//! in every cell, so at most one decode is ever requested; this app paints
-//! eight paths, four at a time in fixed cells, and Next page shifts which
-//! four, so requests queue behind each other, land while off screen, and
-//! fill the loader's eight request entries. No file is read: the harness
-//! plays the decode worker (`images.Mode.stepped`) and decides when each
-//! request is answered and with what (`Action.image`).
-//!
-//! The model predicts, from the decodes the harness pushed, what every
-//! build shows and asks for: the loader serves requests oldest first; a
-//! drained decode lands at the next build unless the frame's upload
-//! staging defers it; a landed image is drawn in each cell showing its path,
-//! at the size the harness chose, placed by the cell's fit; a failed path
-//! stays failed for the session and is never asked for again; a scale change
-//! clears the atlas, so the next build asks again for every landed path it
-//! shows; and the first build to show an unrequested path asks for it, in
-//! cell order. It reads the app's page through the window, and whether the
-//! landed decode was deferred from the loader, not the app's drawing.
-//! Headless, no renderer registers as an atlas upload consumer, so uploads
-//! are never deferred and the deferred path stays unreached here.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -38,14 +17,11 @@ pub const path_count: u32 = 8;
 pub const page_count: u32 = 4;
 pub const slot_count: u32 = 4;
 
-/// Never read: the harness makes up every decode.
 pub const paths = [path_count][]const u8{
     "vopr/image-0.png", "vopr/image-1.png", "vopr/image-2.png", "vopr/image-3.png",
     "vopr/image-4.png", "vopr/image-5.png", "vopr/image-6.png", "vopr/image-7.png",
 };
 
-/// One cell: its size, its fit, and the colour it fills first, by which
-/// the model finds the cell's bounds in the frame.
 pub const Slot = struct {
     width: f32,
     height: f32,
@@ -60,8 +36,6 @@ pub const slots = [slot_count]Slot{
     .{ .width = 75, .height = 50, .fit = .fill, .color = ui.Color.hex(0x456789) },
 };
 
-/// The path `slot` shows on `page`: each page shifts by two, so two paths
-/// stay on screen across Next page and two arrive.
 pub fn pathIndex(page: u32, slot: u32) u32 {
     assert(page < page_count);
     assert(slot < slot_count);
@@ -70,7 +44,6 @@ pub fn pathIndex(page: u32, slot: u32) u32 {
 
 const Cell = struct { path: []const u8, slot: *const Slot };
 
-/// Every page's cells, in static storage: paint data outlives the build.
 const cells: [page_count][slot_count]Cell = blk: {
     var table: [page_count][slot_count]Cell = undefined;
     for (0..page_count) |page| {
@@ -94,8 +67,6 @@ pub const App = gooey.App(State, render, .{
     .title = "VOPR images",
     .width = 640,
     .height = 320,
-    // Eight request entries: the app's eight paths can all be waiting or
-    // failed at once, exactly filling the table.
     .limits = .small,
 });
 
@@ -143,40 +114,28 @@ const PathState = enum { idle, queued, delivered, cached, failed };
 
 const Size = struct { width: u32, height: u32 };
 
-/// The decode the last drain took from the ring, until it lands.
 const Delivered = struct { path: u32, decode: Action.ImageDecode };
 
 pub const ImagesModel = struct {
     states: [path_count]PathState,
-    /// Each cached path's decoded size.
     sizes: [path_count]Size,
-    /// The build each queued path was asked for in.
     requested_frame: [path_count]u64,
-    /// Queued paths, oldest first: the loader's request ring as predicted.
     fifo: [path_count]u32,
     fifo_head: u32,
     fifo_count: u32,
-    /// The decode the harness pushed since the last drain.
     pushed: ?Action.ImageDecode,
     delivered: ?Delivered,
-    /// The scale of the last build, whose change clears the image atlas.
     scale_factor_built: f32,
     counts: Stats,
 
-    /// The kinds images' swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .wait_ns, .tick_main, .present, .resize, .image,
     };
 
-    /// Keys that move focus to Next page and press it.
     pub const key_choices: []const gooey.input.KeyCode = &.{
         .tab, .space, .@"return", .escape,
     };
 
-    /// Decoded sides: odd and even, a single pixel, and up to 60, so that
-    /// every path and the shelves a scale change leaves behind fit the
-    /// 512² atlas whatever the order (four shelf heights, two shelves each
-    /// at most), and no eviction is ever needed.
     pub const image_sides: []const u32 = &.{ 1, 2, 30, 31, 60 };
 
     pub const Stats = struct {
@@ -184,11 +143,8 @@ pub const ImagesModel = struct {
         landed: u32,
         failed: u32,
         deferred: u32,
-        /// Builds that cleared landed images for a new scale.
         scale_clears: u32,
-        /// Decodes that landed for a path no cell showed.
         landed_offscreen: u32,
-        /// Most builds between a path's request and its landing.
         builds_to_land_max: u64,
         queued_max: u32,
         drawn: u32,
@@ -225,7 +181,6 @@ pub const ImagesModel = struct {
         self.fifo_count = 0;
         self.pushed = null;
         self.delivered = null;
-        // The VOPR's windows start at the goldens' scale.
         self.scale_factor_built = 2;
         self.counts = .zero;
     }
@@ -235,7 +190,6 @@ pub const ImagesModel = struct {
         return self.counts;
     }
 
-    /// Input needs no record: the model reads the page the app chose.
     pub fn pendingRoom(self: *const ImagesModel) u32 {
         assert(self.fifo_count <= path_count);
         return 1;
@@ -245,7 +199,6 @@ pub const ImagesModel = struct {
         assert(action != .tick_main);
         switch (action) {
             .image => |decode| {
-                // The staging is held from the take until the decode lands.
                 assert(self.pushed == null);
                 assert(self.delivered == null);
                 self.pushed = decode;
@@ -254,7 +207,6 @@ pub const ImagesModel = struct {
         }
     }
 
-    /// The pushed decode answers the oldest request, and the drain takes it.
     pub fn beginDrain(self: *ImagesModel, window: *Window) void {
         const decode = self.pushed orelse return;
         self.pushed = null;
@@ -289,7 +241,6 @@ pub const ImagesModel = struct {
         std.debug.panic("vopr images model: page {d} after step {d}", .{ state.page, step });
     }
 
-    /// Where the generator aims: Next page.
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         for (frame.a11y[0..frame.a11y_count]) |*node| {
@@ -298,8 +249,6 @@ pub const ImagesModel = struct {
         return null;
     }
 
-    /// The atlas forgets every image at a new scale; a failure is kept by
-    /// the loader, not the atlas, and stays.
     fn clearScale(self: *ImagesModel, scale_factor: f32) void {
         assert(scale_factor > 0);
         var cleared = false;
@@ -313,8 +262,6 @@ pub const ImagesModel = struct {
         self.scale_factor_built = scale_factor;
     }
 
-    /// Emit lands the drained decode first, unless the upload staging
-    /// defers it, which leaves it with the loader for the next build.
     fn land(self: *ImagesModel, window: *Window, frame_number: u64) void {
         const delivered = self.delivered orelse return;
         if (window.images.landed != null) {
@@ -341,8 +288,6 @@ pub const ImagesModel = struct {
         if (!onPage(app.state.page, path)) self.counts.landed_offscreen += 1;
     }
 
-    /// A shown path that is not cached, waiting, or failed is asked for,
-    /// in cell order.
     fn request(self: *ImagesModel, page: u32, frame_number: u64) void {
         assert(page < page_count);
         for (0..slot_count) |slot| {
@@ -358,8 +303,6 @@ pub const ImagesModel = struct {
         self.counts.queued_max = @max(self.counts.queued_max, self.fifo_count);
     }
 
-    /// The loader's request ring holds the predicted paths in order, and
-    /// its entries hold every waiting and failed path and nothing else.
     fn checkLoader(self: *const ImagesModel, window: *Window) void {
         const loader = &window.images;
         const tail = loader.request_tail.load(.monotonic);
@@ -418,7 +361,6 @@ fn onPage(page: u32, path: u32) bool {
     return false;
 }
 
-/// The app's path an image request entry holds.
 fn pathOfEntry(window: *Window, entry_index: u32) u32 {
     const entry = &window.images.entries[entry_index];
     assert(entry.state != .free);
@@ -430,9 +372,6 @@ fn pathOfEntry(window: *Window, entry_index: u32) u32 {
     std.debug.panic("vopr images model: entry {d} holds no path of the app", .{entry_index});
 }
 
-/// Each cell fills its colour, then draws its path's image right after when
-/// it is cached, at the decoded size placed by the cell's fit. No other
-/// image is drawn.
 fn checkFrame(model: *ImagesModel, frame: *const records.Frame, page: u32) void {
     var cell_found: [slot_count]bool = @splat(false);
     var cell_last: ?u32 = null;
@@ -443,7 +382,6 @@ fn checkFrame(model: *ImagesModel, frame: *const records.Frame, page: u32) void 
             .quad => |*quad| if (slotOfQuad(quad)) |slot| {
                 assert(!cell_found[slot]);
                 cell_found[slot] = true;
-                // The cell's image, if any, is the very next record.
                 cell_last = slot;
             },
             .sprite => |*sprite| if (sprite.atlas == .image) {
@@ -461,8 +399,6 @@ fn checkFrame(model: *ImagesModel, frame: *const records.Frame, page: u32) void 
     checkDrawnCount(model, frame, page);
 }
 
-/// Every cell whose path is cached drew an image: with each image right
-/// after a cached cell's fill, equal counts mean exactly those cells.
 fn checkDrawnCount(model: *const ImagesModel, frame: *const records.Frame, page: u32) void {
     var expected: u32 = 0;
     for (0..slot_count) |slot| {
@@ -486,9 +422,6 @@ fn slotOfQuad(quad: *const records.Quad) ?u32 {
     return null;
 }
 
-/// The image in cell `slot`: its path is cached, its atlas region is the
-/// decoded size, and it is placed by the cell's fit, snapped down to the
-/// device pixel grid.
 fn checkSprite(
     model: *const ImagesModel,
     frame: *const records.Frame,
@@ -530,11 +463,9 @@ fn cellBounds(frame: *const records.Frame, slot: u32) records.Rect {
         if (record.* != .quad) continue;
         if (slotOfQuad(&record.quad) == slot) return record.quad.bounds;
     }
-    unreachable; // `checkFrame` found every cell first.
+    unreachable;
 }
 
-/// Where an image of `width` × `height` lands in `cell`: stretched to it
-/// (`fill`), or scaled by the tighter axis and centred (`contain`).
 fn place(fit: ui.ObjectFit, cell: records.Rect, width: f32, height: f32) records.Rect {
     assert(width > 0);
     assert(height > 0);
@@ -551,12 +482,10 @@ fn place(fit: ui.ObjectFit, cell: records.Rect, width: f32, height: f32) records
                 .height = placed_height,
             };
         },
-        else => unreachable, // The app's cells use these two.
+        else => unreachable,
     }
 }
 
-/// Whether `actual` is `expected` moved down onto the device pixel grid: at
-/// or below it, by less than one device pixel.
 fn snappedDown(actual: f32, expected: f32, pixel: f32) bool {
     assert(pixel > 0);
     const tolerance = 0.01;

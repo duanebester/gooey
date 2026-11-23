@@ -1,12 +1,3 @@
-//! Windows accessibility bridge using UI Automation. Narrator and other UIA
-//! clients reach the window's providers through `WM_GETOBJECT`, which the
-//! platform window answers with this bridge's root (`uia.Host`), and pull the
-//! tree through the providers in `windows_provider.zig`. Each synced frame
-//! diffs and rebuilds the snapshot under the server's lock, then raises
-//! change events with the lock released. `isActive` is true once a client has
-//! asked for the root or `UiaClientsAreListening` reports a subscriber.
-//! Requires Windows 10 1709 for `UiaRaiseNotificationEvent`.
-
 const std = @import("std");
 const bridge_mod = @import("bridge.zig");
 const types = @import("types.zig");
@@ -25,29 +16,18 @@ const Server = provider_mod.Server;
 const Provider = provider_mod.Provider;
 const ChangeList = snapshot_mod.ChangeList;
 
-/// Announcements longer than this are truncated at a code point boundary.
 const announcement_bytes_max: u16 = provider_mod.bstr_bytes_max;
 
-/// Names the source of Gooey's notifications for clients that filter them.
 const announcement_activity_id = "Gooey.Announcement";
 
 pub const WindowsBridge = struct {
-    /// The platform window's half of the bridge; null in tests and headless
-    /// use, where the bridge stays inert.
     host: ?*uia.Host,
-    /// Null when inert: no host, or the reservation failed at init.
     server: ?*Server,
-    /// Whether `init` entered COM on this thread, which `deinit` balances.
     com_entered: bool,
-    /// This frame's changes, gathered under the lock and raised after it.
     changes: ChangeList,
 
     const Self = @This();
 
-    /// Reserve the bridge's storage and publish its root to the window. A
-    /// failure leaves the bridge inert: the application runs without
-    /// accessibility rather than not at all, and the error is logged.
-    /// `element_count_max` is the tree's (`a11y.element_count_max`).
     pub fn init(element_count_max: u16, host: ?*uia.Host) Self {
         assert(element_count_max > 0);
         var self: Self = .{ .host = host, .server = null, .com_entered = false, .changes = .{} };
@@ -88,8 +68,6 @@ pub const WindowsBridge = struct {
         return @ptrCast(@alignCast(ptr));
     }
 
-    /// Runs every synced frame, dirty or not, so bounds that moved without a
-    /// content change (scrolling, resizing) reach the snapshot.
     fn syncDirty(ptr: *anyopaque, tree: *const tree_mod.Tree, dirty: []const u16) void {
         const self = castSelf(ptr);
         const server = self.server orelse return;
@@ -101,7 +79,6 @@ pub const WindowsBridge = struct {
         server.snapshot.rebuild(tree);
         server.unlockExclusive();
 
-        // After the lock: raising an event may call back into a provider.
         defer self.changes = .{};
         if (self.changes.structure_changed or self.changes.overflowed) {
             raiseStructureChanged(server);
@@ -109,8 +86,6 @@ pub const WindowsBridge = struct {
         for (self.changes.items()) |change| raisePropertyChanged(server, change);
     }
 
-    /// The snapshot already dropped these in `syncDirty`, which runs first;
-    /// clients learn of it by re-reading the root's children.
     fn removeElements(ptr: *anyopaque, fingerprints: []const Fingerprint) void {
         const self = castSelf(ptr);
         const server = self.server orelse return;
@@ -127,8 +102,6 @@ pub const WindowsBridge = struct {
 
         const length = snapshot_mod.utf8PrefixLength(message, announcement_bytes_max);
         assert(length <= message.len);
-        // `SysAllocStringLen` fails only when the process heap is exhausted;
-        // the announcement is lost, so say so rather than drop it silently.
         const display = provider_mod.bstrFromUtf8(message[0..length]) catch |err| {
             std.log.warn("accessibility: announcement dropped: {s}", .{@errorName(err)});
             return;
@@ -144,7 +117,7 @@ pub const WindowsBridge = struct {
         const processing = switch (live) {
             .assertive => uia.NotificationProcessing_ImportantAll,
             .polite => uia.NotificationProcessing_All,
-            .off => unreachable, // Returned above.
+            .off => unreachable,
         };
         const result = uia.UiaRaiseNotificationEvent(
             server.root.simpleInterface(),
@@ -183,8 +156,6 @@ pub const WindowsBridge = struct {
         return uia.UiaClientsAreListening() != win32.FALSE;
     }
 
-    /// Withdraw the root, disconnect clients, and free the storage. Runs
-    /// before the platform window is destroyed (see `A11ySystem.deinit`).
     fn deinit(ptr: *anyopaque) void {
         const self = castSelf(ptr);
         defer if (self.com_entered) shell.CoUninitialize();
@@ -193,23 +164,17 @@ pub const WindowsBridge = struct {
         assert(window_host.root == server.root.simpleInterface());
 
         window_host.root = null;
-        // Tells UI Automation the window no longer serves a provider.
         _ = uia.UiaReturnRawElementProvider(server.hwnd, 0, 0, null);
         self.server = null;
         if (server.shutdown()) {
             server.deinit();
             reservation.release(Server, @as(*[1]Server, server), 1);
         } else {
-            // A client in this process still holds a provider. Freeing the
-            // storage would leave it a dangling pointer; keeping it is safe,
-            // because every call now reports its element unavailable.
             std.log.warn("accessibility: a UI Automation provider outlived its window", .{});
         }
     }
 };
 
-/// A provider for `fingerprint` if the snapshot still has that element.
-/// The lock must be held.
 fn claimIfPresent(server: *Server, fingerprint: Fingerprint) ?*Provider {
     assert(fingerprint.isValid());
     assert(server.locked);
@@ -227,8 +192,6 @@ fn raisePropertyChanged(server: *Server, change: snapshot_mod.Change) void {
     if (provider != null) {
         const index = server.snapshot.find(change.fingerprint).?;
         const entry = server.snapshot.entry(index);
-        // Out of memory for the BSTR: the event still fires, and clients that
-        // need the value read it back through the provider.
         const snapshot = &server.snapshot;
         value = provider_mod.elementProperty(snapshot, entry, property_id) catch |err| blk: {
             std.log.warn(
@@ -243,7 +206,6 @@ fn raisePropertyChanged(server: *Server, change: snapshot_mod.Change) void {
     const element = provider orelse return;
     defer _ = element.release();
     defer provider_mod.variantFree(&value);
-    // Clients read the new value; Gooey keeps no old one to report.
     const result = uia.UiaRaiseAutomationPropertyChangedEvent(
         element.simpleInterface(),
         property_id,
@@ -253,8 +215,6 @@ fn raisePropertyChanged(server: *Server, change: snapshot_mod.Change) void {
     logFailure("UiaRaiseAutomationPropertyChangedEvent", result);
 }
 
-/// Tell clients to re-read the root's subtree. The root's runtime id comes
-/// from the host window, so none is passed.
 fn raiseStructureChanged(server: *Server) void {
     assert(server.alive);
     const result = uia.UiaRaiseStructureChangedEvent(
@@ -266,9 +226,6 @@ fn raiseStructureChanged(server: *Server) void {
     logFailure("UiaRaiseStructureChangedEvent", result);
 }
 
-/// Event failures are not the application's to fix: the event is lost to
-/// clients, which re-read on their next query. Logged at debug level because
-/// some clients reject events routinely.
 fn logFailure(comptime function: []const u8, result: uia.HRESULT) void {
     if (uia.succeeded(result)) return;
     std.log.debug("accessibility: " ++ function ++ " failed (HRESULT 0x{X:0>8})", .{
@@ -276,11 +233,6 @@ fn logFailure(comptime function: []const u8, result: uia.HRESULT) void {
     });
 }
 
-/// Enter a single-threaded apartment so providers are called on this thread
-/// (`ProviderOptions_UseComThreading`). Returns whether `deinit` must call
-/// `CoUninitialize`: every successful entry needs one, `S_FALSE` included.
-/// `RPC_E_CHANGED_MODE` leaves the thread in a multithreaded apartment, where
-/// provider calls arrive on COM threads; the server's lock covers that case.
 fn comEnter() bool {
     const result = shell.CoInitializeEx(
         null,

@@ -1,7 +1,3 @@
-//! VoiceOver bridge: a pool of NSAccessibilityElement wrappers, one per
-//! `a11y.element_count_max`, reserved at init; fingerprint identity; zero
-//! allocation after init.
-
 const std = @import("std");
 const objc = @import("objc");
 const bridge_mod = @import("bridge.zig");
@@ -14,9 +10,6 @@ const layout = @import("../layout/layout.zig");
 const appkit = @import("../platform/macos/appkit.zig");
 const TextSelection = @import("element.zig").TextSelection;
 
-/// The `GooeyMetalView` ivar holding the focused element, which the view
-/// returns from `accessibilityFocusedUIElement` so VoiceOver follows Gooey's
-/// focus into its elements (AppKit asks the first responder).
 pub const focus_ivar = "_gooeyAccessibilityFocus";
 
 extern "c" var NSAccessibilityFocusedUIElementChangedNotification: objc.c.id;
@@ -38,27 +31,21 @@ const NSAccessibilityPriorityMedium: c_long = 50;
 const NSUTF8StringEncoding: c_ulong = 4;
 
 pub const MacBridge = struct {
-    /// Pool of native accessibility element wrappers, `a11y.element_count_max`
-    /// of them, reserved at init; empty when the reservation failed.
     wrappers: []Wrapper = &.{},
-    /// Slots below this were initialized; the rest are untouched pages.
     wrapper_count: u16 = 0,
 
-    /// Map fingerprint -> wrapper slot for stable identity.
     fingerprint_to_slot: []fingerprint_mod.Fingerprint = &.{},
 
     root_element: ?objc.Object = null,
 
     content_view: ?objc.Object = null,
 
-    /// Cached VoiceOver state; checked periodically, not every frame.
     voiceover_active: bool = false,
 
     check_counter: u32 = 0,
 
     const Self = @This();
 
-    /// No screen frame has width -1, so a wrapper's first frame always sets.
     const frame_unset = layout.BoundingBox{ .x = 0, .y = 0, .width = -1, .height = -1 };
 
     const Wrapper = struct {
@@ -68,19 +55,11 @@ pub const MacBridge = struct {
 
         active: bool = false,
 
-        /// `valueHash` at the last sync; meaningful once `value_synced`.
         value_hash: u64 = 0,
-        /// Whether `value_hash` holds a sync's hash (a flag beside a plain
-        /// hash keeps the wrapper in 64 bytes, as `frame_unset` does).
         value_synced: bool = false,
 
-        /// Selection at the last sync; null when not the focused field.
         selection: ?TextSelection = null,
 
-        // What `ns_element` itself holds, so a sync sets only what changed.
-        // Both survive `invalidate`: a reused wrapper keeps its native object.
-        /// The screen frame last set; `frame_unset` before the first (a
-        /// sentinel rather than an optional keeps the wrapper in 64 bytes).
         frame: layout.BoundingBox = frame_unset,
         has_children: bool = false,
         has_contents: bool = false,
@@ -110,29 +89,19 @@ pub const MacBridge = struct {
             } else {
                 clearAccessibilityLabel(ns);
             }
-            // VoiceOver reads a splitter's title, never its label
-            // (AXDescription), so a splitter carries its name as both.
             const title = if (elem.role == .separator) elem.name else null;
             setAccessibilityTitle(ns, title);
-            // A description is help text (AXHelp), as a native control's
-            // tool tip is; VoiceOver reads it as the hint after the name.
             setAccessibilityHelp(ns, elem.description);
 
-            // A toggle or option reports its on state as the value; a value
-            // that went away is cleared so a reused wrapper never reports
-            // stale text.
             if (elem.value) |value| {
                 setAccessibilityValue(ns, value);
             } else if (toggleState(elem)) |on| {
                 setAccessibilityChecked(ns, on);
             } else if (elem.value_now) |now| {
-                // A splitter or slider without a text value reports its
-                // position as a number in its range, as NSSlider does.
                 setAccessibilityRange(ns, elem.value_min orelse now, elem.value_max orelse now, now);
             } else {
                 clearAccessibilityValue(ns);
             }
-            // Unknown when null, which a reused wrapper needs as well.
             setAccessibilityOrientation(ns, elem.orientation);
 
             setAccessibilityParent(ns, parent_ns);
@@ -148,10 +117,6 @@ pub const MacBridge = struct {
             self.active = true;
         }
 
-        /// Set the element's screen frame when it moved. Bounds are in view
-        /// coordinates, so a scroll, a layout shift, or a window move changes
-        /// the frame without changing the element's content; zero-size
-        /// bounds carry no frame.
         fn refreshFrame(
             self: *Wrapper,
             elem: *const tree_mod.Element,
@@ -168,11 +133,6 @@ pub const MacBridge = struct {
             self.frame = screen;
         }
 
-        /// Tell VoiceOver what changed since this element's last sync, as
-        /// NSTextView and NSButton do: the value (text or checked state) and
-        /// the focused field's selection. A wrapper's first sync posts
-        /// nothing, because the element is new to VoiceOver. At most two
-        /// notifications per dirty element, and a frame has one selection.
         fn notifyChanges(self: *Wrapper, ns: objc.Object, elem: *const tree_mod.Element) void {
             std.debug.assert(ns.value != null);
             std.debug.assert(elem.fingerprint.isValid());
@@ -194,7 +154,6 @@ pub const MacBridge = struct {
             }
         }
 
-        /// Mark wrapper as inactive (available for reuse).
         pub fn invalidate(self: *Wrapper) void {
             std.debug.assert(self.active or self.fingerprint.eql(fingerprint_mod.Fingerprint.INVALID));
 
@@ -203,13 +162,9 @@ pub const MacBridge = struct {
             self.value_hash = 0;
             self.value_synced = false;
             self.selection = null;
-            // `ns_element` is not released: the pool reuses it.
         }
     };
 
-    /// `element_count_max` is the tree's (`a11y.element_count_max`): stale
-    /// wrappers are reclaimed before a new one is taken, so the frame's
-    /// elements always fit. A failed reservation leaves the bridge inert.
     pub fn init(element_count_max: u16, window: ?objc.Object, view: ?objc.Object) Self {
         std.debug.assert(element_count_max > 0);
         var self = Self{};
@@ -228,8 +183,6 @@ pub const MacBridge = struct {
         return self;
     }
 
-    /// Wrapper slots from fresh pages: a slot is initialized when first
-    /// taken, so only the slots VoiceOver ever used become resident.
     fn reserveSlots(self: *Self, element_count_max: u16) error{OutOfMemory}!void {
         const wrappers = try reservation.reserve(Wrapper, element_count_max);
         errdefer reservation.release(Wrapper, wrappers, 0);
@@ -266,29 +219,19 @@ pub const MacBridge = struct {
 
         if (!self.voiceover_active) return;
 
-        // Elements hang under the content view, not the window: replacing the
-        // window's children would hide its titlebar buttons from VoiceOver.
         const root = self.content_view orelse self.root_element orelse return;
 
         for (dirty) |idx| {
             self.syncElement(tree, idx, root);
         }
 
-        // Every frame, as `windows_bridge.syncDirty` does: bounds move
-        // without a content change, so clean elements' frames are refreshed
-        // too, setting only the ones that moved.
         self.refreshFrames(tree);
 
-        // Children change only when an element was added, changed, or
-        // removed; removed elements are already gone from `tree`.
         if (dirty.len > 0 or tree.getRemovedFingerprints().len > 0) {
             self.updateAccessibilityChildren(tree, root);
         }
     }
 
-    /// One pass over the allocated wrappers, at most `a11y.element_count_max`, each an
-    /// O(1) tree lookup and one view-to-screen conversion; a frame is set
-    /// only for an element that moved.
     fn refreshFrames(self: *Self, tree: *const tree_mod.Tree) void {
         std.debug.assert(self.wrapper_count <= self.wrappers.len);
         std.debug.assert(self.voiceover_active);
@@ -301,7 +244,6 @@ pub const MacBridge = struct {
         }
     }
 
-    /// VoiceOver requires children to be set on parents for element discovery.
     fn updateAccessibilityChildren(self: *Self, tree: *const tree_mod.Tree, root: objc.Object) void {
         std.debug.assert(root.value != null);
         std.debug.assert(tree.count() <= tree.elements.len);
@@ -321,10 +263,6 @@ pub const MacBridge = struct {
 
             if (elem.parent == null) self.addNativeChild(tree, elem, root_children);
 
-            // Update children for elements that have children in the tree.
-            // A leaf clears what its native object held: a pooled wrapper
-            // reused for a leaf would otherwise keep its old children. A
-            // combobox is a leaf to VoiceOver (see `addNativeChild`).
             const wrapper = &self.wrappers[slot];
             if (elem.child_count > 0 and elem.role != .combobox) {
                 self.updateElementChildren(tree, elem, ns);
@@ -341,11 +279,6 @@ pub const MacBridge = struct {
         self.updateSplitterContents(tree);
     }
 
-    /// Give each splitter the elements on either side of it, as NSSplitView
-    /// does: VoiceOver calls a splitter with no previous or next contents
-    /// "collapsed" toward that side. Its neighbours are its siblings in the
-    /// tree, which are in index order (the tree is built depth first). One
-    /// scan of at most `a11y.element_count_max` per splitter.
     fn updateSplitterContents(self: *Self, tree: *const tree_mod.Tree) void {
         std.debug.assert(tree.count() <= tree.elements.len);
         std.debug.assert(self.wrapper_count <= self.wrappers.len);
@@ -424,13 +357,6 @@ pub const MacBridge = struct {
         setAccessibilityChildren(ns, children);
     }
 
-    /// Add `elem`'s native element to `children`, followed by a combobox's
-    /// own children (its popup listbox): VoiceOver treats an element with
-    /// children as a container and, when focus returns to it, puts its
-    /// cursor back on the child it last visited, so a combobox holding its
-    /// list sent VoiceOver into the closed list instead of onto the box.
-    /// The listbox is the box's sibling to VoiceOver, as `resolveParentNS`
-    /// says. One level, at most `child_count` children.
     fn addNativeChild(
         self: *Self,
         tree: *const tree_mod.Tree,
@@ -470,19 +396,11 @@ pub const MacBridge = struct {
 
         const elem = tree.getElement(idx) orelse return;
 
-        // Find or allocate a wrapper slot. When every slot is taken, some hold
-        // elements that left the tree in frames the bridge skipped (VoiceOver
-        // was off); reclaiming them leaves at most the tree's elements, which
-        // the pool always holds.
         const slot = self.findOrAllocSlot(elem.fingerprint) orelse blk: {
             self.reclaimStale(tree);
             break :blk self.findOrAllocSlot(elem.fingerprint) orelse unreachable;
         };
 
-        // Resolve parent's NS element. A top-level element's parent is the
-        // window, even though it hangs in the content view's children: AppKit
-        // ignores the content view, so an AXParent naming it points outside
-        // the chain VoiceOver walks (#121 regression).
         const parent_ns = self.resolveParentNS(tree, elem, self.root_element orelse root);
 
         self.wrappers[slot].update(elem, parent_ns, self.root_element, self.content_view);
@@ -498,7 +416,6 @@ pub const MacBridge = struct {
         std.debug.assert(elem.fingerprint.isValid());
 
         var parent_elem = tree.getElement(elem.parent orelse return root) orelse return root;
-        // A combobox's children hang beside it (see `addNativeChild`).
         if (parent_elem.role == .combobox) {
             parent_elem = tree.getElement(parent_elem.parent orelse return root) orelse return root;
         }
@@ -552,9 +469,6 @@ pub const MacBridge = struct {
         return self.wrappers[slot].ns_element;
     }
 
-    /// Hand the focused element, or nil, to the view (`focus_ivar`). The
-    /// view does not retain it; the wrapper pool keeps it alive until
-    /// `deinit_` clears the ivar first.
     fn publishFocus(self: *Self, ns: ?objc.Object) void {
         const view = self.content_view orelse return;
         std.debug.assert(view.value != null);
@@ -564,7 +478,6 @@ pub const MacBridge = struct {
     fn isActive(ptr: *anyopaque) bool {
         const self = castSelf(ptr);
 
-        // An inert bridge (its reservation failed) never syncs.
         if (self.wrappers.len == 0) return false;
         self.voiceover_active = checkVoiceOverRunning();
         return self.voiceover_active;
@@ -573,7 +486,6 @@ pub const MacBridge = struct {
     fn deinit_(ptr: *anyopaque) void {
         const self = castSelf(ptr);
 
-        // The view must not hand VoiceOver an element released below.
         self.publishFocus(null);
 
         for (self.wrappers[0..self.wrapper_count]) |*w| {
@@ -584,7 +496,6 @@ pub const MacBridge = struct {
             w.active = false;
             w.fingerprint = fingerprint_mod.Fingerprint.INVALID;
         }
-        // Zero the slots any frame initialized before the pages go back.
         if (self.wrappers.len > 0) {
             reservation.release(Fingerprint, self.fingerprint_to_slot, self.wrapper_count);
             reservation.release(Wrapper, self.wrappers, self.wrapper_count);
@@ -601,7 +512,6 @@ pub const MacBridge = struct {
     fn findSlotByFingerprint(self: *Self, fp: fingerprint_mod.Fingerprint) ?u16 {
         std.debug.assert(fp.isValid());
 
-        // Slots at or past `wrapper_count` were never allocated.
         std.debug.assert(self.wrapper_count <= self.wrappers.len);
         for (self.fingerprint_to_slot[0..self.wrapper_count], 0..) |slot_fp, i| {
             if (slot_fp.eql(fp)) return @intCast(i);
@@ -631,13 +541,9 @@ pub const MacBridge = struct {
             return slot;
         }
 
-        // Every slot is taken; the caller reclaims stale ones.
         return null;
     }
 
-    /// Free every wrapper whose element is not in `tree`'s current frame. One
-    /// pass over the pool with an O(1) lookup each; it runs only when the pool
-    /// is full, which needs a frame the bridge skipped.
     fn reclaimStale(self: *Self, tree: *const tree_mod.Tree) void {
         std.debug.assert(self.wrapper_count == self.wrappers.len);
         std.debug.assert(tree.count() <= self.wrappers.len);
@@ -674,8 +580,6 @@ fn setAccessibilityRole(elem: objc.Object, role: types.Role) void {
     elem.msgSend(void, "setAccessibilityRole:", .{ns_role.value});
 }
 
-/// Null restores AppKit's description of the role, so a reused wrapper never
-/// keeps an earlier element's.
 fn setAccessibilityRoleDescription(elem: objc.Object, description: ?[]const u8) void {
     std.debug.assert(elem.value != null);
     const text = description orelse {
@@ -710,8 +614,6 @@ fn setAccessibilityTitle(elem: objc.Object, title: ?[]const u8) void {
     elem.msgSend(void, "setAccessibilityTitle:", .{ns_title.value});
 }
 
-/// Set or, with null, clear the element's help text (AXHelp), so a reused
-/// wrapper never keeps an earlier element's.
 fn setAccessibilityHelp(elem: objc.Object, help: ?[]const u8) void {
     std.debug.assert(elem.value != null);
     const text = help orelse {
@@ -744,9 +646,6 @@ fn clearAccessibilityValue(elem: objc.Object) void {
     elem.msgSend(void, "setAccessibilityValue:", .{@as(objc.c.id, null)});
 }
 
-/// Whether a toggle is checked or an option chosen: both are radio buttons
-/// or checkboxes to VoiceOver, which reads their value as the state. Null
-/// for other roles.
 fn toggleState(elem: *const tree_mod.Element) ?bool {
     return switch (elem.role) {
         .checkbox, .radio, .switch_ => elem.state.checked,
@@ -755,8 +654,6 @@ fn toggleState(elem: *const tree_mod.Element) ?bool {
     };
 }
 
-/// An option is a radio button to VoiceOver (see `Role.toNSRole`), named
-/// as ARIA names it; other roles keep AppKit's description.
 fn roleDescription(role: types.Role) ?[]const u8 {
     return if (role == .option) "option" else null;
 }
@@ -790,7 +687,6 @@ fn setAccessibilityRange(elem: objc.Object, min: f32, max: f32, now: f32) void {
     }
 }
 
-/// `NSAccessibilityOrientation`: unknown 0, vertical 1, horizontal 2.
 fn setAccessibilityOrientation(elem: objc.Object, orientation: ?types.Orientation) void {
     std.debug.assert(elem.value != null);
     const value: c_long = if (orientation) |axis| switch (axis) {
@@ -837,8 +733,6 @@ fn setAccessibilityFocused(elem: objc.Object, focused: bool) void {
     elem.msgSend(void, "setAccessibilityFocused:", .{focused});
 }
 
-/// Roles whose `selected` state VoiceOver reads, as UIA's Selection Item
-/// and ARIA's `aria-selected` do.
 fn isSelectable(role: types.Role) bool {
     return role == .option or role == .tab or role == .treeitem;
 }
@@ -848,15 +742,11 @@ fn setAccessibilitySelected(elem: objc.Object, selected: bool) void {
     elem.msgSend(void, "setAccessibilitySelected:", .{selected});
 }
 
-/// NSRect type for Cocoa coordinate conversion
 const NSRect = extern struct {
     origin: extern struct { x: f64, y: f64 },
     size: extern struct { width: f64, height: f64 },
 };
 
-/// Convert view-local bounds to screen coordinates for accessibility.
-/// macOS accessibility requires screen coordinates (origin at bottom-left of screen).
-/// Layout bounds are in view coordinates (origin at top-left of view, flipped).
 fn convertToScreenRect(
     bounds: layout.BoundingBox,
     ns_window: ?objc.Object,
@@ -872,7 +762,6 @@ fn convertToScreenRect(
         .size = .{ .width = @floatCast(bounds.width), .height = @floatCast(bounds.height) },
     };
 
-    // Zig 0.16: ?[*c]T is not allowed in C calling convention; [*c] is already nullable.
     const window_rect: NSRect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
 
     const screen_rect: NSRect = window.msgSend(NSRect, "convertRectToScreen:", .{window_rect});
@@ -889,8 +778,6 @@ fn setAccessibilityFrame(elem: objc.Object, bounds: layout.BoundingBox) void {
     std.debug.assert(elem.value != null);
     std.debug.assert(!std.math.isNan(bounds.x) and !std.math.isNan(bounds.y));
 
-    // setAccessibilityFrame requires f64 for Cocoa; bounds are already screen
-    // coordinates from `convertToScreenRect`.
     const frame = NSRect{
         .origin = .{ .x = @floatCast(bounds.x), .y = @floatCast(bounds.y) },
         .size = .{ .width = @floatCast(bounds.width), .height = @floatCast(bounds.height) },
@@ -913,7 +800,6 @@ fn postNotification(elem: objc.Object, notification: objc.c.id) void {
     post(elem.value, notification);
 }
 
-/// The value VoiceOver reads: the text, or a toggle's checked state.
 fn valueHash(elem: *const tree_mod.Element) u64 {
     var hasher = std.hash.Wyhash.init(0);
     if (elem.value) |value| {
@@ -932,8 +818,6 @@ fn isText(role: types.Role) bool {
     return role == .textbox or role == .textarea or role == .searchbox;
 }
 
-/// The focused field's selection in UTF-16 units, as AppKit counts; an
-/// unfocused field reports an empty range at the start.
 fn selectedRange(elem: *const tree_mod.Element) appkit.NSRange {
     const selection = elem.selection orelse return .{ .location = 0, .length = 0 };
     const text = elem.value orelse "";
@@ -950,8 +834,6 @@ fn setAccessibilitySelectedTextRange(elem: objc.Object, range: appkit.NSRange) v
     elem.msgSend(void, "setAccessibilitySelectedTextRange:", .{range});
 }
 
-/// UTF-16 code units in UTF-8 `text`: one per scalar, two above U+FFFF.
-/// Counts lead bytes, so it is bounded by `text.len` and needs no decode.
 fn utf16Length(text: []const u8) u32 {
     std.debug.assert(text.len <= std.math.maxInt(u32));
     var count: u32 = 0;
@@ -966,19 +848,11 @@ fn utf16Length(text: []const u8) u32 {
 test "utf16Length counts surrogate pairs" {
     try std.testing.expectEqual(@as(u32, 0), utf16Length(""));
     try std.testing.expectEqual(@as(u32, 3), utf16Length("abc"));
-    // é is 2 bytes and 1 unit, 日 is 3 bytes and 1 unit, 😀 is 4 bytes and 2 units.
     try std.testing.expectEqual(@as(u32, 5), utf16Length("é日😀a"));
 }
 
-/// Registered once, at the first bridge's initialization.
 var element_class: ?objc.Class = null;
 
-/// VoiceOver reads and echoes a text field through the NSAccessibility text
-/// methods, which NSAccessibilityElement leaves unimplemented: without them
-/// it reports zero characters, refuses `AXStringForRange`, and keeps reading
-/// a cached value. Each answer derives from the element's value and selected
-/// range, which `Wrapper.update` sets, so there is no second copy to go
-/// stale. The field is one line, so line queries answer line 0.
 fn registerElementClass() void {
     if (element_class != null) return;
     const NSAccessibilityElement = objc.getClass("NSAccessibilityElement") orelse
@@ -1006,7 +880,6 @@ fn registerElementClass() void {
     element_class = cls;
 }
 
-/// The element's value when it is text (a toggle's is an NSNumber).
 fn textValue(self: objc.c.id) ?objc.Object {
     std.debug.assert(self != null);
     const element = objc.Object.fromId(self);
@@ -1023,7 +896,6 @@ fn textLength(self: objc.c.id) c_ulong {
     return text.msgSend(c_ulong, "length", .{});
 }
 
-/// `range` clamped to the text, so a stale query never raises.
 fn textClamp(range: appkit.NSRange, length: c_ulong) appkit.NSRange {
     const location = @min(range.location, length);
     const clamped: appkit.NSRange = .{
@@ -1076,9 +948,6 @@ fn textAttributedStringForRange(
     return attributed.msgSend(objc.c.id, "autorelease", .{});
 }
 
-/// The whole field for any range: Gooey does not expose glyph positions to
-/// the bridge. VoiceOver's arguments are external input, so the text queries
-/// clamp them rather than assert.
 fn textFrameForRange(self: objc.c.id, _: objc.c.SEL, _: appkit.NSRange) callconv(.c) appkit.NSRect {
     std.debug.assert(self != null);
     const element = objc.Object.fromId(self);
@@ -1095,7 +964,6 @@ fn textRangeForLine(self: objc.c.id, _: objc.c.SEL, line: c_long) callconv(.c) a
     return .{ .location = 0, .length = textLength(self) };
 }
 
-/// One UTF-16 unit at `index`; VoiceOver widens to a composed character.
 fn textRangeForIndex(self: objc.c.id, _: objc.c.SEL, index: c_long) callconv(.c) appkit.NSRange {
     const location: c_ulong = @intCast(@max(index, 0));
     return textClamp(.{ .location = location, .length = 1 }, textLength(self));
@@ -1136,7 +1004,6 @@ fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) vo
 }
 
 fn checkVoiceOverRunning() bool {
-    // Available in macOS 10.13+.
     const NSWorkspace = objc.getClass("NSWorkspace") orelse return false;
     const workspace = NSWorkspace.msgSend(objc.Object, "sharedWorkspace", .{});
     return workspace.msgSend(bool, "isVoiceOverEnabled", .{});
@@ -1180,9 +1047,9 @@ fn releaseNSObject(obj: objc.Object) void {
 }
 
 comptime {
-    std.debug.assert(@sizeOf(MacBridge) <= 1024 * 1024); // Fits the 1 MiB WASM stack
+    std.debug.assert(@sizeOf(MacBridge) <= 1024 * 1024);
 
-    std.debug.assert(@sizeOf(MacBridge.Wrapper) <= 64); // Fits a cache line
+    std.debug.assert(@sizeOf(MacBridge.Wrapper) <= 64);
 }
 
 test "mac bridge initialization" {
@@ -1229,8 +1096,6 @@ test "mac bridge slot management" {
 }
 
 test "a full wrapper pool reclaims elements that left the tree in skipped frames" {
-    // A pool of exactly the tree's capacity always holds the current frame,
-    // even when removals were never synced (VoiceOver was off).
     const capacity: tree_mod.Capacity = .{
         .element_count_max = 2,
         .depth_max = 1,
@@ -1258,8 +1123,6 @@ test "a full wrapper pool reclaims elements that left the tree in skipped frames
     try std.testing.expectEqual(@as(u16, 2), bridge_impl.wrapper_count);
 }
 
-/// A bridge that syncs as if VoiceOver ran, with an element standing in for
-/// the window and no screen conversion, plus a heap tree (~500 KiB).
 const TestRig = struct {
     bridge_impl: MacBridge,
     tree: *tree_mod.Tree,
@@ -1281,7 +1144,6 @@ const TestRig = struct {
         std.testing.allocator.destroy(rig.tree);
     }
 
-    /// `Bridge.syncFrame`'s order, without its screen-reader check.
     fn sync(rig: *TestRig) void {
         const b = rig.bridge_impl.bridge();
         b.syncDirty(rig.tree, rig.tree.getDirtyElements());
@@ -1314,8 +1176,6 @@ fn childCount(ns: objc.Object) usize {
 }
 
 test "mac bridge moves the frame of an element whose content did not change" {
-    // A scroll or layout shift moves elements without changing their content,
-    // so the tree marks nothing dirty; VoiceOver must still get the frames.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1334,8 +1194,6 @@ test "mac bridge moves the frame of an element whose content did not change" {
 }
 
 test "mac bridge clears the children of a reused wrapper that became a leaf" {
-    // A pooled wrapper keeps its native object, so one reused for a leaf
-    // must not keep the children it had.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1363,10 +1221,6 @@ test "mac bridge clears the children of a reused wrapper that became a leaf" {
 }
 
 test "mac bridge hangs a combobox's listbox beside it and reports chosen options" {
-    // VoiceOver puts its cursor back on the child it last visited when focus
-    // returns to a container, so a combobox holding its listbox sent the
-    // cursor into the closed list; and it reads "selected" only from a radio
-    // button's value.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1403,8 +1257,6 @@ test "mac bridge hangs a combobox's listbox beside it and reports chosen options
 }
 
 test "a description is the element's help, cleared when a reused wrapper has none" {
-    // `A11y.description` reaches VoiceOver as AXHelp, which it reads as the
-    // hint.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();

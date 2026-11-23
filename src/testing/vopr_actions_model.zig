@@ -1,14 +1,3 @@
-//! The VOPR's model of the actions example: which action each drain fires
-//! last, so `State.message` is known after every drain. It catches what the
-//! model-free invariants cannot: a binding that fires outside its key
-//! context, an action that misses the focused scope, a chord that matches
-//! with the wrong modifiers, or a key an action took that also reached the
-//! focused control's own handler. Written from the example's keymap and the
-//! contract's key rules, not from the router. The VOPR pins Ctrl as the edit
-//! modifier, so it drives `AppWith(.ctrl)`. The model checks the message,
-//! which shows only the last action of a drain; an action that fired twice
-//! for one key leaves the same message and is not caught here.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const actions = @import("actions_example");
@@ -29,9 +18,7 @@ const Point = vopr_events.Point;
 
 pub const App = actions.AppWith(.ctrl);
 
-/// Actions one drain can hold, as the queue's capacity.
 const pending_count_max: u32 = App.limits.events.queue_count_max;
-/// Ids one press lands in: one per box on the path to the root.
 const press_path_len_max: u32 = internals.window.box_depth_ceiling;
 
 const Message = enum {
@@ -54,31 +41,24 @@ const Message = enum {
 
 pub const ActionsModel = struct {
     message: Message,
-    /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
-    /// The ids the last left press landed in, innermost first.
     press_path: [press_path_len_max]ElementId,
     press_len: u32,
     pending: [pending_count_max]Action,
     pending_count: u32,
     counts: Stats,
 
-    /// The kinds actions' swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .text, .compose, .wait_ns, .tick_main, .present, .resize, .cancel,
     };
 
-    /// The bound keys (Z, S, Escape), the keys that click and move focus,
-    /// and editing keys for the input.
     pub const key_choices: []const input.KeyCode = &.{
         .z,    .s,    .escape, .@"return", .space, .tab,
         .left, .home, .delete, .a,         .c,     .v,
     };
 
     pub const Stats = struct {
-        /// Fires by action, from keys and from clicks.
         fired: [5]u32,
-        /// Ctrl+S pressed with focus outside the editor, so no Save.
         save_outside: u32,
 
         const zero: Stats = .{ .fired = @splat(0), .save_outside = 0 };
@@ -114,7 +94,6 @@ pub const ActionsModel = struct {
         return pending_count_max - self.pending_count;
     }
 
-    /// Record an input action for the next drain; its text is not read.
     pub fn queue(self: *ActionsModel, action: Action) void {
         assert(self.pending_count < pending_count_max);
         assert(action != .tick_main);
@@ -145,8 +124,6 @@ pub const ActionsModel = struct {
         });
     }
 
-    /// Where the generator aims: the text input, and a third of the time
-    /// the row of buttons.
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         var input_bounds: ?records.Rect = null;
@@ -166,7 +143,6 @@ pub const ActionsModel = struct {
             .down => |event_press| self.press(frame, event_press),
             .up => |up| if (up.button == .left) self.release(frame, up.point),
             .key_down => |chord| self.key(frame, chord),
-            // A cancelled gesture clicks nothing at its release.
             .pointer_cancelled => self.press_len = 0,
             .moved, .key_up, .other => {},
         }
@@ -214,7 +190,6 @@ pub const ActionsModel = struct {
         if (buttonMessage(frame, index)) |message| self.fire(message);
     }
 
-    /// A press of any button focuses; a left press records its path.
     fn press(self: *ActionsModel, frame: *const records.Frame, event: vopr_events.Press) void {
         const left = event.button == .left;
         if (left) self.press_len = 0;
@@ -233,8 +208,6 @@ pub const ActionsModel = struct {
         self.focus = focus_id;
     }
 
-    /// A left release clicks the innermost `on_click` under it that the
-    /// left press also landed in.
     fn release(self: *ActionsModel, frame: *const records.Frame, point: Point) void {
         const pressed = self.press_path[0..self.press_len];
         self.press_len = 0;
@@ -253,16 +226,12 @@ pub const ActionsModel = struct {
         }
     }
 
-    /// Whether focus is on the editor's text input, the one focusable
-    /// inside the "Editor" key context.
     fn editorFocused(self: *const ActionsModel, frame: *const records.Frame) bool {
         const node = vopr_frame.findA11y(frame, self.focus) orelse return false;
         return node.role == .textbox;
     }
 };
 
-/// The message a click on record `index` sets: Undo's or Redo's, by the
-/// button's accessible name.
 fn buttonMessage(frame: *const records.Frame, index: u32) ?Message {
     assert(index < frame.hit_count);
     const record = &frame.hits[index];

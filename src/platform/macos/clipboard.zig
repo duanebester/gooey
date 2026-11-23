@@ -29,11 +29,8 @@ pub fn setText(text: []const u8) bool {
 
     const pasteboard = NSPasteboard.msgSend(objc.Object, "generalPasteboard", .{});
 
-    // Required before writing.
     _ = pasteboard.msgSend(c_long, "clearContents", .{});
 
-    // `text` may not be NUL-terminated, so `initWithBytes:length:encoding:`
-    // instead of a null-terminated constructor.
     const ns_string_id: objc.c.id = NSString.msgSend(objc.c.id, "alloc", .{});
     if (ns_string_id == null) return false;
 
@@ -44,7 +41,7 @@ pub fn setText(text: []const u8) bool {
         .{
             text.ptr,
             @as(c_ulong, text.len),
-            @as(c_ulong, 4), // NSUTF8StringEncoding = 4
+            @as(c_ulong, 4),
         },
     );
     if (initialized_id == null) return false;
@@ -62,7 +59,6 @@ test "clipboard round-trip" {
 
     const write_ok = setText(test_text);
     if (!write_ok) {
-        // No clipboard (headless CI): skip.
         return;
     }
 

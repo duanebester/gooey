@@ -1,13 +1,3 @@
-// Sprites: the HLSL twins of the Vulkan renderer's text, svg, and image
-// shaders (src/platform/linux/shaders), reading packed-frame sprites. One
-// vertex shader serves the three atlases; each has its own pixel shader:
-//   ps_glyph: R8 coverage times the tint; straight alpha.
-//   ps_svg:   R is fill coverage and G stroke coverage; the stroke shows only
-//             where the fill does not. Premultiplied output.
-//   ps_image: straight RGBA times the tint, with grayscale, opacity, and
-//             anti-aliased rounded corners; straight alpha.
-// Clipping is the scissor rectangle the renderer sets per draw.
-// Rebuild the DXBC after editing: zig build compile-hlsl.
 
 #include "common.hlsl"
 
@@ -20,7 +10,7 @@ struct Varyings {
     float2 tex_coord : TEXCOORD0;
     float4 tint : COLOR0;
     float4 secondary : COLOR1;
-    float2 local_pos : LOCAL_POS; // Pixels from the sprite's top left.
+    float2 local_pos : LOCAL_POS;
     float2 size : SIZE;
     float4 corner_radii : CORNER_RADII;
     float grayscale : GRAYSCALE;
@@ -52,7 +42,6 @@ float4 ps_glyph(Varyings i) : SV_Target {
 
 float4 ps_svg(Varyings i) : SV_Target {
     float4 sample_value = atlas.Sample(atlas_sampler, i.tex_coord);
-    // Threshold to eliminate linear filtering bleed between channels.
     float fill_alpha = sample_value.r > 0.02 ? sample_value.r : 0.0;
     float stroke_alpha = sample_value.g > 0.02 ? sample_value.g : 0.0;
     float visible_stroke = stroke_alpha * (1.0 - fill_alpha);
@@ -66,7 +55,6 @@ float4 ps_svg(Varyings i) : SV_Target {
 }
 
 float rounded_rect_sdf(float2 pos, float2 half_size, float4 radii) {
-    // radii: x top left, y top right, z bottom right, w bottom left.
     float r;
     if (pos.x > 0.0) {
         r = (pos.y > 0.0) ? radii.z : radii.y;
@@ -78,8 +66,6 @@ float rounded_rect_sdf(float2 pos, float2 half_size, float4 radii) {
 }
 
 float4 ps_image(Varyings i) : SV_Target {
-    // Sampled before any discard: implicit derivatives are undefined after
-    // a non-uniform one.
     float4 color = atlas.Sample(atlas_sampler, i.tex_coord);
     float corner_alpha = 1.0;
     float4 r = i.corner_radii;

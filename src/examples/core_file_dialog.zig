@@ -7,7 +7,6 @@ const Cx = gooey.Cx;
 const Effects = gooey.Effects;
 const Button = components.Button;
 
-/// Longest path the state keeps; longer paths are cut at a UTF-8 boundary.
 const path_bytes_max = 512;
 
 pub const State = struct {
@@ -63,8 +62,6 @@ pub const State = struct {
         }) catch |err| self.refused(err);
     }
 
-    /// A dialog is open, or another click asked for one in the same frame:
-    /// say so, and keep the path chosen before.
     fn refused(self: *State, err: Effects.DialogError) void {
         switch (err) {
             error.DialogBusy => self.setStatus("A dialog is already open.", .{}),
@@ -72,8 +69,6 @@ pub const State = struct {
     }
 
     fn setStatus(self: *State, comptime format: []const u8, args: anytype) void {
-        // Every format above fits 64 bytes with the largest path count
-        // (`dialog_path_count_max` is at most 1,024), so bufPrint cannot fail.
         const text = std.fmt.bufPrint(&self.status_bytes, format, args) catch unreachable;
         self.status_len = @intCast(text.len);
     }

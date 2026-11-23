@@ -64,7 +64,6 @@ pub const HarfBuzzShaper = struct {
             const info = glyph_infos[i];
             const pos = glyph_positions[i];
 
-            // The hb_ft bridge does not scale positions; they stay in 26.6 fixed point.
             const x_advance = ft.f26dot6ToFloat(pos.x_advance);
             const y_advance = ft.f26dot6ToFloat(pos.y_advance);
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
@@ -77,8 +76,8 @@ pub const HarfBuzzShaper = struct {
                 .x_advance = x_advance,
                 .y_advance = y_advance,
                 .cluster = info.cluster,
-                .font_ref = null, // No fallback font handling yet
-                .is_color = false, // TODO: detect color glyphs
+                .font_ref = null,
+                .is_color = false,
             });
 
             total_width += x_advance;

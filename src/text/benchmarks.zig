@@ -1,11 +1,7 @@
-//! Benchmarks for text atlas packing, shaping, measurement, and glyph rasterization.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
-/// Minimal `Instant.now()`/`.since()` shim over `std.Io.Clock.awake`, the monotonic
-/// clock, so deltas can never go negative.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -28,9 +24,6 @@ const time = struct {
 
 const text = gooey.internals.text;
 
-/// The benchmarks' text budget: one face (`nano`'s) and `standard`'s caches,
-/// with `small`'s 1,024 width slots, the sizes every cache had before they
-/// came from `ResourceLimits`, so results compare across that change.
 const bench_text_limits = blk: {
     var value = gooey.ResourceLimits.standard.text;
     value.fonts = text.FontLimits.nano;
@@ -58,16 +51,12 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark; zero in
-/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
-/// 4096 samples * 8 bytes = 32 KB, which fits comfortably on the stack.
 const MAX_SAMPLE_COUNT: u32 = 4096;
 
 const TABLE_WIDTH = 125;
 
-/// Mirrors text.SUBPIXEL_VARIANTS_X, the authoritative source.
 const BENCH_SUBPIXEL_VARIANTS: u32 = text.SUBPIXEL_VARIANTS_X;
 
 const IterationSamples = struct {
@@ -78,7 +67,6 @@ const IterationSamples = struct {
         return .{ .times_ns = undefined, .count = 0 };
     }
 
-    /// Drops samples beyond capacity; the first MAX_SAMPLE_COUNT suffice for percentiles.
     fn record(self: *IterationSamples, elapsed_ns: u64) void {
         if (self.count < MAX_SAMPLE_COUNT) {
             self.times_ns[self.count] = elapsed_ns;
@@ -104,7 +92,6 @@ const IterationSamples = struct {
         const ops_f: f64 = @floatFromInt(operation_count);
 
         return .{
-            // The slice is sorted ascending, so slice[0] is the fastest sample (the min).
             .min_per_op_ns = @as(f64, @floatFromInt(slice[0])) / ops_f,
             .p50_per_op_ns = @as(f64, @floatFromInt(slice[p50_index])) / ops_f,
             .p99_per_op_ns = @as(f64, @floatFromInt(slice[p99_index])) / ops_f,
@@ -183,7 +170,6 @@ comptime {
     std.debug.assert(SCALING_TEXT_BASE.len >= 200);
 }
 
-/// Repeating gradient pattern approximating anti-aliased glyph bitmaps; no real font needed.
 fn generatePixelData(comptime width: u32, comptime height: u32) [width * height]u8 {
     comptime {
         std.debug.assert(width > 0);
@@ -211,7 +197,6 @@ const UniqueGlyphIds = struct {
     count: u32,
 };
 
-/// O(n^2) linear-scan dedup; acceptable since n <= 95 (asserted <= 1024).
 fn extractUniqueGlyphIds(shaped_glyphs: []const text.ShapedGlyph) UniqueGlyphIds {
     std.debug.assert(shaped_glyphs.len > 0);
     std.debug.assert(shaped_glyphs.len <= 1024);
@@ -244,9 +229,6 @@ fn extractUniqueGlyphIds(shaped_glyphs: []const text.ShapedGlyph) UniqueGlyphIds
 
 const bench_atlas_size: u32 = 1024;
 
-/// A fixed glyph atlas over its own journal. `.cpu_texture` writes pixels into
-/// the atlas (the CPU renderer's path); `.gpu_upload` with no consumer measures
-/// placement alone, since a journal without renderers stages nothing.
 const BenchAtlas = struct {
     uploads: text.AtlasUploads,
     atlas: Atlas,
@@ -271,7 +253,6 @@ const BenchAtlas = struct {
         self.uploads.deinit();
     }
 
-    /// Start a new frame, so items placed earlier become evictable.
     fn nextFrame(self: *BenchAtlas) void {
         _ = self.uploads.beginFrame(1);
         std.debug.assert(self.uploads.frameCurrent() > 1);
@@ -323,7 +304,6 @@ fn benchAtlasInsert(
     return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
 }
 
-/// Standalone so the hot loop has no `self` indirection.
 fn insertUniformBatch(atlas: *Atlas, width: u32, height: u32, pixels: []const u8, count: u32) void {
     var index: u32 = 0;
     while (index < count) : (index += 1) {
@@ -338,7 +318,7 @@ fn benchAtlasInsertMixed(
     comptime count: u32,
 ) BenchmarkResult {
     std.debug.assert(count > 0);
-    std.debug.assert(count <= 1000); // Fits the 1024² atlas without eviction.
+    std.debug.assert(count <= 1000);
     const bench_atlas = allocator.create(BenchAtlas) catch unreachable;
     defer allocator.destroy(bench_atlas);
     bench_atlas.init(allocator, .gpu_upload);
@@ -378,9 +358,6 @@ fn insertMixedBatch(atlas: *Atlas, count: u32) u64 {
     return area;
 }
 
-/// Insert into a full atlas: every insert first evicts the least recently used
-/// shelf. Each iteration refills the atlas in one frame and times `count`
-/// inserts in the next, so every timed insert pays a full-atlas eviction scan.
 fn benchAtlasEvict(
     allocator: std.mem.Allocator,
     comptime name: []const u8,
@@ -388,7 +365,6 @@ fn benchAtlasEvict(
 ) BenchmarkResult {
     const glyph_width: u32 = 30;
     const glyph_height: u32 = 30;
-    // 32x32 outer items: 32 shelves of 32 items fill the atlas exactly.
     const shelf_count = bench_atlas_size / 32;
     const per_shelf = bench_atlas_size / 32;
     comptime std.debug.assert(count <= shelf_count);
@@ -412,7 +388,6 @@ fn benchAtlasEvict(
         );
         std.debug.assert(bench_atlas.atlas.rows_active == bench_atlas_size);
         bench_atlas.nextFrame();
-        // One item per evicted shelf: a 31-px-wide item leaves no room for a second.
         const start = time.Instant.now();
         insertUniformBatch(
             &bench_atlas.atlas,
@@ -429,7 +404,6 @@ fn benchAtlasEvict(
     return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
 }
 
-/// Full-width rows for `benchAtlasEvict`, so each insert needs its own shelf.
 const pixel_data_wide: [(bench_atlas_size - 2) * 30]u8 = @splat(0x80);
 
 fn atlasResult(
@@ -452,7 +426,6 @@ fn atlasResult(
     };
 }
 
-/// Shape cache invalidated before every timed call, forcing a full FFI round-trip.
 fn benchShapeCold(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -507,7 +480,6 @@ fn benchShapeCold(
     };
 }
 
-/// Same text `count` times per iteration; every call after the first is a pure cache hit.
 fn benchShapeWarm(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -568,8 +540,6 @@ fn benchShapeWarm(
     };
 }
 
-/// Arena `run_allocator` turns alloc into a pointer bump and free into a no-op,
-/// isolating the true cache lookup cost from GPA alloc/free overhead.
 fn benchShapeWarmArena(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -639,8 +609,6 @@ fn benchShapeWarmArena(
     };
 }
 
-/// On a cache hit, shapeTextInto copies glyphs into the caller's stack buffer
-/// (owned=false): no heap allocation or free.
 fn benchShapeWarmInto(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -810,12 +778,8 @@ fn benchMeasureTextWrapped(
     };
 }
 
-/// Key the cold benchmark advances the atlas frame clock with. No renderer
-/// registers it, and 0 is never a key (`AtlasUploads.findConsumer` asserts
-/// it, so passing 0 is undefined behaviour in ReleaseFast).
 const bench_frame_key: usize = 1;
 
-/// Glyph cache cleared before each timed iteration; full rasterize + pack + insert per glyph.
 fn benchGlyphRasterCold(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -829,7 +793,6 @@ fn benchGlyphRasterCold(
     const min_iters = getMinSampleIterations(glyph_count);
 
     for (0..3) |_| {
-        // A new frame: a cleared atlas reclaims space only from past frames.
         _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(bench_frame_key);
         text_sys.cache.clear();
         for (glyph_ids) |glyph_id| {
@@ -843,7 +806,6 @@ fn benchGlyphRasterCold(
     var last_advance_x: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        // A new frame: a cleared atlas reclaims space only from past frames.
         _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(bench_frame_key);
         text_sys.cache.clear();
 
@@ -860,8 +822,6 @@ fn benchGlyphRasterCold(
         iterations += 1;
     }
 
-    // Advance can be zero for space-like glyphs in some fonts, but at least
-    // one printable ASCII glyph should have a positive advance.
     std.debug.assert(last_advance_x >= 0);
     std.debug.assert(iterations >= min_iters);
     const percentiles = samples.computePercentiles(glyph_count);
@@ -877,7 +837,6 @@ fn benchGlyphRasterCold(
     };
 }
 
-/// All glyphs pre-cached; `repetitions` passes per iteration for stable timing.
 fn benchGlyphRasterWarm(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -942,8 +901,6 @@ fn benchGlyphRasterWarm(
     };
 }
 
-/// Each glyph cached at BENCH_SUBPIXEL_VARIANTS X offsets (Y is always 0),
-/// revealing whether subpixel diversity causes capacity pressure.
 fn benchGlyphRasterWarmSubpixel(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1013,8 +970,6 @@ fn benchGlyphRasterWarmSubpixel(
     };
 }
 
-/// Same ShapedGlyph-array layout as the batch variant, but with per-glyph
-/// getGlyphSubpixel calls: compares per-glyph locking against batch locking.
 fn benchGlyphRasterWarmPerGlyph(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1094,8 +1049,6 @@ fn benchGlyphRasterWarmPerGlyph(
     };
 }
 
-/// Same data layout as the per-glyph variant, but one mutex lock per batch via
-/// resolveGlyphBatch; the difference isolates the cost of N-1 redundant lock/unlock pairs.
 fn benchGlyphRasterWarmBatch(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1112,7 +1065,6 @@ fn benchGlyphRasterWarmBatch(
     const operation_count = glyph_count * repetitions;
     const min_iters = getMinSampleIterations(operation_count);
 
-    // Only glyph_id and font_ref are read by resolveGlyphBatch.
     var shaped_glyphs: [MAX_UNIQUE_GLYPHS]ShapedGlyph = undefined;
     var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = undefined;
     var out_cached: [MAX_UNIQUE_GLYPHS]CachedGlyph = undefined;
@@ -1198,7 +1150,6 @@ test "validate: atlas insert fills shelves without eviction" {
 
     const pixel_data = comptime generatePixelData(8, 12);
     insertUniformBatch(&bench_atlas.atlas, 8, 12, &pixel_data, 100);
-    // 10x14 outer items, 102 per 1024-px shelf of 16 rows: 100 fit in one shelf.
     try std.testing.expectEqual(@as(u32, 16), bench_atlas.atlas.rows_active);
     try std.testing.expectEqual(@as(u8, pixel_data[0]), bench_atlas.atlas.getData()[1024 + 1]);
 }
@@ -1233,9 +1184,6 @@ test "validate: IterationSamples computes correct percentiles" {
     try std.testing.expectEqual(@as(u32, 100), samples.count);
 
     const p = samples.computePercentiles(1);
-    // Sorted: 1000, 2000, ..., 100000.  last_index = 99.
-    // p50: floor(0.50 * 99) = 49 -> value = 50000.
-    // p99: floor(0.99 * 99) = floor(98.01) = 98 -> value = 99000.
     try std.testing.expectApproxEqAbs(@as(f64, 50000.0), p.p50_per_op_ns, 1.0);
     try std.testing.expectApproxEqAbs(@as(f64, 99000.0), p.p99_per_op_ns, 1.0);
 }
@@ -1257,17 +1205,12 @@ test "validate: IterationSamples divides by operation count" {
     samples.record(30000);
 
     const p = samples.computePercentiles(10);
-    // Sorted: 10000, 20000, 30000.  last_index = 2.
-    // p50: floor(0.50 * 2) = 1 -> value = 20000 / 10 = 2000.
-    // p99: floor(0.99 * 2) = floor(1.98) = 1 -> value = 20000 / 10 = 2000.
     try std.testing.expectApproxEqAbs(@as(f64, 2000.0), p.p50_per_op_ns, 1.0);
     try std.testing.expectApproxEqAbs(@as(f64, 2000.0), p.p99_per_op_ns, 1.0);
 }
 
-/// Returns null when setup fails, so tests skip gracefully on unsupported environments.
 fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
     const ts = allocator.create(TextSystem) catch return null;
-    // Freed by `destroyTestTextSystem`, which reaches it through the atlas.
     const uploads = allocator.create(text.AtlasUploads) catch {
         allocator.destroy(ts);
         return null;
@@ -1355,7 +1298,6 @@ test "validate: shapeTextInto warm path returns owned=false with correct glyphs"
     try std.testing.expectEqual(expected_count, into_run.glyphs.len);
     try std.testing.expectApproxEqAbs(expected_width, into_run.width, 0.001);
 
-    // Verify glyph slice points into our stack buffer, not heap memory.
     const buf_start = @intFromPtr(&buf[0]);
     const buf_end = buf_start + buf.len * @sizeOf(ShapedGlyph);
     const slice_start = @intFromPtr(into_run.glyphs.ptr);
@@ -1479,7 +1421,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.p99_per_op_ns,
     ));
     result.print();
-    // Printing stays outside the next benchmark's Cachegrind region.
     reporter.beginBenchmark();
 }
 
@@ -1599,18 +1540,6 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
     collect(reporter, benchMeasureTextWrapped(text_sys, "measure_wrapped_50ch_200px_x100", TEXT_MEDIUM, 200.0, 100));
     collect(reporter, benchMeasureTextWrapped(text_sys, "measure_wrapped_104ch_300px_x100", TEXT_LONG, 300.0, 100));
 
-    // Regression guard for the shape-cache insert boundary.  `ShapedRunCache.put`
-    // refuses runs longer than MAX_GLYPHS_PER_ENTRY, while the `measureText`
-    // lookup gate admits anything up to MAX_TEXT_LEN.  Text in between is never
-    // stored, so without another cache it would shape through CoreText on *every*
-    // call -- a permanent miss that costs ~35us per measurement versus ~160ns for
-    // a hit (~220x).  `MeasureCache` closes that gap by caching width without
-    // glyphs.
-    //
-    // These two cases straddle the boundary with otherwise-identical ASCII text
-    // (1 byte = 1 glyph), so they should report the *same* cost.  If the 129ch
-    // row diverges sharply from the 128ch row, the width cache has stopped
-    // covering the over-limit band.
     std.debug.assert(ShapedRunCache.MAX_GLYPHS_PER_ENTRY == 128);
     std.debug.assert(ShapedRunCache.MAX_TEXT_LEN >= 129);
     collect(reporter, benchMeasureText(text_sys, "measure_at_shape_limit_128ch_x100", SCALING_TEXT_BASE[0..128], 100));
@@ -1680,18 +1609,12 @@ fn printTextPipelineNotes() void {
     , .{});
 }
 
-/// Heap-allocates TextSystem (~1.7 MB) to avoid stack overflow on constrained platforms.
 fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) !void {
-    // Font loading is setup, not part of the first shaping benchmark.
     reporter.pauseBenchmark();
 
     const text_sys = try gpa.create(TextSystem);
     defer gpa.destroy(text_sys);
 
-    // `TextSystem.initInPlace` requires an `Io` so the embedded
-    // shape/glyph cache mutexes (`std.Io.Mutex`) have a process-lifetime
-    // vtable to lock against.  Forward the `Io`
-    // supplied by the process entry point.
     var uploads: text.AtlasUploads = undefined;
     try uploads.initHeadless(gpa, reporter.io);
     defer uploads.deinit();

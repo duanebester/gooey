@@ -1,22 +1,3 @@
-//! The VOPR's model of the core_file_dialog example: what its status line
-//! and path show, from the input the harness queued and the answers its
-//! platform dialogs gave (`vopr_dialogs.zig`). Each of the four buttons asks
-//! for a dialog; the core refuses one with `error.DialogBusy` while another
-//! request waits for this tick's drain or every dialog slot holds a dialog
-//! awaiting its outcome, and the app then shows "A dialog is already open."
-//! and keeps its path. Every answer completes into `State.completed`, which
-//! overwrites both. The model routes a drain as the core must, in one pass:
-//! the outcome a modal dialog returned from `open` last tick (queued then),
-//! then the queue in push order, input and answers interleaved, then the
-//! ring's answers, which the drain appends after the queue's. Clicks and
-//! keys are routed against the frame on screen as the actions model routes
-//! them. A selection shows its first path, cut at the last UTF-8 boundary
-//! within the app's 512 bytes; the model cuts by decoding codepoints, not by
-//! the app's continuation-byte scan. It catches a refusal the core missed or
-//! made wrongly, a slot freed late or never, a completion routed to the
-//! wrong drain, out of order, or twice, paths the queue or the ring copied
-//! wrong, and a cut inside a codepoint.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const file_dialog = @import("core_file_dialog_example");
@@ -40,25 +21,17 @@ const Point = vopr_events.Point;
 pub const App = file_dialog.App;
 const Dialogs = vopr_dialogs.Dialogs(App.limits.events);
 
-/// The longest path the app keeps (`core_file_dialog.zig`).
 const kept_bytes_max: u32 = 512;
-/// Items one drain can route from the queue, and answers from the ring:
-/// one queue's worth each.
 const pending_count_max: u32 = App.limits.events.queue_count_max;
-/// Dialogs that can await an outcome at once: the dialog table.
 const slot_count_max: u32 = App.limits.events.dialog_count_max;
-/// Ids one press lands in: one per box on the path to the root.
 const press_path_len_max: u32 = internals.window.box_depth_ceiling;
-/// The status a refusal shows (`State.refused`).
 const busy_status = "A dialog is already open.";
 
-/// What one completion makes the app show.
 const Shown = struct {
     outcome: Answer.Outcome,
     path_count: u32,
     path: [kept_bytes_max]u8,
     path_len: u32,
-    /// The first path was longer than the app keeps.
     cut: bool,
 
     const initial: Shown = .{
@@ -84,8 +57,6 @@ const Shown = struct {
     }
 };
 
-/// One item of the event queue, in push order: an input action, or an
-/// answer through the queue.
 const Item = union(enum) {
     input: Action,
     answer: Shown,
@@ -103,43 +74,29 @@ const Deliveries = struct {
 };
 
 pub const FileDialogModel = struct {
-    /// The last completion routed, which the path shows; null before one.
     shown: ?Shown,
-    /// The status shows a refusal, routed after `shown`.
     refused_last: bool,
-    /// The queue the next drain routes, then the ring's answers.
     pending: [pending_count_max]Item,
     pending_count: u32,
     ringed: Deliveries,
-    /// The outcome a modal dialog returned from `open`, which the tick
-    /// queued for the next drain; its dialog holds its slot until then.
     carried: ?Shown,
-    /// Dialogs awaiting an outcome, each holding a slot.
     slots_held: u32,
-    /// A request routed in this drain, which the tick opens after it.
     requested: bool,
     opened_before: u32,
-    /// Focus within the drain being routed; read from the window first.
     focus: ElementId,
-    /// The ids the last left press landed in, innermost first.
     press_path: [press_path_len_max]ElementId,
     press_len: u32,
-    /// Bytes of the status the app must show, formatted by the model.
     status_bytes: [64]u8,
     counts: Stats,
 
-    /// The kinds file_dialog's swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .wait_ns, .tick_main, .present, .resize, .dialog,
     };
 
-    /// Keys that move focus along the buttons and press them.
     pub const key_choices: []const gooey.input.KeyCode = &.{
         .tab, .space, .@"return", .escape,
     };
 
-    /// Path lengths in bytes: short ones, ones either side of the app's
-    /// 512-byte cut, and long ones that fill the dialog's budget.
     pub const dialog_path_lengths: []const u32 = &.{
         1, 9, 40, 509, 510, 511, 512, 513, 514, 515, 900, App.limits.events.dialog_path_bytes_max,
     };
@@ -151,12 +108,9 @@ pub const FileDialogModel = struct {
         cancelled: u32,
         failed: u32,
         paths_cut: u32,
-        /// Drains that routed more than one completion.
         drains_shared: u32,
         requested: u32,
-        /// Requests refused while another waited for the tick.
         refused_waiting: u32,
-        /// Requests refused while every slot was held.
         refused_full: u32,
         opened: u32,
         answered_at_open: u32,
@@ -202,15 +156,12 @@ pub const FileDialogModel = struct {
         return self.counts;
     }
 
-    /// Room for one more item in the queue or answer on the ring.
     pub fn pendingRoom(self: *const FileDialogModel) u32 {
         assert(self.pending_count <= pending_count_max);
         assert(self.ringed.count <= pending_count_max);
         return pending_count_max - @max(self.pending_count, self.ringed.count);
     }
 
-    /// Record an action for the next drain. An answer armed for the next
-    /// dialog shows nothing until that dialog opens.
     pub fn queue(self: *FileDialogModel, action: Action) void {
         assert(action != .tick_main);
         const answer = switch (action) {
@@ -232,15 +183,12 @@ pub const FileDialogModel = struct {
         self.focus = window.focus;
         const dialogs = dialogsOf(window);
         self.opened_before = dialogs.opened_count;
-        // A modal outcome the last tick queued leads the queue.
         if (self.carried != null) {
             assert(window.queue.count > 0);
             assert(window.queue.pending()[0] == .completion);
         }
     }
 
-    /// Route the drain as the core does, then account for the dialog the
-    /// tick opened after it, if a request was granted.
     pub fn endDrain(self: *FileDialogModel, window: *Window, published: bool) void {
         assert(window.queue.count <= 1);
         const frame = window.rendered();
@@ -280,7 +228,6 @@ pub const FileDialogModel = struct {
         });
     }
 
-    /// Where the generator aims: the row of buttons.
     pub fn biasTarget(window: *Window) ?vopr.Bias {
         const frame = window.rendered();
         var buttons: ?Rect = null;
@@ -297,8 +244,6 @@ pub const FileDialogModel = struct {
         self.pending_count += 1;
     }
 
-    /// The tick opened the drain's granted request, if any: it stays open
-    /// or returns its outcome, which the tick queues for the next drain.
     fn openRequested(self: *FileDialogModel, dialogs: *const Dialogs, published: bool) void {
         if (!self.requested) {
             assert(dialogs.opened_count == self.opened_before);
@@ -317,8 +262,6 @@ pub const FileDialogModel = struct {
         self.carried = Shown.of(delivered.outcome, delivered.path_count, delivered.first);
     }
 
-    /// A button asks for a dialog: the core grants the drain's first
-    /// request while a slot is free and refuses the rest.
     fn activate(self: *FileDialogModel) void {
         assert(self.slots_held <= slot_count_max);
         self.counts.requested += 1;
@@ -335,7 +278,6 @@ pub const FileDialogModel = struct {
         self.requested = true;
     }
 
-    /// A completion frees its dialog's slot and shows its outcome.
     fn complete(self: *FileDialogModel, shown: *const Shown) void {
         assert(self.slots_held > 0);
         self.slots_held -= 1;
@@ -363,8 +305,6 @@ pub const FileDialogModel = struct {
         }
     }
 
-    /// Tab moves focus; Enter or Space without Cmd, Ctrl, or Alt presses
-    /// the focused button (`router.activates`).
     fn key(self: *FileDialogModel, frame: *const records.Frame, chord: Action.Chord) void {
         if (chord.key == .tab) {
             self.focus = vopr_frame.nextTabStop(frame, self.focus, chord.modifiers.shift);
@@ -377,7 +317,6 @@ pub const FileDialogModel = struct {
         if (isButton(frame, index)) self.activate();
     }
 
-    /// A press of any button focuses; a left press records its path.
     fn press(self: *FileDialogModel, frame: *const records.Frame, down: vopr_events.Press) void {
         const left = down.button == .left;
         if (left) self.press_len = 0;
@@ -396,8 +335,6 @@ pub const FileDialogModel = struct {
         self.focus = focus_id;
     }
 
-    /// A left release clicks the innermost `on_click` under it that the
-    /// left press also landed in.
     fn release(self: *FileDialogModel, frame: *const records.Frame, point: Point) void {
         const pressed = self.press_path[0..self.press_len];
         self.press_len = 0;
@@ -416,8 +353,6 @@ pub const FileDialogModel = struct {
         }
     }
 
-    /// The status the app formats, written here from its strings: empty
-    /// (the app shows its placeholder) before any completion or refusal.
     fn status(self: *FileDialogModel) []const u8 {
         if (self.refused_last) return busy_status;
         const shown = self.shown orelse return "";
@@ -427,7 +362,7 @@ pub const FileDialogModel = struct {
             else
                 std.fmt.bufPrint(&self.status_bytes, "Selected {d} paths; the first:", .{
                     shown.path_count,
-                }) catch unreachable, // At most 1,024 paths: 34 of 64 bytes.
+                }) catch unreachable,
             .cancelled => "Cancelled.",
             .failed => "The dialog failed.",
         };
@@ -439,8 +374,6 @@ fn dialogsOf(window: *Window) *const Dialogs {
     return @ptrCast(@alignCast(service.context));
 }
 
-/// Whether record `index` is one of the app's buttons, every one of which
-/// asks for a dialog.
 fn isButton(frame: *const records.Frame, index: u32) bool {
     assert(index < frame.hit_count);
     const record = &frame.hits[index];
@@ -458,12 +391,10 @@ fn firstPath(paths: []const u8) []const u8 {
     return paths[0..end];
 }
 
-/// The longest prefix of whole codepoints within `kept_bytes_max` bytes.
 fn keptPrefix(path: []const u8) []const u8 {
     assert(std.unicode.utf8ValidateSlice(path));
     var view = std.unicode.Utf8View.initUnchecked(path).iterator();
     var end: usize = 0;
-    // Each turn takes one codepoint of `path`.
     while (view.nextCodepointSlice()) |codepoint| {
         if (end + codepoint.len > kept_bytes_max) break;
         end += codepoint.len;

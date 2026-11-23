@@ -1,43 +1,21 @@
-// The WebGPU shader library for the packed frame (contract §9): one module,
-// compiled once at init, with one vertex and one fragment entry point per
-// `packed_frame.Pipeline` (src/platform/web/renderer.zig names them).
-//
-// The structs mirror src/core/packed_frame.zig field for field, so the
-// renderer copies each instance array into its storage buffer unchanged:
-// WGSL places every vec4 at a 16-byte boundary, `Quad.offset` (a vec2) at
-// byte 80, and the trailing scalars after them, which is the Zig layout.
-// Colours arrive as straight RGBA; positions are logical pixels from the top
-// left. Clipping is the draw's scissor rectangle, so no shader tests a clip.
-//
-// The coverage, SDF, edge, and falloff math is the Metal library's
-// (src/platform/macos/metal/shaders.zig), which keeps 0.3.1's quad, sprite,
-// and point math and adds analytic edges for one sample per pixel.
-//
-// One bind group serves every pipeline:
-//   0 quads, 1 sprites, 2 meshes, 3 mesh points, 4 triangle edge modes,
-//   5 viewport uniform, 6 glyph atlas, 7 SVG atlas, 8 image atlas, 9 sampler.
-// Quads and sprites draw six vertices per instance from the draw's first
-// instance. Mesh draws pass their mesh index as the first instance and
-// expand it from the vertex index: 21 vertices per triangle, 6 per strip
-// segment or point.
 
 struct Quad {
     bounds: vec4<f32>,
     fill: vec4<f32>,
     border_color: vec4<f32>,
-    corners: vec4<f32>,        // top left, top right, bottom right, bottom left
-    border_widths: vec4<f32>,  // top, right, bottom, left
-    offset: vec2<f32>,         // a shadow's offset from bounds
-    blur: f32,                 // > 0: a shadow
+    corners: vec4<f32>,
+    border_widths: vec4<f32>,
+    offset: vec2<f32>,
+    blur: f32,
     pad: f32,
 }
 
 struct Sprite {
     bounds: vec4<f32>,
-    uv: vec4<f32>,             // left, top, right, bottom
+    uv: vec4<f32>,
     tint: vec4<f32>,
-    secondary: vec4<f32>,      // SVG stroke colour
-    corners: vec4<f32>,        // image radii
+    secondary: vec4<f32>,
+    corners: vec4<f32>,
     grayscale: f32,
     opacity: f32,
     pad0: f32,
@@ -46,13 +24,12 @@ struct Sprite {
 
 struct Mesh {
     fill: vec4<f32>,
-    first: u32,                // into mesh_points
+    first: u32,
     count: u32,
-    width: f32,                // strip: full width; points: radius
-    edge_first: u32,           // triangles: into edge_modes, one per triangle
+    width: f32,
+    edge_first: u32,
 }
 
-// The framebuffer in logical pixels; zw are padding.
 struct Viewport {
     size: vec4<f32>,
 }
@@ -68,10 +45,8 @@ struct Viewport {
 @group(0) @binding(8) var image_atlas: texture_2d<f32>;
 @group(0) @binding(9) var atlas_sampler: sampler;
 
-// One logical pixel is at least one device pixel at every supported scale.
 const aa_fringe: f32 = 1.0;
 
-// Six vertices per instance: two triangles over the unit square.
 fn unit_vertex(vertex: u32) -> vec2<f32> {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
@@ -85,12 +60,6 @@ fn to_clip_space(pos: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
-// Share of a pixel's extent along one axis inside [0, size]: the overlap of
-// [pos - pixel/2, pos + pixel/2] with the rectangle, where `pos` is the pixel
-// centre and `pixel` one device pixel, both in logical pixels. Exact for a box
-// filter, including rectangles thinner than a pixel. Interpolation leaves
-// float noise in `pos`, so a pixel within 1/1000 of full or empty counts as
-// such: pixel-aligned sides give exactly 1 or 0.
 fn axis_coverage(pos: f32, size: f32, pixel: f32) -> f32 {
     let low = max(pos - 0.5 * pixel, 0.0);
     let high = min(pos + 0.5 * pixel, size);
@@ -104,16 +73,12 @@ fn axis_coverage(pos: f32, size: f32, pixel: f32) -> f32 {
     return coverage;
 }
 
-// One device pixel in units of `value`, per component of a vec2.
 fn pixel_extent(value: vec2<f32>) -> vec2<f32> {
     let dx = dpdx(value);
     let dy = dpdy(value);
     return vec2<f32>(length(vec2<f32>(dx.x, dy.x)), length(vec2<f32>(dx.y, dy.y)));
 }
 
-// =============================================================================
-// Quads and shadows
-// =============================================================================
 
 fn rounded_rect_sdf(pos: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
     let d = abs(pos) - half_size + radius;
@@ -162,13 +127,9 @@ fn quad_vertex(
     let origin = q.bounds.xy;
     let size = q.bounds.zw;
     if (out.is_shadow == 0u) {
-        // One sample per pixel: grow the quad by one logical pixel so pixels
-        // the rectangle only partly covers are rasterized; the fragment shader
-        // weights them by that coverage. Empty quads stay empty.
         let fringe = select(0.0, 1.0, size.x > 0.0 && size.y > 0.0);
         let pos = origin - fringe + unit * (size + 2.0 * fringe);
         out.position = to_clip_space(pos);
-        // Quad-local position in logical pixels; outside [0, size] in the fringe.
         out.quad_coord = pos - origin;
         out.quad_size = size;
         out.content_size = size;
@@ -192,8 +153,6 @@ fn quad_color(in: QuadOut, pixel: vec2<f32>) -> vec4<f32> {
     let half_size = size / 2.0;
     let pos = in.quad_coord;
     let centered = pos - half_size;
-    // The pixel's coverage by the quad's rectangle. Pixels inside the
-    // rectangle, including rounded corners, are fully covered.
     let rect_coverage = axis_coverage(pos.x, size.x, pixel.x) *
         axis_coverage(pos.y, size.y, pixel.y);
     let radius = pick_corner_radius(centered, in.corner_radii);
@@ -202,9 +161,6 @@ fn quad_color(in: QuadOut, pixel: vec2<f32>) -> vec4<f32> {
     let has_border = bw.x > 0.0 || bw.y > 0.0 || bw.z > 0.0 || bw.w > 0.0;
     var color = in.color;
     if (has_border) {
-        // bw: x=top, y=right, z=bottom, w=left. The inner rounded rect insets
-        // each side independently, with per-corner inner radii reduced by the
-        // larger of the two adjacent border widths.
         let inner_min = vec2<f32>(-half_size.x + bw.w, -half_size.y + bw.x);
         let inner_max = vec2<f32>(half_size.x - bw.y, half_size.y - bw.z);
         let inner_center = (inner_min + inner_max) * 0.5;
@@ -228,8 +184,6 @@ fn quad_color(in: QuadOut, pixel: vec2<f32>) -> vec4<f32> {
 
 @fragment
 fn quad_fragment(in: QuadOut) -> @location(0) vec4<f32> {
-    // Derivatives first, in uniform control flow. quad_coord is affine, so
-    // these are logical pixels per device pixel.
     let pixel = pixel_extent(in.quad_coord);
     if (in.is_shadow == 0u) {
         let color = quad_color(in, pixel);
@@ -245,9 +199,6 @@ fn quad_fragment(in: QuadOut) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
 
-// =============================================================================
-// Sprites: glyphs, SVG icons, images
-// =============================================================================
 
 struct TextOut {
     @builtin(position) position: vec4<f32>,
@@ -281,19 +232,12 @@ struct IconOut {
     @location(0) tex_coord: vec2<f32>,
     @location(1) fill_color: vec4<f32>,
     @location(2) stroke_color: vec4<f32>,
-    // Position from the sprite's origin in logical pixels; outside [0, size]
-    // in the fringe.
     @location(3) local_pos: vec2<f32>,
     @location(4) size: vec2<f32>,
     @location(5) corner_radii: vec4<f32>,
-    @location(6) effects: vec2<f32>,   // grayscale, opacity
+    @location(6) effects: vec2<f32>,
 }
 
-// One sample per pixel: grow the sprite's quad by one logical pixel so pixels
-// its rectangle only partly covers are rasterized; the fragment shader weights
-// them by that coverage. Atlas coordinates extrapolate linearly, so every
-// pixel samples where it would without the fringe. SVG icons and images share
-// this vertex shader.
 @vertex
 fn icon_vertex(
     @builtin(vertex_index) vertex: u32,
@@ -325,18 +269,14 @@ fn rect_coverage(local_pos: vec2<f32>, size: vec2<f32>, pixel: vec2<f32>) -> f32
 
 @fragment
 fn svg_fragment(in: IconOut) -> @location(0) vec4<f32> {
-    // Derivatives and the sample first, in uniform control flow.
     let coverage = rect_coverage(in.local_pos, in.size, pixel_extent(in.local_pos));
     let sample = textureSample(svg_atlas, atlas_sampler, in.tex_coord);
-    // Threshold to eliminate linear filtering bleed between channels.
     let fill_alpha = select(0.0, sample.r, sample.r > 0.02);
     let stroke_alpha = select(0.0, sample.g, sample.g > 0.02);
-    // Stroke shows only where fill does not.
     let visible_stroke = stroke_alpha * (1.0 - fill_alpha);
     let rgb = in.fill_color.rgb * in.fill_color.a * fill_alpha +
         in.stroke_color.rgb * in.stroke_color.a * visible_stroke;
     let alpha = in.fill_color.a * fill_alpha + in.stroke_color.a * visible_stroke;
-    // Premultiplied output: coverage scales colour and alpha alike.
     if (alpha * coverage < 0.001) {
         discard;
     }
@@ -354,7 +294,6 @@ fn image_rounded_rect_sdf(pos: vec2<f32>, half_size: vec2<f32>, radii: vec4<f32>
 
 @fragment
 fn image_fragment(in: IconOut) -> @location(0) vec4<f32> {
-    // Derivatives and the sample first, in uniform control flow.
     let coverage = rect_coverage(in.local_pos, in.size, pixel_extent(in.local_pos));
     var color = textureSample(image_atlas, atlas_sampler, in.tex_coord);
     var corner_alpha = 1.0;
@@ -377,16 +316,6 @@ fn image_fragment(in: IconOut) -> @location(0) vec4<f32> {
     return color;
 }
 
-// =============================================================================
-// Meshes: triangles, strips, points
-// =============================================================================
-//
-// Analytic anti-aliasing contract (src/platform/mesh_edges.zig): triangle and
-// strip vertex shaders write signed distances in logical pixels to up to four
-// straight edges, positive inside, and two bits of mode per edge: 0 interior
-// (no coverage change), 1 fade (coverage *= clamp(distance_px + 0.5, 0, 1)),
-// 2 underlap (full coverage up to half a pixel outside, nothing beyond). The
-// faded band of every non-interior edge reaches `aa_fringe` outward.
 
 struct MeshOut {
     @builtin(position) position: vec4<f32>,
@@ -396,22 +325,12 @@ struct MeshOut {
     @location(3) uv: vec2<f32>,
 }
 
-// Draw vertices per triangle (mesh_edges.triangle_draw_vertex_count): the
-// triangle at its exact corners (0-2), then one fringe quad of two triangles
-// for each of its three edges (3-20).
 const triangle_draw_vertex_count: u32 = 21u;
 const fringe_vertex_count: u32 = 6u;
-// A sharp corner's offset point is clamped; tips sharper than about 14 degrees
-// lose part of their fade band instead of producing long slivers.
 const miter_max: f32 = 4.0 * aa_fringe;
 
-// Offset of a corner on edges with inward unit normals n0 and n1: the
-// intersection of the two edges' offset lines, each pushed outward by its
-// offset. Every fringe vertex at a corner calls this with the same inputs, so
-// neighbouring quads share their common side exactly.
 fn corner_shift(n0: vec2<f32>, n1: vec2<f32>, offset0: f32, offset1: f32) -> vec2<f32> {
     let det = n0.x * n1.y - n0.y * n1.x;
-    // Nearly straight corner: the two offset lines coincide.
     var shift = -max(offset0, offset1) * n0;
     if (abs(det) > 1e-4) {
         shift = vec2<f32>(-offset0 * n1.y + offset1 * n0.y,
@@ -424,10 +343,6 @@ fn corner_shift(n0: vec2<f32>, n1: vec2<f32>, offset0: f32, offset1: f32) -> vec
     return shift;
 }
 
-// The corner a draw vertex of a triangle sits on: its exact corner k (slots
-// 0-2), or a vertex of the fringe quad on edge (slot - 3) / 6, whose outer
-// side joins the two corners' offset points (x = corner, y = 1 when outer).
-// Interior edges get no quad: their six vertices collapse onto one point.
 fn fringe_corner(slot: u32, modes: u32, degenerate: bool) -> vec2<u32> {
     if (slot < 3u) {
         return vec2<u32>(slot, 0u);
@@ -437,17 +352,11 @@ fn fringe_corner(slot: u32, modes: u32, degenerate: bool) -> vec2<u32> {
     if (degenerate || ((modes >> (2u * edge)) & 3u) == 0u) {
         return vec2<u32>(edge, 0u);
     }
-    // Quad (inner start, inner end, outer end), (inner start, outer end, outer start).
     let at_end = quad_vertex == 1u || quad_vertex == 2u || quad_vertex == 4u;
     let outer = quad_vertex == 2u || quad_vertex == 4u || quad_vertex == 5u;
     return vec2<u32>(select(edge, (edge + 1u) % 3u, at_end), select(0u, 1u, outer));
 }
 
-// Triangle `t` of the mesh is its points 3t..3t+2, with modes
-// `edge_modes[edge_first + t]`. The triangle is drawn at its exact corners, so
-// an edge it shares with another triangle rasterizes each pixel once; each
-// fade or underlap edge adds a quad outside it. Distances to the original
-// edges keep shading identical across the triangle and its quads.
 @vertex
 fn triangle_vertex(
     @builtin(vertex_index) vertex: u32,
@@ -479,7 +388,6 @@ fn triangle_vertex(
     var distances = vec4<f32>(1e4);
     if (!degenerate) {
         if (placed.y == 1u) {
-            // Corner k lies on edge k (k -> k+1) and edge k-1 (k-1 -> k).
             let before = (k + 2u) % 3u;
             let offset_k = select(0.0, aa_fringe, ((modes >> (2u * k)) & 3u) != 0u);
             let offset_before = select(0.0, aa_fringe, ((modes >> (2u * before)) & 3u) != 0u);
@@ -493,14 +401,11 @@ fn triangle_vertex(
     out.position = to_clip_space(pos);
     out.color = mesh.fill;
     out.edge_distance = distances;
-    // A degenerate triangle covers no pixel samples: unfaded, without quads.
     out.modes = select(modes, 0u, degenerate);
     out.uv = vec2<f32>(0.0);
     return out;
 }
 
-// Quad corner of each vertex of triangles 0-1-2 and 0-2-3, as (along, across)
-// signs: corner 0 is start+perp, 1 start-perp, 2 end-perp, 3 end+perp.
 fn segment_corner(vertex: u32) -> vec2<f32> {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, 1.0), vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0),
@@ -509,11 +414,6 @@ fn segment_corner(vertex: u32) -> vec2<f32> {
     return corners[vertex];
 }
 
-// Segment `vertex / 6` is a butt-ended quad from that point to the next, half
-// the width either side, grown by `aa_fringe` across both sides so their fade
-// is rasterized. Only the line's first start cap and last end cap extend and
-// fade; interior joints stay hard, so consecutive segments overlap without a
-// seam.
 @vertex
 fn polyline_vertex(
     @builtin(vertex_index) vertex: u32,
@@ -527,7 +427,6 @@ fn polyline_vertex(
     let end = mesh_points[mesh.first + segment + 1u];
     let direction = end - start;
     let distance = length(direction);
-    // Zero-length segments keep their degenerate quad: they cover no pixels.
     var along_unit = vec2<f32>(1.0, 0.0);
     var across_unit = vec2<f32>(0.0, 1.0);
     let has_length = distance > 0.0001;
@@ -554,8 +453,6 @@ fn polyline_vertex(
     return out;
 }
 
-// Coverage of the fragment's pixel from the analytic edges. `pixel` is one
-// device pixel measured in edge-distance units per component.
 fn edge_coverage(distance: vec4<f32>, pixel: vec4<f32>, modes: u32) -> f32 {
     let distance_px = distance / max(pixel, vec4<f32>(1e-6));
     var coverage = 1.0;
@@ -572,10 +469,8 @@ fn edge_coverage(distance: vec4<f32>, pixel: vec4<f32>, modes: u32) -> f32 {
     return coverage;
 }
 
-// Triangles and strips: solid fills faded across their analytic edges.
 @fragment
 fn edge_fragment(in: MeshOut) -> @location(0) vec4<f32> {
-    // Derivatives first, in uniform control flow.
     let dx = dpdx(in.edge_distance);
     let dy = dpdy(in.edge_distance);
     let pixel = sqrt(dx * dx + dy * dy);
@@ -587,8 +482,6 @@ fn edge_fragment(in: MeshOut) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb * alpha, alpha);
 }
 
-// SDF uv corner of each vertex of triangles 0-1-2 and 0-2-3 of the quad
-// (-1,-1)--(1,-1) over (-1,1)--(1,1).
 fn point_corner(vertex: u32) -> vec2<f32> {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
@@ -597,10 +490,6 @@ fn point_corner(vertex: u32) -> vec2<f32> {
     return corners[vertex];
 }
 
-// Point `vertex / 6` is a circle of radius `width` around that mesh point.
-// The quad reaches one logical pixel past the radius so the falloff can
-// straddle the circle's edge; uv stays 1.0 at the radius. Zero-radius points
-// keep a degenerate quad and draw nothing.
 @vertex
 fn point_vertex(
     @builtin(vertex_index) vertex: u32,
@@ -623,12 +512,7 @@ fn point_vertex(
 
 @fragment
 fn point_fragment(in: MeshOut) -> @location(0) vec4<f32> {
-    // Derivatives first, in uniform control flow.
     let uv_pixel = length(vec2<f32>(dpdx(in.uv.x), dpdy(in.uv.x)));
-    // Shared point falloff (cpu/mesh.zig `pointFalloff`, Metal, Vulkan). From
-    // a 6.7 device pixel radius up it is the falloff over the outer 15% of the
-    // radius. Smaller points get a one-pixel band that moves outward to
-    // straddle the edge, so a sub-pixel dot keeps about its area.
     let radius_px = 1.0 / max(uv_pixel, 1e-6);
     let dist = length(in.uv);
     var alpha = 1.0 - smoothstep(0.85, 1.0, dist);

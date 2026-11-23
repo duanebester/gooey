@@ -1,20 +1,3 @@
-//! GPU objects the DirectX 11 renderer creates once, at initialization: the
-//! atlas textures, the per-frame instance and uniform buffers, and the fixed
-//! pipeline states. None is created, grown, or replaced after the window's
-//! initialization boundary; `deinit` is the only release.
-//!
-//! Instance buffers are `D3D11_USAGE_DYNAMIC` structured buffers, written
-//! with `Map(WRITE_DISCARD)`, one set per frame in flight. Frame `n` writes
-//! set `n mod frame_count`, which the GPU last read `frame_count` frames ago;
-//! the swapchain's frame latency waitable keeps at most `frame_count - 1`
-//! frames queued, so that read has retired before the map, and the driver
-//! hands back the same memory instead of renaming the buffer.
-//!
-//! Atlas textures are `D3D11_USAGE_DEFAULT`, sized from `AtlasLimits`, and
-//! written only on the GPU, by `dx11_uploads.zig` drawing the journal's
-//! records into them as render targets, so Gooey keeps no CPU copy of atlas
-//! pixels.
-
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
 const dx11_device = @import("dx11_device.zig");
@@ -23,12 +6,8 @@ const assert = std.debug.assert;
 const log = std.log.scoped(.dx11);
 const hex = dx11_device.hex;
 
-/// The largest texture side every feature level 11_0 device supports
-/// (`D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION`).
 pub const texture_side_px_max: u32 = 16_384;
 
-/// The largest buffer every device accepts: the resource size limit is at
-/// least `D3D11_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_A_TERM`, 128 MiB.
 pub const buffer_bytes_max: u32 = 128 << 20;
 
 pub const ResourceError = error{Dx11ResourceCreationFailed};
@@ -52,8 +31,6 @@ pub const AtlasFormat = enum {
     }
 };
 
-/// One square atlas texture, the view the pixel shaders sample it through,
-/// and the render target view uploads draw into.
 pub const Atlas = struct {
     texture: *d3d11.ID3D11Texture2D,
     view: *d3d11.ID3D11ShaderResourceView,
@@ -81,9 +58,6 @@ pub const Atlas = struct {
             .MiscFlags = 0,
         };
         var texture: ?*d3d11.ID3D11Texture2D = null;
-        // No initial data, so the contents start undefined. The shaders
-        // sample only placed items, which the journal writes with a zeroed
-        // 1 px border, so no undefined texel is ever filtered in.
         const result = device.device.vtable.CreateTexture2D(device.device, &desc, null, &texture);
         if (!d3d11.succeeded(result)) {
             log.err("CreateTexture2D(atlas {d}x{d} {s}) failed: 0x{X:0>8}", .{
@@ -130,8 +104,6 @@ pub const Atlas = struct {
     }
 };
 
-/// A dynamic structured buffer the vertex shaders index by instance, and its
-/// view. `stride_bytes` must match the HLSL struct the shader reads.
 pub const InstanceBuffer = struct {
     buffer: *d3d11.ID3D11Buffer,
     view: *d3d11.ID3D11ShaderResourceView,
@@ -139,7 +111,6 @@ pub const InstanceBuffer = struct {
     stride_bytes: u32,
 
     pub const Options = struct {
-        /// Names the pool in failure messages.
         name: []const u8,
         count_max: u32,
         stride_bytes: u32,
@@ -150,12 +121,8 @@ pub const InstanceBuffer = struct {
         options: Options,
     ) ResourceError!InstanceBuffer {
         assert(options.count_max > 0);
-        // Structured buffer strides are multiples of 4 bytes, at most 2 KiB.
         assert(options.stride_bytes % 4 == 0);
         assert(options.stride_bytes <= 2048);
-        // Every pool a valid `ResourceLimits` can request stays below the
-        // floor, as for the Vulkan renderer's storage buffers, whose
-        // guaranteed range is the same 2^27 bytes.
         const bytes = @as(u64, options.count_max) * options.stride_bytes;
         assert(bytes <= buffer_bytes_max);
         const desc = d3d11.D3D11_BUFFER_DESC{
@@ -185,9 +152,6 @@ pub const InstanceBuffer = struct {
         self.* = undefined;
     }
 
-    /// Replace the buffer's contents with `instances`, which must fit. The
-    /// bytes past them are left as the driver hands them back; the shaders
-    /// never index past the draw counts written with them.
     pub fn write(
         self: *const InstanceBuffer,
         context: *d3d11.ID3D11DeviceContext,
@@ -200,13 +164,8 @@ pub const InstanceBuffer = struct {
     }
 };
 
-/// How many indices `createIndexSequence` writes per `UpdateSubresource`.
 const index_chunk_count: u32 = 1024;
 
-/// A vertex buffer holding `0, 1, ..., count - 1` as `u32`, written once,
-/// bound as per-instance data so each shader receives the absolute index of
-/// its instance (`shaders/common.hlsl`). Filled in chunks from the stack, so
-/// it takes no allocator.
 pub fn createIndexSequence(
     device: *const dx11_device.Device,
     count: u32,
@@ -245,8 +204,6 @@ pub fn createIndexSequence(
     return buffer;
 }
 
-/// The input layout of a vertex shader whose only vertex input is
-/// `uint instance : INSTANCE_INDEX`, read per instance from slot 0.
 pub fn createInstanceLayout(
     device: *const dx11_device.Device,
     vertex_bytecode: []const u8,
@@ -322,12 +279,10 @@ pub fn createPixelShader(
     return shader.?;
 }
 
-/// A 16-byte-aligned dynamic constant buffer, rewritten whole each frame.
 pub fn createConstantBuffer(
     device: *const dx11_device.Device,
     bytes: u32,
 ) ResourceError!*d3d11.ID3D11Buffer {
-    // Constant buffers are sized in 16-byte registers.
     assert(bytes % 16 == 0);
     assert(bytes > 0);
     const desc = d3d11.D3D11_BUFFER_DESC{
@@ -341,8 +296,6 @@ pub fn createConstantBuffer(
     return createBuffer(device, &desc, "uniforms");
 }
 
-/// Replace a dynamic buffer's contents with `bytes`. False when the map
-/// fails, which happens only when the device is lost.
 pub fn mapWrite(
     context: *d3d11.ID3D11DeviceContext,
     buffer: *d3d11.ID3D11Buffer,
@@ -390,8 +343,6 @@ pub fn createView(
     name: []const u8,
 ) ResourceError!*d3d11.ID3D11ShaderResourceView {
     var view: ?*d3d11.ID3D11ShaderResourceView = null;
-    // A null description views the whole resource: every element of a
-    // structured buffer, or mip 0 of a texture.
     const vtable = device.device.vtable;
     const result = vtable.CreateShaderResourceView(device.device, resource, null, &view);
     if (!d3d11.succeeded(result)) {
@@ -402,9 +353,6 @@ pub fn createView(
     return view.?;
 }
 
-/// Blend, rasterizer, and sampler state shared by every pipeline. Two blend
-/// states, as in the Vulkan renderer's pipelines: straight alpha for quads,
-/// glyphs, SVGs, and meshes, and premultiplied alpha for images.
 pub const States = struct {
     blend_straight: *d3d11.ID3D11BlendState,
     blend_premultiplied: *d3d11.ID3D11BlendState,
@@ -439,9 +387,6 @@ pub const States = struct {
     }
 };
 
-/// Source-over blending with `source_color` as the colour's source factor:
-/// `SRC_ALPHA` for straight colours, `ONE` for premultiplied ones. Alpha
-/// always accumulates as `a + (1 - a) * dst`, matching `vk_pipelines`.
 fn createBlend(
     device: *const dx11_device.Device,
     source_color: u32,
@@ -473,9 +418,6 @@ fn createBlend(
     return state.?;
 }
 
-/// No culling (strips and quads are wound either way), scissor on for clips,
-/// and no multisampling: edges are anti-aliased analytically in the pixel
-/// shaders, as in the Vulkan and Metal renderers.
 fn createRasterizer(device: *const dx11_device.Device) ResourceError!*d3d11.ID3D11RasterizerState {
     assert(device.feature_level >= d3d11.D3D_FEATURE_LEVEL_11_0);
     const desc = d3d11.D3D11_RASTERIZER_DESC{
@@ -500,7 +442,6 @@ fn createRasterizer(device: *const dx11_device.Device) ResourceError!*d3d11.ID3D
     return state.?;
 }
 
-/// Bilinear, clamped: the Vulkan renderer's shared atlas sampler.
 fn createSampler(device: *const dx11_device.Device) ResourceError!*d3d11.ID3D11SamplerState {
     assert(device.feature_level >= d3d11.D3D_FEATURE_LEVEL_11_0);
     const desc = d3d11.D3D11_SAMPLER_DESC{

@@ -25,8 +25,6 @@ pub const Message = struct {
     content: []const u8,
 };
 
-/// Built at compile time, so no message is allocated or initialized at run
-/// time.
 pub const messages: [message_count]Message = generateMessages();
 
 fn generateMessages() [message_count]Message {
@@ -139,9 +137,6 @@ pub const MessageRow = struct {
 
     pub const count_max: u32 = message_count;
 
-    /// The bubble's text at `width` plus the bubble's padding, and the
-    /// sender's line above it for others' messages: the styles `render`
-    /// draws with, so the row fits its bubble exactly.
     pub fn height(cx: *Cx, index: u32, width: f32) f32 {
         assert(index < message_count);
         assert(width >= 0);
@@ -193,8 +188,6 @@ pub const MessageRow = struct {
             else => {
                 var style = bubble;
                 style.background = .{ .rgba = if (is_me) sent_color else received_color };
-                // Long messages wrap inside the bubble, at the width
-                // `height` measured them.
                 var content_style = body_text;
                 content_style.color = text_color;
                 const content = ui.text(message.content, content_style);
