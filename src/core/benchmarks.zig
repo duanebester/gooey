@@ -1005,6 +1005,141 @@ test "validate: pack classifies the chart's shared edges" {
     try std.testing.expectEqual(pack_chart_row_count, fixture.target.mesh_count);
 }
 
+const keymap_mod = gooey.internals.keymap;
+const keymaps_mod = gooey.internals.keymaps;
+const actions_mod = gooey.internals.actions;
+const text_engine_mod = gooey.internals.text_engine;
+const AreaEngine = text_engine_mod.AreaEngine;
+const KeyEvent = gooey.input.KeyEvent;
+
+const key_bytes_max: u32 = 4096;
+const key_path_depth: u32 = 4;
+const key_count_sample: u32 = 1000;
+
+const KeyPath = struct {
+    contexts: [key_path_depth]u64,
+
+    pub fn contains(self: KeyPath, hash: u64) bool {
+        for (self.contexts) |context| {
+            if (context == hash) return true;
+        }
+        return false;
+    }
+};
+
+const KeyFixture = struct {
+    engine: AreaEngine,
+    bytes: [key_bytes_max]u8,
+    preedit: [64]u8,
+    edits: [64]gooey.internals.text_history.Edit,
+    history_bytes: [key_bytes_max]u8,
+    action_ids: [7]u64,
+
+    fn init(self: *KeyFixture) void {
+        self.engine.bytes = &self.bytes;
+        self.engine.preedit = &self.preedit;
+        self.engine.history = text_engine_mod.History.init(&self.edits, &self.history_bytes);
+        self.engine.reset();
+        self.engine.insert("the quick brown fox jumps over the lazy dog\nsecond line here");
+        self.action_ids = .{
+            actions_mod.text_command, actions_mod.undo,  actions_mod.redo,
+            actions_mod.select_all,   actions_mod.paste, actions_mod.copy,
+            actions_mod.cut,
+        };
+        assert(self.engine.len > 0);
+        assert(self.engine.cursor == self.engine.len);
+    }
+};
+
+fn keyEvent(key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) KeyEvent {
+    return .{
+        .key = key,
+        .modifiers = modifiers,
+        .characters = null,
+        .characters_ignoring_modifiers = null,
+        .is_repeat = false,
+    };
+}
+
+fn dispatchKey(
+    table: []const keymap_mod.Compiled,
+    fixture: *KeyFixture,
+    path: KeyPath,
+    key: *const KeyEvent,
+) bool {
+    const found = keymap_mod.match(table, key, path) orelse {
+        const event = gooey.input.InputEvent{ .key_down = key.* };
+        return fixture.engine.apply(&event);
+    };
+    assert(found.action != 0);
+    const listed = std.mem.indexOfScalar(u64, &fixture.action_ids, found.action) != null;
+    assert(listed);
+    assert(found.action == actions_mod.text_command);
+    return fixture.engine.perform(@fromBackingInt(@intCast(found.arg)));
+}
+
+fn benchKeyDispatch(
+    comptime name: []const u8,
+    comptime convention: keymap_mod.Convention,
+    keys: [2]KeyEvent,
+    hit: bool,
+) BenchmarkResult {
+    const table = comptime keymap_mod.compile(keymaps_mod.text_default, convention);
+    var fixture: KeyFixture = undefined;
+    fixture.init();
+    const path = KeyPath{ .contexts = .{ keymaps_mod.context_area.hash, 0, 0, 0 } };
+    const operation_count = key_count_sample;
+    var handled_count: u32 = 0;
+    for (0..getWarmupIterations(operation_count)) |_| {
+        for (0..operation_count) |index| {
+            if (dispatchKey(table, &fixture, path, &keys[index % 2])) handled_count += 1;
+        }
+    }
+    const min_iterations = getMinSampleIterations(operation_count);
+    var sampler: bench.Sampler = .{};
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
+        const start = time.Instant.now();
+        for (0..operation_count) |index| {
+            if (dispatchKey(table, &fixture, path, &keys[index % 2])) handled_count += 1;
+        }
+        const end = time.Instant.now();
+        sampler.record(end.since(start));
+    }
+    if (hit) assert(handled_count > 0) else assert(handled_count == 0);
+    return .{
+        .name = name,
+        .operation_count = operation_count,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
+    };
+}
+
+fn runKeyBenchmarks(reporter: *bench.Reporter) void {
+    const mac = comptime keymap_mod.compile(keymaps_mod.text_default, .mac);
+    const pc = comptime keymap_mod.compile(keymaps_mod.text_default, .pc);
+    const entry_bytes = @sizeOf(keymap_mod.Compiled);
+    std.debug.print("\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("Gooey Core Benchmarks — Key dispatch to a focused TextArea " ++
+        "(mac {d} bindings, {d} B; pc {d} bindings, {d} B)\n", .{
+        mac.len, mac.len * entry_bytes, pc.len, pc.len * entry_bytes,
+    });
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+    printHeader();
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
+    const alt = gooey.input.Modifiers{ .alt = true };
+    const ctrl = gooey.input.Modifiers{ .ctrl = true };
+    const miss = [2]KeyEvent{ keyEvent(.q, .{}), keyEvent(.w, .{}) };
+    const mac_words = [2]KeyEvent{ keyEvent(.left, alt), keyEvent(.right, alt) };
+    const pc_words = [2]KeyEvent{ keyEvent(.left, ctrl), keyEvent(.right, ctrl) };
+    collect(reporter, benchKeyDispatch("key_mac_word_move_hit", .mac, mac_words, true));
+    collect(reporter, benchKeyDispatch("key_mac_unbound_miss", .mac, miss, false));
+    collect(reporter, benchKeyDispatch("key_pc_word_move_hit", .pc, pc_words, true));
+    collect(reporter, benchKeyDispatch("key_pc_unbound_miss", .pc, miss, false));
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+}
+
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.addEntry(bench.entry(
         result.name,
@@ -1173,6 +1308,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     try runPackBenchmarks(&reporter, init.gpa);
+
+    runKeyBenchmarks(&reporter);
 
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
