@@ -141,10 +141,17 @@ fn checkLines(
     counts: *Counts,
 ) void {
     const text = data.text;
+    // With no width to wrap at, the text is one line cut to nothing.
+    if (lines.len == 1 and data.container_width <= 0) {
+        if (lines[0].extent.end != .cut_if_wide or lines[0].width != 0) {
+            failLine(frame_number, 0, "is not cut to a zero width", text);
+        }
+        return;
+    }
     var previous_end: u32 = 0;
     for (lines, 0..) |line, index| {
         assert(line.start_offset <= text.len);
-        assert(line.length <= text.len - line.start_offset);
+        assert(line.extent.length <= text.len - line.start_offset);
         if (line.start_offset < previous_end) {
             failLine(frame_number, index, "starts inside the line before", text);
         }
@@ -154,7 +161,7 @@ fn checkLines(
         if (index > 0 and !wraps and !std.mem.eql(u8, gap, "\n")) {
             failLine(frame_number, index, "drops text or a line before it", text);
         }
-        const run = text[line.start_offset..][0..line.length];
+        const run = text[line.start_offset..][0..line.extent.length];
         if (std.mem.indexOfScalar(u8, run, '\n') != null) {
             failLine(frame_number, index, "holds a newline", text);
         }
@@ -163,7 +170,7 @@ fn checkLines(
             checkWrapNeeded(engine, data, lines[index - 1], line);
         }
         checkWidth(engine, data, line, frame_number, index, counts);
-        previous_end = line.start_offset + line.length;
+        previous_end = line.start_offset + line.extent.length;
     }
     const rest = text[previous_end..];
     if (rest.len > 0 and !std.mem.eql(u8, rest, "\n")) {
@@ -182,8 +189,19 @@ fn checkWidth(
     index: usize,
     counts: *Counts,
 ) void {
-    const run = data.text[line.start_offset..][0..line.length];
+    const run = data.text[line.start_offset..][0..line.extent.length];
     const width = measure(engine, data, run);
+    if (line.extent.end != .whole) {
+        // A word wider than the line: cut at the wrap width, which it passes.
+        if (line.width > data.container_width + epsilon or width <= line.width) {
+            std.debug.panic("vopr text_area: frame {d}: preview line {d} \"{s}\" is cut at " ++
+                "{d} px, but measures {d} in a {d} px width", .{
+                frame_number, index, run, line.width, width, data.container_width,
+            });
+        }
+        counts.long_words += 1;
+        return;
+    }
     if (@abs(width - line.width) > epsilon) {
         std.debug.panic("vopr text_area: frame {d}: preview line {d} \"{s}\" says it is {d} " ++
             "px wide, but its codepoints measure {d}", .{
@@ -216,7 +234,7 @@ fn checkWrapNeeded(
     after: WrappedLine,
 ) void {
     const text = data.text;
-    assert(before.start_offset + before.length == after.start_offset);
+    assert(before.start_offset + before.extent.length == after.start_offset);
     assert(after.start_offset < text.len);
     const start = after.start_offset;
     var end = start + 1;
@@ -225,7 +243,7 @@ fn checkWrapNeeded(
         while (end < text.len and !isSpace(text[end]) and text[end] != '\n') end += 1;
         while (end < text.len and isSpace(text[end])) end += 1;
     }
-    const head = text[before.start_offset..][0..before.length];
+    const head = text[before.start_offset..][0..before.extent.length];
     // Whitespace breaks only after a line's first word: past others, the
     // word moves down with its whitespace instead.
     const body = std.mem.trimEnd(u8, head, " \t");

@@ -527,11 +527,39 @@ pub const ScrollChild = struct {
 
 pub const ScrollAlignment = enum { start, center, end, nearest };
 
+/// One line of wrapped text: its bytes from `start_offset`, how it ends, and
+/// its width. A cut line's width is the width it is cut at, so the widest
+/// line, the text's box, and emit's culling read it as any other line.
+/// The length and the end share a `u32`, so a line stays 12 bytes: a line
+/// is at most `line_length_max` bytes, which the core's text budget bounds
+/// at compile time (`LayoutCapacity`).
 pub const WrappedLine = struct {
     start_offset: u32,
-    length: u32,
+    extent: Extent,
     width: f32,
+
+    pub const Extent = packed struct(u32) {
+        length: u30,
+        end: LineEnd = .whole,
+    };
 };
+
+/// How a line ends (`docs/text-truncation.md`, "Which lines are cut"):
+/// `whole` draws as it is; `cut_if_wide` is a line layout measured wider
+/// than its cut width, which emit cuts unless its shaped width fits;
+/// `cut` is the last line a `line_count_max` kept with text after it, which
+/// always ends in an ellipsis.
+pub const LineEnd = enum(u2) { whole, cut_if_wide, cut };
+
+/// What `.ellipsis` draws after a cut line's kept bytes: U+2026.
+pub const ellipsis = "\u{2026}";
+
+/// The most bytes one wrapped line holds, and so one text the engine wraps.
+pub const line_length_max: u32 = std.math.maxInt(u30);
+
+comptime {
+    std.debug.assert(@sizeOf(WrappedLine) == 12);
+}
 
 pub const TextConfig = struct {
     color: Color = Color.black,
@@ -542,8 +570,13 @@ pub const TextConfig = struct {
     wrap_mode: WrapMode = .none,
     alignment: TextAlignment = .left,
     decoration: TextDecorationConfig = .{},
+    /// The most lines a wrapping text keeps; 0 keeps every line.
+    line_count_max: u8 = 0,
+    /// What marks a line cut short: `.clip` none, `.ellipsis` a trailing "…".
+    overflow: Overflow = .clip,
 
     pub const WrapMode = enum { none, words, newlines };
+    pub const Overflow = enum(u1) { clip, ellipsis };
     pub const TextAlignment = enum { left, center, right };
 
     pub const TextDecorationConfig = packed struct {

@@ -1,0 +1,117 @@
+trace truncation 780x600@2.00
+
+== step 0: initial frame
+packed 1560x1200@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 780.00 600.00) fill=#f1f5f9ff
+  quad (16.00 16.00 230.00 568.00) fill=#ffffffff border=1.00,1.00,1.00,1.00 #e2e8f0ff radius=10.00,10.00,10.00,10.00
+  glyphs n=8 (30.00 31.50 63.00 10.50) color=#0f172aff hash=2dfa11c4
+  quad (36.00 63.60 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=7 (52.00 60.50 42.00 9.50) color=#0f172aff hash=dc455324
+  quad (205.35 59.00 20.66 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=1 (212.00 61.50 5.50 8.00) color=#ffffffff hash=c92730dd
+  quad (36.00 96.80 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=21 (52.00 93.50 132.50 9.50) color=#0f172aff hash=ec2247af
+  quad (198.69 92.20 27.31 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=2 (205.50 95.00 12.00 8.00) color=#ffffffff hash=611fcaaa
+  quad (36.00 130.00 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=22 (52.00 127.00 130.00 9.50) color=#0f172aff hash=f042f820
+  quad (192.04 125.40 33.97 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=3 (199.00 128.00 18.50 8.00) color=#ffffffff hash=a8e26c28
+  quad (36.00 163.20 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=6 (52.00 160.00 41.00 9.50) color=#0f172aff hash=e171058a
+  quad (205.35 158.60 20.66 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=1 (212.00 161.00 5.50 8.00) color=#ffffffff hash=20bc2d1b
+  quad (36.00 196.40 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=22 (52.00 193.00 137.50 9.50) color=#0f172aff hash=4b47501b
+  quad (205.35 191.80 20.66 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=1 (212.00 194.50 5.50 8.00) color=#ffffffff hash=eebb5376
+  quad (258.00 16.00 506.00 164.80) fill=#ffffffff border=1.00,1.00,1.00,1.00 #e2e8f0ff radius=10.00,10.00,10.00,10.00
+  glyphs n=5 (272.00 31.50 34.00 10.50) color=#0f172aff hash=7c19aa33
+  glyphs n=17 (272.00 59.00 476.50 8.50) color=#64748bff hash=35ad9843
+  glyphs n=9 (272.00 81.00 63.00 9.50) color=#0f172aff hash=3c9daf7b
+  glyphs n=8 (496.50 81.00 95.00 9.50) color=#64748bff hash=bc85962f
+  glyphs n=4 (722.50 81.00 26.00 9.50) color=#0f172aff hash=28bdcb1c
+  glyphs n=34 (272.00 104.50 205.50 9.50) color=#0f172aff hash=0ccc9ff5
+  glyphs n=24 (496.50 104.50 170.00 9.50) color=#64748bff hash=124417fb
+  glyphs n=6 (708.00 104.50 40.50 9.50) color=#0f172aff hash=e562cd1f
+  glyphs n=33 (272.00 128.50 199.50 9.50) color=#0f172aff hash=0f8a71ca
+  glyphs n=12 (496.50 128.50 101.50 9.50) color=#64748bff hash=6582d1e3
+  glyphs n=6 (708.00 128.50 40.50 9.50) color=#0f172aff hash=3d8d9721
+  glyphs n=8 (272.00 152.00 45.50 9.50) color=#0f172aff hash=6f46f6cf
+  glyphs n=11 (496.50 152.00 89.00 9.50) color=#64748bff hash=17bbc0c6
+  glyphs n=5 (715.50 152.00 33.00 9.50) color=#0f172aff hash=5223eccd
+  quad (258.00 192.80 506.00 148.80) fill=#ffffffff border=1.00,1.00,1.00,1.00 #e2e8f0ff radius=10.00,10.00,10.00,10.00
+  glyphs n=5 (272.00 208.00 42.00 10.50) color=#0f172aff hash=626c4876
+  quad (272.00 234.80 151.33 92.80) fill=#f1f5f9ff border=2.00,2.00,2.00,2.00 #3b82f6ff radius=8.00,8.00,8.00,8.00
+  glyphs n=13 (284.00 247.50 80.00 8.50) color=#3b82f6ff hash=5cc85e1b
+  glyphs n=16 (284.00 266.00 103.50 10.00) color=#0f172aff hash=43b5b35d
+  glyphs n=21 (284.00 283.00 119.50 10.00) color=#0f172aff hash=8484ae4e
+  glyphs n=21 (284.00 300.00 124.00 10.00) color=#0f172aff hash=4afdb6db
+  quad (435.33 234.80 151.33 92.80) fill=#f1f5f9ff border=2.00,2.00,2.00,2.00 #8b5cf6ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (447.00 247.50 34.00 8.50) color=#8b5cf6ff hash=674ed2df
+  glyphs n=21 (447.00 266.00 118.50 10.00) color=#0f172aff hash=4939f19d
+  glyphs n=15 (447.00 283.00 81.00 10.00) color=#0f172aff hash=dbd9ce16
+  quad (598.67 234.80 151.33 92.80) fill=#f1f5f9ff border=2.00,2.00,2.00,2.00 #14b8a6ff radius=8.00,8.00,8.00,8.00
+  glyphs n=7 (610.50 247.50 40.50 8.50) color=#14b8a6ff hash=f5d00c72
+  glyphs n=21 (610.50 266.00 117.50 10.00) color=#0f172aff hash=4b581811
+  glyphs n=19 (610.50 283.00 112.00 10.00) color=#0f172aff hash=fac5b2be
+hits
+a11y
+
+== step 1: move over the sidebar
+packed 1560x1200@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 780.00 600.00) fill=#f1f5f9ff
+  quad (16.00 16.00 230.00 568.00) fill=#ffffffff border=1.00,1.00,1.00,1.00 #e2e8f0ff radius=10.00,10.00,10.00,10.00
+  glyphs n=8 (30.00 31.50 63.00 10.50) color=#0f172aff hash=2dfa11c4
+  quad (36.00 63.60 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=7 (52.00 60.50 42.00 9.50) color=#0f172aff hash=dc455324
+  quad (205.35 59.00 20.66 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=1 (212.00 61.50 5.50 8.00) color=#ffffffff hash=c92730dd
+  quad (36.00 96.80 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=21 (52.00 93.50 132.50 9.50) color=#0f172aff hash=ec2247af
+  quad (198.69 92.20 27.31 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=2 (205.50 95.00 12.00 8.00) color=#ffffffff hash=611fcaaa
+  quad (36.00 130.00 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=22 (52.00 127.00 130.00 9.50) color=#0f172aff hash=f042f820
+  quad (192.04 125.40 33.97 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=3 (199.00 128.00 18.50 8.00) color=#ffffffff hash=a8e26c28
+  quad (36.00 163.20 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=6 (52.00 160.00 41.00 9.50) color=#0f172aff hash=e171058a
+  quad (205.35 158.60 20.66 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=1 (212.00 161.00 5.50 8.00) color=#ffffffff hash=20bc2d1b
+  quad (36.00 196.40 8.00 8.00) fill=#14b8a6ff radius=4.00,4.00,4.00,4.00
+  glyphs n=22 (52.00 193.00 137.50 9.50) color=#0f172aff hash=4b47501b
+  quad (205.35 191.80 20.66 17.20) fill=#3b82f6ff radius=9.00,9.00,9.00,9.00
+  glyphs n=1 (212.00 194.50 5.50 8.00) color=#ffffffff hash=eebb5376
+  quad (258.00 16.00 506.00 164.80) fill=#ffffffff border=1.00,1.00,1.00,1.00 #e2e8f0ff radius=10.00,10.00,10.00,10.00
+  glyphs n=5 (272.00 31.50 34.00 10.50) color=#0f172aff hash=7c19aa33
+  glyphs n=17 (272.00 59.00 476.50 8.50) color=#64748bff hash=35ad9843
+  glyphs n=9 (272.00 81.00 63.00 9.50) color=#0f172aff hash=3c9daf7b
+  glyphs n=8 (496.50 81.00 95.00 9.50) color=#64748bff hash=bc85962f
+  glyphs n=4 (722.50 81.00 26.00 9.50) color=#0f172aff hash=28bdcb1c
+  glyphs n=34 (272.00 104.50 205.50 9.50) color=#0f172aff hash=0ccc9ff5
+  glyphs n=24 (496.50 104.50 170.00 9.50) color=#64748bff hash=124417fb
+  glyphs n=6 (708.00 104.50 40.50 9.50) color=#0f172aff hash=e562cd1f
+  glyphs n=33 (272.00 128.50 199.50 9.50) color=#0f172aff hash=0f8a71ca
+  glyphs n=12 (496.50 128.50 101.50 9.50) color=#64748bff hash=6582d1e3
+  glyphs n=6 (708.00 128.50 40.50 9.50) color=#0f172aff hash=3d8d9721
+  glyphs n=8 (272.00 152.00 45.50 9.50) color=#0f172aff hash=6f46f6cf
+  glyphs n=11 (496.50 152.00 89.00 9.50) color=#64748bff hash=17bbc0c6
+  glyphs n=5 (715.50 152.00 33.00 9.50) color=#0f172aff hash=5223eccd
+  quad (258.00 192.80 506.00 148.80) fill=#ffffffff border=1.00,1.00,1.00,1.00 #e2e8f0ff radius=10.00,10.00,10.00,10.00
+  glyphs n=5 (272.00 208.00 42.00 10.50) color=#0f172aff hash=626c4876
+  quad (272.00 234.80 151.33 92.80) fill=#f1f5f9ff border=2.00,2.00,2.00,2.00 #3b82f6ff radius=8.00,8.00,8.00,8.00
+  glyphs n=13 (284.00 247.50 80.00 8.50) color=#3b82f6ff hash=5cc85e1b
+  glyphs n=16 (284.00 266.00 103.50 10.00) color=#0f172aff hash=43b5b35d
+  glyphs n=21 (284.00 283.00 119.50 10.00) color=#0f172aff hash=8484ae4e
+  glyphs n=21 (284.00 300.00 124.00 10.00) color=#0f172aff hash=4afdb6db
+  quad (435.33 234.80 151.33 92.80) fill=#f1f5f9ff border=2.00,2.00,2.00,2.00 #8b5cf6ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (447.00 247.50 34.00 8.50) color=#8b5cf6ff hash=674ed2df
+  glyphs n=21 (447.00 266.00 118.50 10.00) color=#0f172aff hash=4939f19d
+  glyphs n=15 (447.00 283.00 81.00 10.00) color=#0f172aff hash=dbd9ce16
+  quad (598.67 234.80 151.33 92.80) fill=#f1f5f9ff border=2.00,2.00,2.00,2.00 #14b8a6ff radius=8.00,8.00,8.00,8.00
+  glyphs n=7 (610.50 247.50 40.50 8.50) color=#14b8a6ff hash=f5d00c72
+  glyphs n=21 (610.50 266.00 117.50 10.00) color=#0f172aff hash=4b581811
+  glyphs n=19 (610.50 283.00 112.00 10.00) color=#0f172aff hash=fac5b2be
+hits
+a11y

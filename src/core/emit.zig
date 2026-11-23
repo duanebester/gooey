@@ -1032,16 +1032,88 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) 
     assert(shown.end <= lines.len);
     for (lines[shown.start..shown.end], shown.start..) |line, line_index| {
         assert(line.start_offset <= content.len);
-        assert(line.length <= content.len - line.start_offset);
+        assert(line.extent.length <= content.len - line.start_offset);
         const x = span.x + alignOffset(alignment, span.width, line.width);
         const y = bounds.y + @as(f32, @floatFromInt(line_index)) * pitch;
         // A line scrolled out sideways, in a box that scrolls along x.
         if (place.clip) |rect| {
             if (!lineBox(x, y, line.width, pitch).overlaps(rect)) continue;
         }
-        const run = content[line.start_offset..][0..line.length];
-        _ = emitTextLine(window, run, x, y, style);
+        const run = content[line.start_offset..][0..line.extent.length];
+        if (line.extent.end == .whole) {
+            _ = emitTextLine(window, run, x, y, style);
+        } else {
+            const cut_place: CutPlace = .{ .span = span, .alignment = alignment, .y = y };
+            emitCutLine(window, run, data, line, cut_place, style);
+        }
     }
+}
+
+/// Where a cut line sits: the span its alignment is within, and its top.
+const CutPlace = struct { span: LineSpan, alignment: TextAlignment, y: f32 };
+
+/// A line layout marked as cut (`docs/text-truncation.md`): the longest
+/// start of `run` that fits the line's cut width, beside "…" for an
+/// `.ellipsis` text, from the shaped glyphs, then "…" after it, aligned by the
+/// width drawn. `.clip` cuts the same way with no mark, so its text never
+/// draws past its cut width. A `cut_if_wide` line whose shaped width fits
+/// draws whole; a cut width narrower than the ellipsis draws nothing.
+fn emitCutLine(
+    window: *Window,
+    run: []const u8,
+    data: *const TextData,
+    line: layout_mod.types.WrappedLine,
+    place: CutPlace,
+    style: TextStyle,
+) void {
+    assert(line.extent.end != .whole);
+    assert(line.width >= 0);
+    const text_system = window.resources.text_system;
+    const size: f32 = @floatFromInt(style.size);
+    const metrics = text_system.getMetricsFor(style.family);
+    const ellipsis = layout_mod.types.ellipsis;
+    const marked = data.config.overflow == .ellipsis;
+    if (marked) assert(data.ellipsis_width > 0);
+    // Layout measured "…" at declaration with the same face and size.
+    const mark_width = if (marked) data.ellipsis_width else 0;
+    const widths: text_render.CutWidths = .{
+        .kept_max = line.width - mark_width,
+        .whole_max = if (line.extent.end == .cut_if_wide) line.width else -1,
+    };
+    const cut = text_render.measureCut(
+        text_system,
+        run,
+        size,
+        style.family,
+        style.variant,
+        widths,
+    ) catch |err| window_mod.textFailed(window, run, err);
+    if (cut.whole) {
+        const x = place.span.x + alignOffset(place.alignment, place.span.width, cut.width);
+        _ = emitTextLine(window, run, x, place.y, style);
+        return;
+    }
+    if (widths.kept_max < 0) return; // Too narrow for the ellipsis alone.
+    assert(marked or line.extent.end == .cut_if_wide);
+    assert(cut.length <= run.len);
+    const drawn = cut.width + mark_width;
+    const x = place.span.x + alignOffset(place.alignment, place.span.width, drawn);
+    const baseline = place.y + metrics.ascender * size / metrics.point_size;
+    var sink = GlyphSink{ .frame = window.built(), .color = style.color };
+    const kept_width = text_render.placeTextPrefix(
+        text_system,
+        run,
+        cut.length,
+        x,
+        baseline,
+        window.scale_factor,
+        size,
+        style.family,
+        style.variant,
+        &sink,
+    ) catch |err| window_mod.textFailed(window, run, err);
+    assert(@abs(kept_width - cut.width) <= 0.01 * @max(1, cut.width));
+    if (marked) _ = emitTextBaseline(window, ellipsis, x + cut.width, baseline, style);
 }
 
 /// A line's box with a margin of one pitch around it, for glyphs that reach

@@ -125,6 +125,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-layout`           | `layout.zig`               | Popover layer, click outside, keymap       |
 | `run-layout-gallery`   | `layout_gallery.zig`       | Grow, wrap, aspect ratio, percent, shrink  |
 | `run-grid-layout`      | `grid_layout.zig`          | Grid: form, table rows, 12-column cards    |
+| `run-text-truncation`  | `text_truncation.zig`      | Ellipsis in cells, clamped card bodies     |
 | `run-actions`          | `actions.zig`              | Keymaps, key contexts, actions             |
 | `run-animation`        | `animation.zig`            | `tween`, `tweenOn`, `motion`, `loop`       |
 | `run-dynamic-counters` | `dynamic_counters.zig`     | Entities                                   |

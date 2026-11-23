@@ -713,6 +713,104 @@ test "validate: grid_cards" {
     try validateBenchmark(buildGridCards, 501);
 }
 
+// Text truncation (`docs/text-truncation.md`): 100 cards of a 400-word body,
+// clamped to three lines with an ellipsis or not clamped at all, and 1,000
+// one-line table cells cut with an ellipsis. Text measures 7 px a byte.
+
+const truncation_body: [400 * 6]u8 = blk: {
+    @setEvalBranchQuota(10_000);
+    const words = [_][]const u8{ "lorem", "ipsum", "dolor", "sit", "amet", "elit" };
+    var bytes: [400 * 6]u8 = @splat(' ');
+    var offset: usize = 0;
+    var index: usize = 0;
+    while (offset + 6 <= bytes.len) : (index += 1) {
+        const word = words[index % words.len];
+        @memcpy(bytes[offset..][0..word.len], word);
+        offset += word.len + 1;
+    }
+    break :blk bytes;
+};
+
+fn measureSevenPixelsPerByte(
+    text: []const u8,
+    _: u16,
+    font_size: u16,
+    _: ?f32,
+    _: ?*anyopaque,
+) layout.engine.TextMeasurement {
+    std.debug.assert(font_size > 0);
+    return .{ .width = @as(f32, @floatFromInt(text.len)) * 7, .height = 14 };
+}
+
+fn buildTextCards(engine: *LayoutEngine, line_count_max: u8) !u32 {
+    const card_count: u32 = 100;
+    engine.setMeasureTextFn(measureSevenPixelsPerByte, null);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+        .child_gap = 8,
+    } });
+    for (0..card_count) |_| {
+        try engine.openElement(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(300), .height = SizingAxis.fit() },
+            .layout_direction = .top_to_bottom,
+            .padding = Padding.all(8),
+        } });
+        try engine.text(&truncation_body, .{
+            .font_size = 14,
+            .wrap_mode = .words,
+            .line_count_max = line_count_max,
+            .overflow = if (line_count_max > 0) .ellipsis else .clip,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+    return 1 + card_count * 2;
+}
+
+fn buildTextClamp(engine: *LayoutEngine) !u32 {
+    return buildTextCards(engine, 3);
+}
+
+fn buildTextUnclamped(engine: *LayoutEngine) !u32 {
+    return buildTextCards(engine, 0);
+}
+
+fn buildTextEllipsisCells(engine: *LayoutEngine) !u32 {
+    const row_count: u32 = 250;
+    engine.setMeasureTextFn(measureSevenPixelsPerByte, null);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+    } });
+    for (0..row_count) |row| {
+        try engine.openElement(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() },
+            .child_gap = 8,
+        } });
+        for (0..4) |cell| {
+            const length = 40 + (row * 7 + cell * 13) % 60;
+            const cell_text: layout.TextConfig = .{ .font_size = 14, .overflow = .ellipsis };
+            try engine.text(truncation_body[0..length], cell_text);
+        }
+        engine.closeElement();
+    }
+    engine.closeElement();
+    return 1 + row_count * 5;
+}
+
+test "validate: text_clamp" {
+    try validateBenchmark(buildTextClamp, 201);
+}
+
+test "validate: text_unclamped" {
+    try validateBenchmark(buildTextUnclamped, 201);
+}
+
+test "validate: text_ellipsis_cells" {
+    try validateBenchmark(buildTextEllipsisCells, 1251);
+}
+
 // Models 127 open modals, each with a nested dropdown and later modal content.
 // This nearly saturates the ceiling's 255 floating roots (one per layer, a
 // `u8` fragment index) and positions nested floats on two-thirds of all
@@ -824,6 +922,9 @@ fn collectLayoutOnly(reporter: *bench.Reporter) void {
     collect(reporter, runBenchmark("flex_expand_weights", buildFlexExpandWeights));
     collect(reporter, runBenchmark("grid_table", buildGridTable));
     collect(reporter, runBenchmark("grid_cards", buildGridCards));
+    collect(reporter, runBenchmark("text_clamp", buildTextClamp));
+    collect(reporter, runBenchmark("text_unclamped", buildTextUnclamped));
+    collect(reporter, runBenchmark("text_ellipsis_cells", buildTextEllipsisCells));
 }
 
 /// `beginFrame`, the tree build, and `endFrame`, in the gate's order.
@@ -862,4 +963,7 @@ fn collectFullFrame(reporter: *bench.Reporter) void {
     collect(reporter, runFullFrameBenchmark("full_flex_expand_weights", buildFlexExpandWeights));
     collect(reporter, runFullFrameBenchmark("full_grid_table", buildGridTable));
     collect(reporter, runFullFrameBenchmark("full_grid_cards", buildGridCards));
+    collect(reporter, runFullFrameBenchmark("full_text_clamp", buildTextClamp));
+    collect(reporter, runFullFrameBenchmark("full_text_unclamped", buildTextUnclamped));
+    collect(reporter, runFullFrameBenchmark("full_text_ellipsis_cells", buildTextEllipsisCells));
 }

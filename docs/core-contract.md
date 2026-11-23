@@ -1737,6 +1737,28 @@ wrappers for list iteration.
     boxes lays out at about 180 ns a node, like the other layouts, and a dashboard of
     100 nested four-cell grids at about 0.9 µs a grid.
 
+29. **Text truncation (0.6, 2026-11-22).** `ui.Text` gains `line_count_max: ?u8`, the most
+    lines a wrapping text keeps, and `overflow: enum { clip, ellipsis } = .clip`, what marks
+    a line cut short: one wider than the text's width, or the last kept line with text after
+    it. `docs/text-truncation.md` is the specification. The two are independent, as GPUI's
+    `line_clamp` and `text_overflow`; `.clip`, the default, drops lines past the limit and
+    cuts a too-wide line at the text's width with no mark, so no text draws past its width
+    unless its parent scrolls along x. `.clip` keeps decision 26's floors, so a label gives
+    way only after its row's other children; texts that fit draw byte for byte as before.
+    The clamped last line is filled to the width and cut at a character, as GPUI, Flutter,
+    and UIKit do; trailing spaces and tabs are dropped before the "…". An `.ellipsis` text
+    floors at the ellipsis's width, measured once per text at declaration, so decision 26's
+    shrink cuts it before a fixed sibling; its minimum width is unchanged, and a clamped
+    text is at most `line_count_max` lines tall through decision 27's heights pass. Layout
+    only marks lines: `WrappedLine.extent` packs a `u30` length with a `u2` end (`whole`,
+    `cut_if_wide`, `cut`), so a line stays 12 bytes, and a comptime assertion holds the text
+    byte ceiling (4 MiB) under 30 bits. Emit finds the cut in the shaped glyphs, between
+    clusters and never before a zero-advance glyph, and draws a prefix of the line's own
+    shaping, so no truncated string is built and no reservation grows. A clamp stops packing
+    lines after the word batch that ends its last line. In the Cachegrind gate every
+    existing benchmark is within +0.032 %; a layout of 100 cards clamped to three lines runs
+    48 % fewer instructions than the same cards unclamped.
+
 ## Open questions
 
 None.

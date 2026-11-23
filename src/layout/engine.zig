@@ -102,6 +102,9 @@ pub const LayoutCapacity = struct {
         std.debug.assert(text_bytes > 0);
         std.debug.assert(line_count > 0);
         comptime std.debug.assert(@sizeOf(types.WrappedLine) == 12);
+        // A line's length is a `u30`: every text the core declares fits it.
+        comptime std.debug.assert(limits_mod.BuildLimits.ceiling.text_bytes_frame_max <=
+            types.line_length_max);
         const bytes = text_bytes * 2 + line_count * @sizeOf(types.WrappedLine);
         std.debug.assert(bytes <= std.math.maxInt(u32));
         return @intCast(bytes);
@@ -195,9 +198,13 @@ pub const TextData = struct {
     config: TextConfig,
     measured_width: f32 = 0,
     measured_height: f32 = 0,
-    /// The narrowest it can wrap without cutting a word: its widest word
-    /// when it wraps at words, else `measured_width`.
+    /// The narrowest it can be without cutting its content: the ellipsis's
+    /// width for an `.ellipsis` text, its widest word when it wraps at
+    /// words, else `measured_width`; never above `measured_width`.
     floor_width: f32 = 0,
+    /// The width of `types.ellipsis` in its font, measured once when an
+    /// `.ellipsis` text is declared; 0 for every other text.
+    ellipsis_width: f32 = 0,
     wrapped_lines: ?[]const types.WrappedLine = null,
     /// Container width for text alignment (set during wrapping)
     container_width: f32 = 0,
@@ -639,6 +646,8 @@ pub const LayoutEngine = struct {
 
     pub fn text(self: *Self, content: []const u8, config: types.TextConfig) !void {
         std.debug.assert(self.open_element_stack.len > 0);
+        std.debug.assert(content.len <= types.line_length_max);
+        if (config.line_count_max > 0) std.debug.assert(config.wrap_mode != .none);
 
         var decl = ElementDeclaration{};
         decl.layout.sizing = Sizing.fitContent();
@@ -661,10 +670,26 @@ pub const LayoutEngine = struct {
             );
             elem.text_data.?.measured_width = measured.width;
             elem.text_data.?.measured_height = measured.height;
-            elem.text_data.?.floor_width = if (config.wrap_mode == .words and content.len > 0)
-                @min(measured.width, sizing_pass.widestWord(self, content, config))
-            else
-                measured.width;
+            elem.text_data.?.floor_width = measured.width;
+            if (config.overflow == .ellipsis) {
+                // A text that ends in "…" when cut can be cut to the ellipsis
+                // alone, so it floors there and needs no scan for its widest
+                // word. Measured once per text; a shape-cache hit after the
+                // first frame.
+                const mark = measure_fn(
+                    types.ellipsis,
+                    config.font_id,
+                    config.font_size,
+                    null,
+                    self.measure_text_user_data,
+                );
+                std.debug.assert(mark.width >= 0);
+                elem.text_data.?.ellipsis_width = mark.width;
+                elem.text_data.?.floor_width = @min(measured.width, mark.width);
+            } else if (config.wrap_mode == .words and content.len > 0) {
+                const widest = sizing_pass.widestWord(self, content, config);
+                elem.text_data.?.floor_width = @min(measured.width, widest);
+            }
         } else {
             // Fallback estimate: 0.6 is an average glyph advance ratio, 1.2 a
             // typical line-height ratio.

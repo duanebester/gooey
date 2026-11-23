@@ -1417,6 +1417,7 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
 
         if (td.config.wrap_mode != .none and wrap_width > 0) {
             const wrap_result = try wrapText(engine, td.text, td.config, wrap_width);
+            std.debug.assert(wrap_result.max_line_width <= wrap_width);
             td.wrapped_lines = wrap_result.lines;
 
             if (wrap_result.lines.len > 0) {
@@ -1430,8 +1431,42 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
                 elem.computed.sized_width = wrap_result.max_line_width;
                 elem.computed.sized_height = wrap_result.total_height;
             }
+        } else if (td.measured_width > wrap_width and !scrollsAcross(engine, elem)) {
+            try cutOneLine(engine, elem, wrap_width);
         }
     }
+}
+
+/// A text that does not wrap, or has no width to wrap at, and is wider than
+/// its cut width: one line of all its bytes, at the cut width, which emit
+/// cuts at the shaped glyph that passes it, with "…" for `.ellipsis` and
+/// without for `.clip`. Its height stays one line. `cut_if_wide`, not `cut`:
+/// no text follows it, and its one-line width came from the same shaper emit
+/// draws with.
+fn cutOneLine(engine: *LayoutEngine, elem: *LayoutElement, cut_width: f32) !void {
+    const td = &elem.text_data.?;
+    std.debug.assert(cut_width >= 0);
+    std.debug.assert(td.measured_width > cut_width);
+    std.debug.assert(td.text.len <= types.line_length_max);
+    claimWrappedLines(engine, 1);
+    const lines = try engine.arena.allocator().alloc(types.WrappedLine, 1);
+    lines[0] = .{
+        .start_offset = 0,
+        .extent = .{ .length = @intCast(td.text.len), .end = .cut_if_wide },
+        .width = cut_width,
+    };
+    td.wrapped_lines = lines;
+    td.measured_width = cut_width;
+    elem.computed.sized_width = cut_width;
+    std.debug.assert(elem.computed.sized_width >= 0);
+}
+
+/// Whether `elem`'s parent scrolls along x: its content may be wider than
+/// it, so a one-line text there scrolls instead of being cut.
+fn scrollsAcross(engine: *const LayoutEngine, elem: *const LayoutElement) bool {
+    const parent_index = elem.parent_index orelse return false;
+    const scroll = engine.elements.getConst(parent_index).config.scroll orelse return false;
+    return scroll.horizontal;
 }
 
 /// Width available for text content: parent's sized width minus its
@@ -1780,7 +1815,7 @@ pub fn wrapText(
     max_width: f32,
 ) !WrapResult {
     std.debug.assert(max_width >= 0 or config.wrap_mode == .none);
-    std.debug.assert(text_str.len <= std.math.maxInt(u32)); // Ensure offsets fit in u32
+    std.debug.assert(text_str.len <= types.line_length_max); // A line's length is a `u30`.
 
     // Short-circuit on no-op inputs. `scanWords` requires `text_str.len > 0`,
     // so the empty-text gate must live here at the public boundary.
@@ -1819,10 +1854,12 @@ pub fn measureWrapped(
     max_width: f32,
 ) engine_mod.TextMeasurement {
     std.debug.assert(max_width >= 0);
-    std.debug.assert(text_str.len <= std.math.maxInt(u32));
+    std.debug.assert(text_str.len <= types.line_length_max);
     const measure_fn = engine.measure_text_fn.?;
     const user_data = engine.measure_text_user_data;
-    const one_line = measure_fn(text_str, config.font_id, config.font_size, null, user_data);
+    var one_line = measure_fn(text_str, config.font_id, config.font_size, null, user_data);
+    // A text is cut at the width it is offered, as layout cuts it.
+    one_line.width = @min(one_line.width, max_width);
     if (config.wrap_mode == .none or max_width <= 0 or text_str.len == 0) return one_line;
     var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
     const max_line_width = wrapLines(engine, text_str, config, max_width, &lines);
@@ -1859,8 +1896,11 @@ fn wrapLines(
         .space_width = scan.space_width,
         .tab_width = scan.tab_width,
         .lines = lines,
+        .line_count_max = config.line_count_max,
+        .ellipsis = config.overflow == .ellipsis,
     };
-    // Each full batch consumes at least one word, hence one byte.
+    // Each full batch consumes at least one word, hence one byte. A clamped
+    // text stops after the batch in which its last kept line ends.
     var batch_count: u32 = 0;
     while (true) : (batch_count += 1) {
         std.debug.assert(batch_count <= text_str.len);
@@ -1868,13 +1908,16 @@ fn wrapLines(
         const done = scanWords(&scan);
         engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
         for (words.slice()) |*word| packer.pack(word);
-        if (done) break;
+        if (done or packer.clamped) break;
     }
     // The last line runs to the text's end, whitespace included; a text
     // ending in a newline has nothing after it.
-    if (packer.line_start < text_str.len) packer.finishLine(@intCast(text_str.len));
+    if (!packer.clamped and packer.line_start < text_str.len) {
+        packer.finishLine(@intCast(text_str.len));
+    }
     engine.line_count_used_max = @max(engine.line_count_used_max, lines.len);
     std.debug.assert(lines.len > 0);
+    if (config.line_count_max > 0) std.debug.assert(lines.len <= config.line_count_max);
     return packer.widest;
 }
 
@@ -1914,6 +1957,12 @@ pub fn widestWord(engine: *LayoutEngine, text_str: []const u8, config: TextConfi
 /// the one line that may pass the width. With `.newlines`, only newlines
 /// break. The line in progress carries from one batch of words to the
 /// next, so a text wraps as it would in one batch.
+///
+/// Truncation (`docs/text-truncation.md`): a line wider than `max_width` is
+/// marked `cut_if_wide` at that width, for either overflow. With
+/// `line_count_max`, the line after the last one kept is never appended:
+/// the packer stops (`clamped`), and with `ellipsis` the last kept line runs
+/// on to its paragraph's end, marked `cut`, so emit fills it to the width.
 const LinePacker = struct {
     text: []const u8,
     max_width: f32,
@@ -1921,6 +1970,11 @@ const LinePacker = struct {
     space_width: f32,
     tab_width: f32,
     lines: *BoundedList(types.WrappedLine),
+    /// The most lines kept; 0 keeps every line.
+    line_count_max: u8,
+    ellipsis: bool,
+    /// Whether a line past `line_count_max` was found; nothing packs after.
+    clamped: bool = false,
     /// The line in progress: its first byte, and the advance of every
     /// codepoint packed on it so far.
     line_start: u32 = 0,
@@ -1929,6 +1983,7 @@ const LinePacker = struct {
     widest: f32 = 0,
 
     fn pack(self: *LinePacker, word: *const WordInfo) void {
+        if (self.clamped) return;
         std.debug.assert(self.line_start <= word.start);
         std.debug.assert(word.start <= word.end);
         std.debug.assert(word.end <= word.space_end);
@@ -1996,16 +2051,61 @@ const LinePacker = struct {
     fn finishLine(self: *LinePacker, end: u32) void {
         std.debug.assert(self.line_start <= end);
         std.debug.assert(self.line_width >= 0);
+        if (self.clamped) return;
+        if (self.line_count_max > 0 and self.lines.len == self.line_count_max) {
+            // This line follows the last one kept: drop it and the rest.
+            self.clamped = true;
+            if (self.ellipsis) self.cutLastLine();
+            return;
+        }
+        const wide = self.line_width > self.max_width;
+        const width = if (wide) self.max_width else self.line_width;
         appendLine(self.lines, .{
             .start_offset = self.line_start,
-            .length = end - self.line_start,
-            .width = self.line_width,
+            .extent = .{
+                .length = @intCast(end - self.line_start),
+                .end = if (wide) .cut_if_wide else .whole,
+            },
+            .width = width,
         });
-        self.widest = @max(self.widest, self.line_width);
+        self.widest = @max(self.widest, width);
         self.line_start = end;
         self.line_width = 0;
     }
+
+    /// Mark the last kept line `cut` when text it drops follows it. A line
+    /// that wrapping broke runs on to its paragraph's end, so emit can fill
+    /// it to the width; one that ends at a newline keeps its bytes, and the
+    /// ellipsis follows its last character. Blank lines alone do not count
+    /// as text that follows, so "abc\n\n" clamped to one line has none.
+    fn cutLastLine(self: *LinePacker) void {
+        std.debug.assert(self.clamped);
+        std.debug.assert(self.lines.len == self.line_count_max);
+        const last = &self.lines.buffer[self.lines.len - 1];
+        const line_end = last.start_offset + last.extent.length;
+        std.debug.assert(line_end <= self.text.len);
+        if (!textFollows(self.text, line_end)) return;
+        var end: usize = line_end;
+        if (self.text[line_end] != '\n') {
+            end = std.mem.indexOfScalarPos(u8, self.text, line_end, '\n') orelse self.text.len;
+        }
+        std.debug.assert(end >= line_end);
+        last.extent = .{ .length = @intCast(end - last.start_offset), .end = .cut };
+        last.width = self.max_width;
+        self.widest = @max(self.widest, self.max_width);
+    }
 };
+
+/// Whether `text` holds anything but whitespace from `start` on. Stops at
+/// the first byte that is not, so it reads the blank bytes and one more.
+fn textFollows(text: []const u8, start: usize) bool {
+    std.debug.assert(start <= text.len);
+    for (text[start..]) |byte| {
+        const blank = byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r';
+        if (!blank) return true;
+    }
+    return false;
+}
 
 /// Count a text's lines against the frame's budget before they take arena
 /// space, so an over-budget frame names the pool instead of failing as an

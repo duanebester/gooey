@@ -24,6 +24,7 @@ packages=(
     mesa-vulkan-drivers
     pipewire
     python3-gi
+    valgrind
     weston
     wireplumber
     xz-utils

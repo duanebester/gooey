@@ -188,6 +188,20 @@ alignment; `.grow` columns share the free width by weight from their content flo
 grid passes and each grid's `GridSlot`; the full semantics are in `docs/layout-grid.md` and
 decision 28 of `docs/core-contract.md`.
 
+### Truncation
+
+`TextConfig.line_count_max` keeps at most that many wrapped lines (0 keeps every line), and
+`TextConfig.overflow` says how a cut line ends: `.clip` with no mark, `.ellipsis` in
+"…". A line wider than its cut width is cut for either, unless the text's parent scrolls
+along x. Each `WrappedLine`
+records how it ends in `extent.end`: `.whole`, `.cut_if_wide` (wider than its cut width,
+which emit cuts unless its shaped width fits), or `.cut` (the last kept line with text
+after it, run on to its paragraph's end). A cut line's `width` is its cut width. An
+`.ellipsis` text floors at its ellipsis's width, so an overflowing row cuts it first. The
+engine never cuts bytes: `core/emit.zig` finds the cut in the shaped glyphs
+(`text/render.zig`, `measureCut` and `placeTextPrefix`). `docs/text-truncation.md` is the
+specification and decision 29 of `docs/core-contract.md` the summary.
+
 ## Complete Example: Login Card
 
 ```zig

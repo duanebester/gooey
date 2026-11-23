@@ -203,6 +203,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "logo", .source = "src/examples/logo.zig" },
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
+            .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
         };
         // `zig build run` runs todo, the default example.
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -552,6 +553,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "logo", .source = "src/examples/logo.zig" },
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
+            .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
         };
         // `zig build run` runs todo, the default example; on EVE, which builds
         // only the board demos, counter.
@@ -883,6 +885,7 @@ fn addWindowsBuilds(
         .{ .name = "background", .source = "src/examples/background.zig" },
         .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
         .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
+        .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1366,6 +1369,10 @@ fn addFailFastChecks(
             "holds one row of 2 columns" },
         .{ .mode = "core-grid-count", .stderr = "layout pool 'grids' exhausted: capacity 8, " ++
             "8 in use, 1 requested. Raise ResourceLimits.build.grid_count_frame_max." },
+        .{ .mode = "core-text-line-count-zero", .stderr = "Text.line_count_max 0 " ++
+            "(\"Quarterly report\"): a text shows 1 to 255 lines" },
+        .{ .mode = "core-text-line-count-none", .stderr = "Text.line_count_max " ++
+            "(\"Quarterly report\"): a .none text is one line; wrap at .words or .newlines" },
         .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
             "(contract §5): box at fail_fast_check.zig:" },
         .{ .mode = "core-drag-unkeyed", .stderr = "Box.draggable needs a key " ++
@@ -2189,6 +2196,12 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const text_truncation_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/text_truncation.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const charts_mod = b.createModule(.{
         .root_source_file = b.path("charts/src/root.zig"),
         .target = target,
@@ -2283,6 +2296,7 @@ fn goldensImports(
         .{ .name = "dashboard_example", .module = dashboard_mod },
         .{ .name = "dynamic_counters_example", .module = dynamic_counters_mod },
         .{ .name = "grid_layout_example", .module = grid_layout_mod },
+        .{ .name = "text_truncation_example", .module = text_truncation_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

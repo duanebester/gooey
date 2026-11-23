@@ -455,6 +455,19 @@ pub const Text = struct {
     /// place each line within the parent's content width, whatever the
     /// parent's alignment.
     alignment: enum { left, center, right } = .left,
+    /// The most lines a wrapping text shows; the rest is dropped and takes no
+    /// height. null: every line. 1 to 255, and `wrap` other than `.none`
+    /// (`docs/text-truncation.md`).
+    line_count_max: ?u8 = null,
+    /// What marks a line cut short: one wider than the text's width (a
+    /// `.none` text, a `.newlines` paragraph, or a word longer than a
+    /// `.words` line), or the last line `line_count_max` kept with text
+    /// after it. `.clip` cuts with no mark: lines past the limit are dropped
+    /// and a too-wide line is cut at the text's width, so no text draws past
+    /// it (unless its parent scrolls along x). `.ellipsis` cuts the same way
+    /// and ends the line in "…"; the text then shrinks in an overflowing row
+    /// down to the ellipsis alone, where a `.clip` text keeps its floor.
+    overflow: enum { clip, ellipsis } = .clip,
 
     pub const Element = struct {
         content: []const u8,
