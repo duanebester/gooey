@@ -74,11 +74,11 @@ pub const State = struct {
 };
 
 pub const App = gooey.App(State, render, .{
-    .keymap = gooey.keymaps.text_default,
     .title = "Text Area",
     .width = 640,
     .height = 560,
     .limits = limits,
+    .keymap = gooey.keymaps.text_default,
 });
 
 pub const main = App.main;

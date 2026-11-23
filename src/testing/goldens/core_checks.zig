@@ -2667,6 +2667,69 @@ test "Copy and Cut are claimed only while the field has a selection" {
     try testing.expect(query.keymapClaims(cut));
 }
 
+const ChatSend = struct {};
+
+const SendState = struct {
+    message: []const u8 = "",
+    sent: u32 = 0,
+
+    pub fn send(self: *SendState) void {
+        self.sent += 1;
+    }
+};
+
+const SendApp = gooey.App(SendState, sendRender, .{
+    .title = "Chat",
+    .width = 300,
+    .height = 200,
+    .limits = .small,
+    .keymap = gooey.keymaps.text_default ++ &[_]gooey.keymaps.Binding{
+        .{
+            .keys = "enter",
+            .action = ui.action(ChatSend),
+            .key_context = gooey.keymaps.context_area,
+        },
+        .{
+            .keys = "home",
+            .action = ui.action(gooey.actions.Unbind),
+            .key_context = gooey.keymaps.context_area,
+        },
+    },
+});
+
+fn sendRender(cx: *Cx) void {
+    const state = cx.state(SendState);
+    cx.render(ui.box(.{
+        .actions = &.{.{ .action = ui.action(ChatSend), .handler = cx.on(SendState.send, .{}) }},
+        .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+    }, .{
+        components.TextArea{ .key = "message", .bind = &state.message, .rows = 2 },
+    }));
+}
+
+test "an app binding after the text defaults sends on Enter, and Unbind frees Home" {
+    const app = try testing.allocator.create(SendApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    internals.window.useKeymapConvention(&app.window, .pc);
+    var now: u64 = 0;
+    app.tick(now);
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(10, 10) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(10, 10) } });
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "hi" } } });
+    now += 1;
+    app.tick(now);
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 1), app.state.sent);
+    try testing.expectEqualStrings("hi", app.state.message);
+    pressKey(app, &now, .home, .{});
+    pressKey(app, &now, .delete, .{});
+    try testing.expectEqualStrings("h", app.state.message);
+    pressKey(app, &now, .@"return", .{ .shift = true });
+    try testing.expectEqual(@as(u32, 1), app.state.sent);
+}
+
 const ChromeState = struct {
     clicks: u32 = 0,
 

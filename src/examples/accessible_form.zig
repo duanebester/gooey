@@ -110,11 +110,11 @@ pub const State = struct {
 const assert = std.debug.assert;
 
 pub const App = gooey.App(State, render, .{
-    .keymap = gooey.keymaps.text_default,
     .title = "Accessible Form Example",
     .width = 600,
     .height = 800,
     .limits = .small,
+    .keymap = gooey.keymaps.text_default,
 });
 
 pub const main = App.main;

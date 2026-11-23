@@ -172,7 +172,7 @@ holds the `ui.A11y` enums.
 | `height`     | required        | Initial height in logical pixels.                          |
 | `limits`     | required        | The `ResourceLimits` budget. There is no default.          |
 | `theme`      | `&Theme.light`  | The theme every color token resolves against.              |
-| `keymap`     | `&.{}`          | Keyboard bindings for actions.                             |
+| `keymap`     | `&.{}`          | Key bindings; text fields need `keymaps.text_default`.     |
 | `entities`   | `&.{}`          | Entity types, one fixed pool each.                         |
 | `fonts`      | `.{}`           | App and mono families, and their size.                     |
 | `jobs`       | `&.{}`          | Background job types `effects.spawn` may start.            |
@@ -226,6 +226,7 @@ pub const App = gooey.App(State, render, .{
     .height = window_height,
     .limits = limits,
     .theme = &gooey.Theme.dark,
+    .keymap = gooey.keymaps.text_default,
 });
 ```
 
@@ -735,7 +736,67 @@ const CloseMenu = struct {};
 
 A binding with `.key_context = .named("Editor")` matches only inside a box with
 `.key_context = .named("Editor")`. `actions.zig` binds Save that way. Key strings name exact
-modifiers, such as `"cmd-shift-z"` or `"ctrl-s"`.
+modifiers, such as `"cmd-shift-z"` or `"ctrl-s"`; `secondary-` means Cmd on macOS and Ctrl
+elsewhere. A binding is one keystroke: a chord such as `"ctrl-k ctrl-s"` is a compile error.
+
+When several bindings match a key, the last one in `Config.keymap` wins, and the innermost
+box on the focus path that lists its action handles it. A handled key does not reach
+`on_key` or the IME, and while the focused text field composes, the keymap claims no key.
+
+#### Text editing keys
+
+`TextInput`, `TextArea`, and `CodeEditor` read no keys themselves: they handle the shared
+actions `gooey.actions.Undo`, `Redo`, `Cut`, `Copy`, `Paste`, and `SelectAll`, and one
+`gooey.actions.TextCommand` action whose binding names the command, such as
+`.move_word_backward` or `.newline`. An app with text fields must add the default bindings
+to its keymap, or arrows, Backspace, and Cmd/Ctrl+Z do nothing in them:
+
+```zig
+pub const App = gooey.App(State, render, .{
+    .title = "Notes",
+    .width = 800,
+    .height = 600,
+    .limits = .small,
+    .keymap = gooey.keymaps.text_default,
+});
+```
+
+`text_default` holds two tables: macOS conventions (Alt+Left moves by word, Cmd+Left to the
+line start, and the Emacs keys Ctrl+A, Ctrl+E, and Ctrl+K) and Linux and Windows
+conventions (Ctrl+Left moves by word, Ctrl+Backspace deletes a word, Home and End reach the
+line's ends, Ctrl+Home and Ctrl+End the text's). Native builds use their platform's table;
+a web build picks one at init from the browser's platform. `text_mac` and `text_pc` are the
+tables alone. Their bindings are scoped to `keymaps.context_input`, `context_area`, and
+`context_editor`.
+
+App bindings go after the defaults, so they win. Bind an action to replace a default, and
+`gooey.actions.Unbind` to remove one, which lets the key reach `on_key`:
+
+```zig
+const keymaps = gooey.keymaps;
+const Send = struct {};
+const Find = struct {};
+
+pub const App = gooey.App(State, render, .{
+    .title = "Chat",
+    .width = 800,
+    .height = 600,
+    .limits = .small,
+    .keymap = keymaps.text_default ++ &[_]keymaps.Binding{
+        .{ .keys = "enter", .action = ui.action(Send), .key_context = keymaps.context_area },
+        .{ .keys = "secondary-f", .action = ui.action(Find) },
+        .{
+            .keys = "tab",
+            .action = ui.action(gooey.actions.Unbind),
+            .key_context = keymaps.context_editor,
+        },
+    },
+});
+```
+
+A box that lists `Send` in `actions` around the `TextArea` then sends on Enter. On the web,
+Paste is inserted by the browser's paste event, since the page cannot read the clipboard on
+demand.
 
 ### Entities
 
@@ -814,8 +875,9 @@ The three text engines, `gooey.InputEngine`, `gooey.AreaEngine`, and `gooey.Edit
 are retained values with their own pools, sized by `limits.text.input`, `.area`, and
 `.editor`. Every profile reserves inputs; `.nano` reserves no areas, and no profile reserves
 editors. Apps normally use them through `TextInput`, `TextArea`, and `CodeEditor`, which bind
-to a `[]const u8` field in state. The engines own copy, cut, and paste; the clipboard has no
-public API. This is how `TextInput` retains its engine:
+to a `[]const u8` field in state. They take their editing keys from the keymap (see
+[Keymaps and actions](#keymaps-and-actions)) and own copy, cut, and paste; the clipboard has
+no public API. This is how `TextInput` retains its engine:
 
 ```zig
         const handle = cx.retain(InputEngine, id, .{ .scope = id }, initEngine);

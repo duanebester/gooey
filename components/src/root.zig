@@ -2038,6 +2038,10 @@ const EngineActions = struct {
 
     const engine_action_count_max: u32 = 7;
 
+    comptime {
+        assert(engine_action_count_max + 1 == gooey.ResourceLimits.text_field_handlers);
+    }
+
     fn of(cx: *Cx, comptime E: type, handle: anytype, has_selection: bool) EngineActions {
         const handler = cx.on(E.onAction, .{ .entity = handle });
         var result: EngineActions = .{ .items = undefined, .len = 0 };
