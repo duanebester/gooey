@@ -482,6 +482,7 @@ pub const Window = struct {
     limits: ResourceLimits,
     theme: *const element.Theme,
     keymap: []const keymap_mod.Compiled,
+    keymap_tables: keymap_mod.Tables,
     store: *handler_mod.Store,
     resources: *AppResources,
     layout: *LayoutEngine,
@@ -683,13 +684,19 @@ pub const Options = struct {
     scale_factor: f32,
     limits: *const ResourceLimits,
     theme: *const element.Theme,
-    keymap: []const keymap_mod.Compiled,
+    keymap: keymap_mod.Tables,
     store: *handler_mod.Store,
     resources: *AppResources,
     job_types: []const usize = &.{},
     image_decodes: images_mod.Mode,
     job_runs: jobs_mod.Mode,
 };
+
+pub fn useKeymapConvention(self: *Window, convention: keymap_mod.Convention) void {
+    assert(self.phase == .idle);
+    self.keymap = self.keymap_tables.of(convention);
+    assert(self.keymap.len == self.keymap_tables.of(convention).len);
+}
 
 pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
     assert(options.width > 0);
@@ -700,7 +707,8 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.gpa = gpa;
     self.limits = limits.*;
     self.theme = options.theme;
-    self.keymap = options.keymap;
+    self.keymap_tables = options.keymap;
+    self.keymap = options.keymap.of(keymap_mod.native);
     self.store = options.store;
     self.resources = options.resources;
     try initBuildStorage(self, gpa, limits);

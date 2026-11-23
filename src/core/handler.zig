@@ -210,6 +210,8 @@ pub const Effects = struct {
     job: ?jobs.Delivery,
     scroll_request: ?ScrollRequest,
     dialogs: ?DialogView,
+    action: u64,
+    action_arg: u64,
 
     pub const JobId = jobs.JobId;
     pub const JobHandlers = jobs.Handlers;
@@ -282,6 +284,8 @@ pub const Effects = struct {
             .job = null,
             .scroll_request = null,
             .dialogs = null,
+            .action = 0,
+            .action_arg = 0,
         };
     }
 

@@ -665,7 +665,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             io: std.Io,
             smith: *Smith,
         ) !void {
-            internals.text_engine.uses_cmd = false;
             internals.window.wheel_delta_inverted = false;
             const trace = trace_mod.Trace{
                 .name = "vopr",
@@ -678,6 +677,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .image_decodes = .stepped,
                 .job_runs = job_runs,
             });
+            internals.window.useKeymapConvention(&self.driver.app.window, .pc);
             self.frame_number_rendered = 0;
             self.quiescence_round_count = 0;
             self.dump_hasher = .init(0);

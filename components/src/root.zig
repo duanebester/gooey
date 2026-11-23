@@ -1916,6 +1916,7 @@ pub const TextInput = struct {
         const handle = cx.retain(InputEngine, id, .{ .scope = id }, initEngine);
         const engine = cx.get(InputEngine, handle);
         engine.syncBound(self.bind);
+        const engine_actions = EngineActions.of(cx, InputEngine, handle, engine.hasSelection());
         const focused = cx.focused(id);
         setView(&engine.view, theme, id, self.placeholder);
         engine.blink(cx, focused);
@@ -1925,6 +1926,8 @@ pub const TextInput = struct {
             .key = key,
             .focusable = true,
             .on_key = cx.on(InputEngine.onKey, .{ .entity = handle }),
+            .key_context = gooey.keymaps.context_input,
+            .actions = engine_actions.slice(),
             .style = .{
                 .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
                 .height = .{ .fixed = metrics.line_height + inset * 2 },
@@ -2029,6 +2032,44 @@ pub const TextInput = struct {
     }
 };
 
+const EngineActions = struct {
+    items: [engine_action_count_max]ui.ActionBinding,
+    len: u32,
+
+    const engine_action_count_max: u32 = 7;
+
+    fn of(cx: *Cx, comptime E: type, handle: anytype, has_selection: bool) EngineActions {
+        const handler = cx.on(E.onAction, .{ .entity = handle });
+        var result: EngineActions = .{ .items = undefined, .len = 0 };
+        const always = [_]u64{
+            ui.action(gooey.actions.TextCommand),
+            ui.action(gooey.actions.Undo),
+            ui.action(gooey.actions.Redo),
+            ui.action(gooey.actions.SelectAll),
+            ui.action(gooey.actions.Paste),
+        };
+        for (always) |id| result.push(id, handler);
+        if (has_selection) {
+            result.push(ui.action(gooey.actions.Copy), handler);
+            result.push(ui.action(gooey.actions.Cut), handler);
+        }
+        assert(result.len >= always.len);
+        assert(result.len <= engine_action_count_max);
+        return result;
+    }
+
+    fn push(self: *EngineActions, id: u64, handler: Handler) void {
+        assert(self.len < engine_action_count_max);
+        self.items[self.len] = .{ .action = id, .handler = handler };
+        self.len += 1;
+    }
+
+    fn slice(self: *const EngineActions) []const ui.ActionBinding {
+        assert(self.len <= engine_action_count_max);
+        return self.items[0..self.len];
+    }
+};
+
 fn setView(
     view: *InputEngine.View,
     theme: *const gooey.Theme,
@@ -2075,12 +2116,15 @@ pub const TextArea = struct {
         const line_height = cx.fontMetrics().line_height;
         const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
         engine.resolveClick(cx, .{ .text_x = inset, .text_y = inset, .gutter_end = 0 });
+        const engine_actions = EngineActions.of(cx, AreaEngine, handle, engine.hasSelection());
         engine.follow(line_height, viewport_height);
         engine.blink(cx, focused);
         cx.render(ui.box(.{
             .key = key,
             .focusable = true,
             .on_key = cx.on(AreaEngine.onKey, .{ .entity = handle }),
+            .key_context = gooey.keymaps.context_area,
+            .actions = engine_actions.slice(),
             .on_click = cx.on(AreaEngine.onClick, .{ .entity = handle }),
             .style = .{
                 .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
@@ -2287,12 +2331,15 @@ pub const CodeEditor = struct {
             .text_y = self.border_width + self.padding,
             .gutter_end = self.border_width + gutter,
         });
+        const engine_actions = EngineActions.of(cx, EditorEngine, handle, engine.hasSelection());
         engine.follow(line_height, viewport_height);
         engine.blink(cx, focused);
         cx.render(ui.box(.{
             .key = key,
             .focusable = true,
             .on_key = cx.on(EditorEngine.onKey, .{ .entity = handle }),
+            .key_context = gooey.keymaps.context_editor,
+            .actions = engine_actions.slice(),
             .on_click = cx.on(EditorEngine.onClick, .{ .entity = handle }),
             .style = .{
                 .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },

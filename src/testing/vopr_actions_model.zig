@@ -46,6 +46,7 @@ pub const ActionsModel = struct {
     press_len: u32,
     pending: [pending_count_max]Action,
     pending_count: u32,
+    composing: bool,
     counts: Stats,
 
     pub const action_kinds: []const vopr.ActionKind = &.{
@@ -60,17 +61,26 @@ pub const ActionsModel = struct {
     pub const Stats = struct {
         fired: [5]u32,
         save_outside: u32,
+        field_history: u32,
+        composing_keys: u32,
 
-        const zero: Stats = .{ .fired = @splat(0), .save_outside = 0 };
+        const zero: Stats = .{
+            .fired = @splat(0),
+            .save_outside = 0,
+            .field_history = 0,
+            .composing_keys = 0,
+        };
 
         pub fn format(self: Stats, writer: *std.Io.Writer) std.Io.Writer.Error!void {
             try writer.print("undo {d}, redo {d}, cancel {d}, save {d}; ctrl+s outside the " ++
-                "editor {d}", .{
+                "editor {d}, field undo or redo {d}, keys while composing {d}", .{
                 self.fired[@backingInt(Message.undo)],
                 self.fired[@backingInt(Message.redo)],
                 self.fired[@backingInt(Message.cancel)],
                 self.fired[@backingInt(Message.save)],
                 self.save_outside,
+                self.field_history,
+                self.composing_keys,
             });
         }
     };
@@ -80,6 +90,7 @@ pub const ActionsModel = struct {
         self.focus = .root;
         self.press_len = 0;
         self.pending_count = 0;
+        self.composing = false;
         self.counts = .zero;
         assert(std.mem.eql(u8, (actions.State{}).message, Message.none.text()));
     }
@@ -104,12 +115,26 @@ pub const ActionsModel = struct {
     pub fn beginDrain(self: *ActionsModel, window: *Window) void {
         assert(window.phase == .idle);
         self.focus = window.focus;
+        const engine = findEngine(window) orelse {
+            self.composing = false;
+            return;
+        };
+        self.composing = engine.preedit_len > 0;
     }
 
     pub fn endDrain(self: *ActionsModel, window: *Window, published: bool) void {
         _ = published;
         const frame = window.rendered();
         for (self.pending[0..self.pending_count]) |*action| {
+            switch (action.*) {
+                .text => if (self.editorFocused(frame)) {
+                    self.composing = false;
+                },
+                .compose => |text| if (self.editorFocused(frame)) {
+                    self.composing = text.len > 0;
+                },
+                else => {},
+            }
             const events = vopr_events.lower(action);
             for (events.slice()) |*event| self.route(frame, event);
         }
@@ -159,11 +184,21 @@ pub const ActionsModel = struct {
         const ctrl_only = m.ctrl and !m.shift and !m.alt and !m.cmd;
         const ctrl_shift = m.ctrl and m.shift and !m.alt and !m.cmd;
         const plain = !m.ctrl and !m.shift and !m.alt and !m.cmd;
+        if (self.editorFocused(frame)) {
+            if (self.composing) {
+                if (bound(chord)) self.counts.composing_keys += 1;
+                return null;
+            }
+        }
         return switch (chord.key) {
             .z => {
+                if (!ctrl_only and !ctrl_shift) return null;
+                if (self.editorFocused(frame)) {
+                    self.counts.field_history += 1;
+                    return null;
+                }
                 if (ctrl_only) return .undo;
-                if (ctrl_shift) return .redo;
-                return null;
+                return .redo;
             },
             .s => {
                 if (!ctrl_only) return null;
@@ -231,6 +266,28 @@ pub const ActionsModel = struct {
         return node.role == .textbox;
     }
 };
+
+fn bound(chord: Action.Chord) bool {
+    const m = chord.modifiers;
+    const ctrl = m.ctrl and !m.alt and !m.cmd;
+    const plain = !m.ctrl and !m.shift and !m.alt and !m.cmd;
+    return switch (chord.key) {
+        .z => ctrl,
+        .s => ctrl and !m.shift,
+        .escape => plain,
+        else => false,
+    };
+}
+
+fn findEngine(window: *Window) ?*const internals.text_engine.InputEngine {
+    const frame = window.rendered();
+    const node = for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .textbox) break node;
+    } else return null;
+    const type_id = internals.handler.typeId(internals.text_engine.InputEngine);
+    const slot = window.inputs.slab.find(node.id, type_id) orelse return null;
+    return @ptrCast(@alignCast(window.inputs.slab.slotBytes(slot).ptr));
+}
 
 fn buttonMessage(frame: *const records.Frame, index: u32) ?Message {
     assert(index < frame.hit_count);

@@ -21,6 +21,9 @@ pub const animation = @import("animation.zig");
 pub const jobs = @import("jobs.zig");
 pub const images = @import("images.zig");
 pub const debugger = @import("debugger.zig");
+pub const actions = @import("actions.zig");
+pub const keymaps = @import("keymaps.zig");
+pub const keymap = @import("keymap.zig");
 
 pub const App = app.App;
 pub const Config = app.Config;
@@ -113,6 +116,8 @@ test {
     _ = @import("screen_reader.zig");
     _ = @import("a11y_value.zig");
     _ = @import("keymap.zig");
+    _ = @import("keymaps.zig");
+    _ = @import("actions.zig");
     _ = @import("clipboard.zig");
     _ = @import("text_history.zig");
     _ = @import("images.zig");

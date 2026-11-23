@@ -172,6 +172,7 @@ fn capture(
     defer allocator.destroy(driver);
     try driver.initInPlace(allocator, io, trace);
     defer driver.deinit();
+    gooey.internals.window.useKeymapConvention(&driver.app.window, .mac);
     trace_mod.run(driver, trace, out);
 }
 

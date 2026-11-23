@@ -81,6 +81,7 @@ test "the IME rect query is answered synchronously from the rendered frame" {
 const AreaState = struct { notes: []const u8 = "" };
 
 const AreaApp = gooey.App(AreaState, areaRender, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Area",
     .width = 300,
     .height = 200,
@@ -99,6 +100,7 @@ const FillAreaState = struct {
 };
 
 const FillAreaApp = gooey.App(FillAreaState, fillAreaRender, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Fill area",
     .width = 400,
     .height = 200,
@@ -164,6 +166,7 @@ const LongRunState = struct {
 };
 
 const LongRunApp = gooey.App(LongRunState, longRunRender, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Long run",
     .width = 1400,
     .height = 200,
@@ -675,6 +678,7 @@ const editor_limits = limits: {
 };
 
 const EditorApp = gooey.App(EditorState, editorRender, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Editor",
     .width = 400,
     .height = 200,
@@ -2073,6 +2077,7 @@ const CursorState = struct {
 };
 
 const CursorApp = gooey.App(CursorState, cursorRender, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Cursor",
     .width = 300,
     .height = 200,
@@ -2559,6 +2564,7 @@ test "keymapClaims answers from the rendered focus path" {
     defer driver.deinit();
     const query = internals.Query{ .window = &driver.app.window };
     const save = chord(.s, .{ .cmd = true });
+    internals.window.useKeymapConvention(&driver.app.window, .mac);
     driver.frame();
     try testing.expect(!query.keymapClaims(save));
     try testing.expect(query.keymapClaims(chord(.z, .{ .cmd = true })));
@@ -2569,6 +2575,96 @@ test "keymapClaims answers from the rendered focus path" {
     driver.frame();
     try testing.expect(query.keymapClaims(save));
     try testing.expect(!query.keymapClaims(chord(.a, .{})));
+}
+
+test "Cmd+Z in the actions example undoes the focused field, not the root's Undo" {
+    const Driver = core_driver.CoreDriver(actions.AppWith(.cmd));
+    const driver = try testing.allocator.create(Driver);
+    defer testing.allocator.destroy(driver);
+    try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
+    defer driver.deinit();
+    internals.window.useKeymapConvention(&driver.app.window, .mac);
+    driver.frame();
+    driver.deliver(.{ .mouse_down = mouse(124, 120) });
+    driver.deliver(.{ .mouse_up = mouse(124, 120) });
+    driver.deliver(.{ .text_input = .{ .text = "hi" } });
+    driver.frame();
+    try testing.expectEqualStrings("hi", driver.app.state.draft);
+    driver.deliver(.{ .key_down = chord(.z, .{ .cmd = true }) });
+    driver.frame();
+    try testing.expectEqualStrings("", driver.app.state.draft);
+    try testing.expectEqualStrings("", driver.app.state.message);
+    driver.deliver(.{ .key_down = chord(.z, .{ .cmd = true, .shift = true }) });
+    driver.frame();
+    try testing.expectEqualStrings("hi", driver.app.state.draft);
+    driver.deliver(.{ .key_down = chord(.tab, .{}) });
+    driver.frame();
+    driver.deliver(.{ .key_down = chord(.z, .{ .cmd = true }) });
+    driver.frame();
+    try testing.expectEqualStrings("Undo!", driver.app.state.message);
+    try testing.expectEqualStrings("hi", driver.app.state.draft);
+}
+
+test "the keymap claims no key while the focused field composes" {
+    const Driver = core_driver.CoreDriver(actions.AppWith(.cmd));
+    const driver = try testing.allocator.create(Driver);
+    defer testing.allocator.destroy(driver);
+    try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
+    defer driver.deinit();
+    internals.window.useKeymapConvention(&driver.app.window, .mac);
+    const query = internals.Query{ .window = &driver.app.window };
+    driver.frame();
+    driver.deliver(.{ .mouse_down = mouse(124, 120) });
+    driver.deliver(.{ .mouse_up = mouse(124, 120) });
+    driver.deliver(.{ .text_input = .{ .text = "ab" } });
+    driver.frame();
+    const backspace = chord(.delete, .{});
+    const left = chord(.left, .{});
+    const undo = chord(.z, .{ .cmd = true });
+    try testing.expect(query.keymapClaims(backspace));
+    try testing.expect(query.keymapClaims(left));
+    driver.deliver(.{ .composition = .{ .text = "\u{304b}" } });
+    driver.frame();
+    try testing.expect(!query.keymapClaims(backspace));
+    try testing.expect(!query.keymapClaims(left));
+    try testing.expect(!query.keymapClaims(undo));
+    driver.deliver(.{ .key_down = backspace });
+    driver.deliver(.{ .key_down = undo });
+    driver.frame();
+    try testing.expectEqualStrings("ab", driver.app.state.draft);
+    try testing.expectEqualStrings("", driver.app.state.message);
+    driver.deliver(.{ .composition = .{ .text = "" } });
+    driver.deliver(.{ .text_input = .{ .text = "\u{304b}" } });
+    driver.frame();
+    try testing.expectEqualStrings("ab\u{304b}", driver.app.state.draft);
+    try testing.expect(query.keymapClaims(backspace));
+    driver.deliver(.{ .key_down = backspace });
+    driver.frame();
+    try testing.expectEqualStrings("ab", driver.app.state.draft);
+}
+
+test "Copy and Cut are claimed only while the field has a selection" {
+    const Driver = core_driver.CoreDriver(actions.AppWith(.cmd));
+    const driver = try testing.allocator.create(Driver);
+    defer testing.allocator.destroy(driver);
+    try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
+    defer driver.deinit();
+    internals.window.useKeymapConvention(&driver.app.window, .mac);
+    const query = internals.Query{ .window = &driver.app.window };
+    driver.frame();
+    driver.deliver(.{ .mouse_down = mouse(124, 120) });
+    driver.deliver(.{ .mouse_up = mouse(124, 120) });
+    driver.deliver(.{ .text_input = .{ .text = "ab" } });
+    driver.frame();
+    const copy = chord(.c, .{ .cmd = true });
+    const cut = chord(.x, .{ .cmd = true });
+    try testing.expect(!query.keymapClaims(copy));
+    try testing.expect(!query.keymapClaims(cut));
+    try testing.expect(query.keymapClaims(chord(.v, .{ .cmd = true })));
+    driver.deliver(.{ .key_down = chord(.left, .{ .shift = true }) });
+    driver.frame();
+    try testing.expect(query.keymapClaims(copy));
+    try testing.expect(query.keymapClaims(cut));
 }
 
 const ChromeState = struct {
@@ -5438,6 +5534,7 @@ const EditorButtonState = struct {
 };
 
 const EditorButtonApp = gooey.App(EditorButtonState, editorButtonRender, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Editor and button",
     .width = 400,
     .height = 200,

@@ -52,6 +52,7 @@ pub const Query = struct {
     pub fn keymapClaims(self: *const Query, key: input.KeyEvent) bool {
         assert(self.window.phase != .build);
         if (debugger.isToggle(&key)) return true;
+        if (focusComposing(self.window)) return false;
         return findAction(self.window, &key) != null;
     }
 
@@ -738,9 +739,13 @@ fn scrollBox(window: *Window, id: ElementId, scroll: *const input.ScrollEvent) b
 
 fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
     if (debugger.routeKey(window, event)) return;
-    if (event.* == .key_down) {
+    if (event.* == .key_down and !focusComposing(window)) {
         if (findAction(window, &event.key_down)) |found| {
-            _ = invoke(window, found.handler, event, null, found.id);
+            var effects = handler_mod.Effects.init(event, found.id);
+            effects.action = found.action;
+            effects.action_arg = found.arg;
+            call(window, found.handler, &effects);
+            if (effects.click_request) |id| clickRequested(window, id, event);
             return;
         }
     }
@@ -842,7 +847,8 @@ const FocusPath = struct {
     fn nextTopLevel(self: *const FocusPath, start: u32) u32 {
         var index = start;
         while (index < self.frame.hit_count) : (index += 1) {
-            if (self.frame.hits[index].parent == index_none) return index;
+            const record = &self.frame.hits[index];
+            if (record.parent == index_none and !record.focusable) return index;
         }
         return index_none;
     }
@@ -856,18 +862,40 @@ const FocusPath = struct {
     }
 };
 
-const FoundAction = struct { id: ElementId, handler: handler_mod.Handler };
+const FoundAction = struct {
+    id: ElementId,
+    handler: handler_mod.Handler,
+    action: u64,
+    arg: u64,
+};
 
 fn findAction(window: *const Window, key: *const input.KeyEvent) ?FoundAction {
     if (window.keymap.len == 0) return null;
     const start = FocusPath.init(window);
-    const action = keymap.match(window.keymap, key, start) orelse return null;
+    const found = keymap.match(window.keymap, key, start) orelse return null;
+    assert(found.action != 0);
     var path = start;
     while (path.next()) |record| {
-        const handler = path.frame.actionHandler(record, action) orelse continue;
-        return .{ .id = record.id, .handler = handler };
+        const handler = path.frame.actionHandler(record, found.action) orelse continue;
+        return .{ .id = record.id, .handler = handler, .action = found.action, .arg = found.arg };
     }
     return null;
+}
+
+fn focusComposing(window: *const Window) bool {
+    const frame = window.rendered();
+    const index = findRecord(frame, window.focus);
+    if (index == index_none) return false;
+    assert(index < frame.hit_count);
+    const handler = frame.handlerAt(frame.hits[index].on_key) orelse return false;
+    const type_id = handler.target.type_id;
+    const engines = .{ text_engine.InputEngine, text_engine.AreaEngine, text_engine.EditorEngine };
+    inline for (engines) |E| {
+        if (type_id == handler_mod.typeId(E)) {
+            return window.store.resolve(E, handler.target).preedit_len > 0;
+        }
+    }
+    return false;
 }
 
 fn moveFocus(window: *Window, backward: bool) void {

@@ -39,6 +39,27 @@ pub const Color = core.ui.Color;
 
 pub const animation = core.animation;
 
+pub const actions = struct {
+    pub const Undo = core.actions.Undo;
+    pub const Redo = core.actions.Redo;
+    pub const Cut = core.actions.Cut;
+    pub const Copy = core.actions.Copy;
+    pub const Paste = core.actions.Paste;
+    pub const SelectAll = core.actions.SelectAll;
+    pub const Unbind = core.actions.Unbind;
+    pub const TextCommand = core.actions.TextCommand;
+};
+
+pub const keymaps = struct {
+    pub const Binding = core.keymaps.Binding;
+    pub const text_default = core.keymaps.text_default;
+    pub const text_mac = core.keymaps.text_mac;
+    pub const text_pc = core.keymaps.text_pc;
+    pub const context_input = core.keymaps.context_input;
+    pub const context_area = core.keymaps.context_area;
+    pub const context_editor = core.keymaps.context_editor;
+};
+
 pub const input = @import("input/mod.zig");
 
 pub const text = struct {

@@ -116,6 +116,7 @@ pub const State = struct {
 };
 
 pub const App = gooey.App(State, render, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Todos",
     .width = 480,
     .height = 560,

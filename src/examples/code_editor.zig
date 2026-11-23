@@ -255,6 +255,7 @@ const selected_background = Color.rgba(0.3, 0.5, 1.0, 0.4);
 const hover_background = Color.rgba(1, 1, 1, 0.1);
 
 pub const App = gooey.App(State, render, .{
+    .keymap = gooey.keymaps.text_default,
     .title = "Code Editor",
     .width = window_width,
     .height = window_height,
