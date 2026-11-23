@@ -37,7 +37,6 @@ pub const main = App.main;
 
 const menu_gap: f32 = 4;
 const menu_width: f32 = 160;
-/// The core `Button`'s medium vertical padding, top plus bottom.
 const button_padding_vertical: f32 = 20;
 
 const text_dark: Color = .rgb(0.2, 0.2, 0.2);
@@ -81,15 +80,11 @@ const Header = struct {
     }
 };
 
-/// The click-outside handler sits on the button and menu's shared
-/// box, so pressing the button while the menu is open toggles it
-/// closed.
 const DropdownTrigger = struct {
     pub fn render(_: DropdownTrigger, cx: *Cx) void {
         const s = cx.state(State);
         const metrics = cx.fontMetrics();
         assert(metrics.point_size > 0);
-        // The button's label is one line at the base size.
         const font_size: f32 = @floatFromInt(cx.theme().font_size_base);
         const label_height = metrics.line_height * font_size / metrics.point_size;
         const button_height = label_height + button_padding_vertical;

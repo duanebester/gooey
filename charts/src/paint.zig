@@ -1,8 +1,3 @@
-//! Text placement the axis and legend layouts are tuned for: the baseline
-//! sits one ascender of the app font below the requested top (or 0.35
-//! ascender below a centre line), measured at the font's loaded size
-//! whatever the label's size.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -39,12 +34,10 @@ pub fn textCentered(
     size: f32,
 ) f32 {
     assert(!std.math.isNan(x) and !std.math.isNan(y_center));
-    // Cap height is about 0.7 ascender, so its centre is 0.35 above the baseline.
     const baseline = y_center + painter.fontMetrics().ascender * 0.35;
     return painter.textOnBaseline(content, x, baseline, style(color, size));
 }
 
-/// Measured at the app font's loaded size.
 pub fn measure(painter: *const Painter, content: []const u8) f32 {
     const metrics = painter.fontMetrics();
     assert(metrics.point_size > 0);

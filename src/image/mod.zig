@@ -1,6 +1,3 @@
-//! Decoding is `core/images.zig`'s worker; `loader.zig` holds the platform
-//! decoder it calls.
-
 pub const ImageAtlas = @import("atlas.zig").ImageAtlas;
 pub const ImageKey = @import("atlas.zig").ImageKey;
 pub const CachedImage = @import("atlas.zig").CachedImage;

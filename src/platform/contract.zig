@@ -1,21 +1,12 @@
-//! Compile-time verification of backend signatures against `Sig` descriptors.
-//! Implementations use inferred error sets (`!*Self`), so whole `fn` types
-//! never compare equal; `Sig` states the parameter list and payload type and
-//! the verifier destructures `@typeInfo` to compare piecewise instead.
-
 const std = @import("std");
 
-/// Whether a verified declaration must return an error union.
 pub const ErrorPolicy = enum {
     required,
     forbidden,
 };
 
-/// One expected function signature.
 pub const Sig = struct {
-    /// Parameter types in declaration order, receiver included.
     params: []const type,
-    /// Return payload type, with any error union already unwrapped.
     returns: type,
     errors: ErrorPolicy = .forbidden,
 };
@@ -212,8 +203,6 @@ test "describe renders a readable signature" {
         .returns = void,
         .errors = .required,
     });
-    // The parameter type names are fully qualified, so assert on the shape
-    // rather than the exact prefix.
     try testing.expect(std.mem.startsWith(u8, rendered, "fn ("));
     try testing.expect(std.mem.endsWith(u8, rendered, ") !void"));
     try testing.expect(std.mem.indexOf(u8, rendered, "Allocator") != null);

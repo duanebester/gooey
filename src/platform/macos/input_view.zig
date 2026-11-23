@@ -17,7 +17,6 @@ const NSEventModifierFlags = appkit.NSEventModifierFlags;
 
 var view_class: ?objc.Class = null;
 
-/// Must be called once before creating any windows.
 pub fn registerClass() !void {
     if (view_class != null) return;
 
@@ -30,8 +29,6 @@ pub fn registerClass() !void {
         return error.IvarAddFailed;
     }
 
-    // VoiceOver's focused element: the bridge stores it, the view answers
-    // `accessibilityFocusedUIElement` with it.
     if (!cls.addIvar(mac_bridge.focus_ivar)) {
         return error.IvarAddFailed;
     }
@@ -177,8 +174,6 @@ fn isFlipped(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     return true;
 }
 
-/// A press on an inactive window's transparent title strip moves it, as on
-/// a standard title bar; anywhere else the first click only activates.
 fn acceptsFirstMouse(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) bool {
     const window = getWindow(self) orelse return false;
     if (event == null) return false;
@@ -186,20 +181,10 @@ fn acceptsFirstMouse(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(
     return window.titleStripTakesPress(mouse.position);
 }
 
-/// AppKit never moves the window on its own for a press in this view: the
-/// content may draw controls under a transparent title bar, so only
-/// `Window.pressTitleBar`, after the core declined the press, moves it.
 fn mouseDownCanMoveWindow(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     return false;
 }
 
-/// The input method sees a click first, as NSTextView lets it: one that
-/// lands outside the marked text (`characterIndexForPoint:`) commits the
-/// composition through `insertText:`, which queues ahead of the click, so it
-/// reaches the field that owns it before the click moves focus. The click
-/// is queued whether or not the input method used it: the view cannot tell
-/// a click on the marked text from one elsewhere. A press the core does not
-/// claim may then move the window from a transparent title strip.
 fn mouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     if (window.hasMarkedText()) {
@@ -247,8 +232,6 @@ fn rightMouseUp(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) v
     _ = window.handleInput(parseMouseEvent(self, event, .mouse_up));
 }
 
-/// AppKit reports right-button motion apart from `mouseDragged:`; without
-/// this a right-button drag would see its press and release but no moves.
 fn rightMouseDragged(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     _ = window.handleInput(parseMouseEvent(self, event, .mouse_dragged));
@@ -276,13 +259,8 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
     } });
 }
 
-/// Points one wheel line scrolls. A mouse wheel reports `scrollingDelta`
-/// in lines, not points (`hasPreciseScrollingDeltas` is false), and AppKit
-/// says to multiply by a line height. 10 is `NSScrollView`'s default
-/// `verticalLineScroll` and `horizontalLineScroll`, as read on macOS 26.
 const wheel_line_points: f64 = 10;
 
-/// Trackpads and Magic Mouse report points already.
 fn scrollDelta(delta_x: f64, delta_y: f64, precise: bool) geometry.Point(f64) {
     const scale: f64 = if (precise) 1 else wheel_line_points;
     return geometry.Point(f64).init(delta_x * scale, delta_y * scale);
@@ -301,7 +279,6 @@ fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) voi
     const window = getWindow(self) orelse return;
     const view = objc.Object.fromId(self);
 
-    // Send key_down first, for shortcuts and navigation.
     if (parseKeyEvent(event_id)) |key_event| {
         const handled = window.handleInput(.{ .key_down = key_event });
 
@@ -323,8 +300,6 @@ fn keyUp(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void 
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
     const is_repeat = event.msgSend(bool, "isARepeat", .{});
 
-    // Don't try to get characters - they can be invalid for system events
-    // Text input comes through insertText: via IME
     _ = window.handleInput(.{ .key_up = .{
         .key = input.KeyCode.from(key_code),
         .modifiers = parseModifiers(modifier_flags),
@@ -361,12 +336,10 @@ fn parseKeyEvent(event_id: objc.c.id) ?input.KeyEvent {
 }
 
 fn getCharacters(event: objc.Object) ?[]const u8 {
-    // Get raw id and check for nil explicitly - ?objc.Object doesn't handle nil correctly
     const ns_string_id: objc.c.id = event.msgSend(objc.c.id, "characters", .{});
     if (ns_string_id == null) return null;
 
     const ns_string = objc.Object.fromId(ns_string_id);
-    // Check length first - UTF8String on empty/special strings can be problematic
     const length: c_ulong = ns_string.msgSend(c_ulong, "length", .{});
     if (length == 0) return null;
 
@@ -377,12 +350,10 @@ fn getCharacters(event: objc.Object) ?[]const u8 {
 }
 
 fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
-    // Get raw id and check for nil explicitly - ?objc.Object doesn't handle nil correctly
     const ns_string_id: objc.c.id = event.msgSend(objc.c.id, "charactersIgnoringModifiers", .{});
     if (ns_string_id == null) return null;
 
     const ns_string = objc.Object.fromId(ns_string_id);
-    // Check length first - UTF8String on empty/special strings can be problematic
     const length: c_ulong = ns_string.msgSend(c_ulong, "length", .{});
     if (length == 0) return null;
 
@@ -392,15 +363,6 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
     return std.mem.span(cstr.?);
 }
 
-// Ranges: the view presents the marked text as a document that starts at 0,
-// counted in UTF-16 units as the protocol requires. `markedRange`,
-// `selectedRange`, and `attributedSubstringForProposedRange:` must agree, or
-// an input method that reads back the composition (Kotoeri converting on
-// Space) sees a document that contradicts what it just set.
-
-/// AppKit asks the first responder which element has focus. The view itself
-/// is not an accessibility element, so without Gooey's focused element
-/// VoiceOver falls back to the nearest ancestor that is, AppKit's default.
 fn accessibilityFocusedUIElement(self: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
     std.debug.assert(self != null);
     const focus = objc.Object.fromId(self).getInstanceVariable(mac_bridge.focus_ivar);
@@ -441,15 +403,11 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
         const key_event = input.KeyEvent{
             .key = input.KeyCode.from(key_code),
             .modifiers = mods,
-            .characters = null, // Don't get characters - can crash for key equivalents
+            .characters = null,
             .characters_ignoring_modifiers = null,
             .is_repeat = false,
         };
 
-        // A key is queued here only when the keymap claims it. Any other
-        // key equivalent comes back as `keyDown:` once this returns NO, which
-        // queues it then; queueing it here too would deliver it twice (paste
-        // or undo twice in a text engine).
         const binding = window.core orelse return false;
         if (!binding.query.keymapClaims(key_event)) return false;
         if (window.handleInput(.{ .key_down = key_event })) {
@@ -469,7 +427,6 @@ fn setMarkedText(
 ) callconv(.c) void {
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse "";
-    // NSString and NSAttributedString both answer `length` in UTF-16 units.
     const length_utf16 = objc.Object.fromId(text_id).msgSend(c_ulong, "length", .{});
 
     window.setMarkedText(str);
@@ -478,7 +435,6 @@ fn setMarkedText(
     _ = window.handleInput(.{ .composition = .{ .text = window.marked_text } });
 }
 
-/// `range` limited to `0..length`; an input method may pass NSNotFound.
 fn clampRange(range: NSRange, length: c_ulong) NSRange {
     const location = @min(range.location, length);
     const result = NSRange{ .location = location, .length = @min(range.length, length - location) };
@@ -495,13 +451,10 @@ fn unmarkText(self: objc.c.id, _: objc.c.SEL) callconv(.c) void {
 }
 
 fn validAttributesForMarkedText(_: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
-    // No styled marked text.
     const NSArray = objc.getClass("NSArray") orelse return null;
     return NSArray.msgSend(objc.c.id, "array", .{});
 }
 
-/// The part of the marked text in `range`, or nil outside it. The view
-/// exposes only the composition, so that is all an input method can read.
 fn attributedSubstring(
     self: objc.c.id,
     _: objc.c.SEL,
@@ -515,15 +468,12 @@ fn attributedSubstring(
     const clamped = clampRange(range, length);
     const NSString = objc.getClass("NSString") orelse return null;
     const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
-    // `setMarkedText` keeps a NUL after the marked text in its buffer.
     assert(window.marked_text.ptr == window.marked_text_buffer.ptr);
     assert(window.marked_text_buffer[window.marked_text.len] == 0);
     const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
         @as([*:0]const u8, @ptrCast(window.marked_text_buffer.ptr)),
     });
     if (string.value == null) return null;
-    // A composition longer than the window's buffer was cut; never read
-    // past what the buffer holds.
     const stored = string.msgSend(c_ulong, "length", .{});
     if (clamped.location + clamped.length > stored) return null;
     const attributed = NSAttributedString.msgSend(objc.Object, "alloc", .{})
@@ -542,29 +492,20 @@ fn insertText(
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse return;
 
-    // `str` lives until this call returns, and `handleInput` is done with it
-    // by then: the core queue copies it (cutting it at a codepoint boundary
-    // past its text budget). No window buffer sits between, so long dictation
-    // or a long IME commit arrives whole.
     window.clearMarkedText();
     _ = window.handleInput(.{ .text_input = .{ .text = str } });
 }
 
-/// Every point is outside the marked text: the view does not map points to
-/// characters. Index 0 would tell an input method that a click landed on the
-/// composition's first character, so it would keep composing instead of
-/// committing (`mouseDown:`).
 fn characterIndexForPoint(_: objc.c.id, _: objc.c.SEL, _: NSPoint) callconv(.c) c_ulong {
     return ns_not_found;
 }
 
-/// `NSNotFound`, `NSIntegerMax`, as an unsigned index.
 const ns_not_found: c_ulong = std.math.maxInt(c_long);
 
 fn firstRectForCharacterRange(
     self: objc.c.id,
     _: objc.c.SEL,
-    _: NSRange, // range
+    _: NSRange,
     actual_range: ?*NSRange,
 ) callconv(.c) NSRect {
     const view = objc.Object.fromId(self);
@@ -572,25 +513,16 @@ fn firstRectForCharacterRange(
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     };
 
-    // Zig 0.16: ?objc.Object is not allowed as a return type in C calling
-    // convention. Use objc.c.id (which is [*c]T, already nullable) and check
-    // for null manually.
     const ns_window_id: objc.c.id = view.msgSend(objc.c.id, "window", .{});
     if (ns_window_id == null) {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     }
     const ns_window = objc.Object.fromId(ns_window_id);
 
-    // Before the core binds there is no caret to place the IME against.
     const binding = window.core orelse {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     };
     const view_rect = coreImeRect(binding);
-    // The rect is the caret after the marked text the rendered frame shows,
-    // so it covers only the empty range there, whatever range was asked
-    // for. Ranges count from the start of the marked text, as `markedRange`
-    // does. The host calls `invalidateCharacterCoordinates` once the frame
-    // with the latest marked text renders, and the next answer moves.
     const caret_utf16 = window.rendered_marked_length_utf16;
     if (actual_range) |actual| actual.* = .{ .location = caret_utf16, .length = 0 };
 
@@ -600,8 +532,6 @@ fn firstRectForCharacterRange(
     return screen_rect;
 }
 
-/// The caret rect of the rendered frame in view coordinates (the view is
-/// flipped, like the core's), or a caret-sized rect at the origin.
 fn coreImeRect(binding: CoreBinding) NSRect {
     const rect = binding.query.imeCursorRect() orelse {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } };
@@ -614,8 +544,6 @@ fn coreImeRect(binding: CoreBinding) NSRect {
     };
 }
 
-/// Registered so AppKit does not beep for commands `interpretKeyEvents:`
-/// maps a key to: the core already queued that key from `keyDown:`.
 fn doCommandBySelector(_: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) void {}
 
 fn testNoTick(_: *anyopaque) void {}
@@ -633,11 +561,10 @@ test "insertText delivers long text whole and setMarkedText cuts it at a codepoi
     var context: u8 = 0;
     window.core = .{
         .queue = &queue,
-        .query = undefined, // Read for key events only.
+        .query = undefined,
         .context = &context,
         .schedule_tick = testNoTick,
     };
-    // `small`'s 256-byte preedit plus the NUL, as `Window.init` reserves it.
     var marked_buffer: [limits.TextLimits.small.preedit_bytes_max + 1]u8 = undefined;
     window.marked_text_buffer = &marked_buffer;
     window.clearMarkedText();

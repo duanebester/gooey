@@ -140,7 +140,6 @@ pub const MockFontFace = struct {
             return m;
         }
 
-        // Return default metrics with the requested glyph_id
         var m = self.default_glyph_metrics;
         m.glyph_id = glyph_id;
         m.advance_x = self.advance_map.get(glyph_id) orelse self.default_advance;
@@ -179,7 +178,6 @@ pub const MockFontFace = struct {
         @memset(buffer[0..required], self.render_fill_value);
 
         const glyph_metrics = self.glyphMetrics(glyph_id);
-        // Undo the count increment from glyphMetrics call
         self.glyph_metrics_count -= 1;
 
         return RasterizedGlyph{
@@ -201,7 +199,6 @@ pub const MockFontFace = struct {
         self.glyph_advance_count = 0;
         self.glyph_metrics_count = 0;
         self.render_glyph_count = 0;
-        // Don't reset deinit_count - that tracks actual deinit calls
 
         self.last_codepoint = null;
         self.last_glyph_id = null;

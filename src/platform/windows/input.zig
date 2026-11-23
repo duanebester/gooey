@@ -1,25 +1,3 @@
-//! Win32 input translation: one `WM_*` message in, at most one Gooey event out.
-//!
-//! The translator holds no Win32 handles and calls no Win32 functions. State
-//! the OS owns (modifier keys, message time, the pointer position) is sampled
-//! by the caller into `Context`, and the capture and leave-tracking calls the
-//! window makes after each event are decided here by `pointerActions`, so
-//! every rule is testable on any host.
-//!
-//! Held buttons are a set, so a second button's release keeps the capture
-//! the first press took. Losing capture (`WM_CAPTURECHANGED`) with a button
-//! held forgets every held button and reports one `pointer_cancelled`, not a
-//! `mouse_up`: the gesture was taken away, so a drag must cancel rather than
-//! drop or commit where the pointer happened to be. Capture loss calls no
-//! `ReleaseCapture`: the capture is already gone. Losing keyboard focus
-//! (`WM_KILLFOCUS`) reports one `focus_lost` carrying the cancelled gesture
-//! and every held key, so every message translates to at most one event.
-//!
-//! `pointer_inside` means `mouse_entered` was reported and `mouse_exited` was
-//! not. `TrackMouseEvent` reports `WM_MOUSELEAVE` at once when the pointer is
-//! already outside, so a release outside the client reports the exit, and the
-//! next motion inside reports the arrival.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const geometry = @import("../../geometry/geometry.zig");
@@ -29,8 +7,6 @@ const win32 = @import("win32.zig");
 const KeyCode = input.KeyCode;
 const MouseButton = input.MouseButton;
 
-/// Logical pixels scrolled per wheel detent, matching the 15 units per detent
-/// the Wayland backend reports.
 pub const wheel_detent_px: f64 = 15.0;
 
 const text_bytes_max: u8 = 4;
@@ -41,64 +17,43 @@ pub const Message = struct {
     lparam: win32.LPARAM,
 };
 
-/// OS state sampled by the caller for the message being translated.
 pub const Context = struct {
-    /// Device pixels per logical pixel; client coordinates divide by it.
     scale_factor: f64,
     modifiers: input.Modifiers,
-    /// `GetMessageTime`, in milliseconds. Wraps after 49.7 days.
     time_ms: u32,
-    /// The pointer position for messages whose `lParam` carries no client
-    /// position, in logical client pixels. For wheel messages it is the
-    /// caller's `ScreenToClient` conversion of their screen position; for
-    /// leave and capture-loss messages, the last known position.
     pointer: geometry.Point(f64),
 };
 
-/// Buttons a `MouseButton` can name, and so the most releases one capture
-/// loss can report.
 pub const mouse_button_count: u32 = @typeInfo(MouseButton).@"enum".field_names.len;
 
-/// The `MK_*` bits of every button `MouseButton` can name.
 const button_bits_all: u8 = @intCast(win32.MK_LBUTTON | win32.MK_RBUTTON | win32.MK_MBUTTON);
 
-/// One past the largest key code `keyCodeFromVirtualKey` returns other than
-/// `.unknown`: the capacity of `Translator.keys_held`.
 pub const key_code_count_max: u32 = input.held_key_count_max;
 
 const KeySet = input.HeldKeys;
 
-/// The most events `Translator.translate` reports for one message; the
-/// window's burst (`window.input_burst_count_max`) covers it.
 pub const message_event_count_max: u32 = 1;
 
 comptime {
     assert(mouse_button_count == 3);
     assert(@popCount(button_bits_all) == mouse_button_count);
-    // Every key the translator can report, `.unknown` aside, has a bit.
     @setEvalBranchQuota(4096);
     for (std.enums.values(KeyCode)) |key| {
         if (key != .unknown) assert(@backingInt(key) < key_code_count_max);
     }
 }
 
-/// What the window does with mouse capture after an event.
 pub const CaptureAction = enum { none, set, release };
 
-/// Win32 calls the window makes after delivering an event; see `pointerActions`.
 pub const PointerActions = struct {
     capture: CaptureAction,
-    /// Arm `TrackMouseEvent` for one `WM_MOUSELEAVE`.
     track_leave: bool,
 
     pub const none = PointerActions{ .capture = .none, .track_leave = false };
 };
 
-/// Press-grouping thresholds read from the user's system settings once at
-/// platform initialization.
 pub const ClickSettings = struct {
     time_ms_max: u32,
-    /// Largest distance, in device pixels on each axis, between presses.
     distance_px_max: u32,
 };
 
@@ -111,20 +66,11 @@ pub const Translator = struct {
     click_y_px: i32 = 0,
     click_button: ?MouseButton = null,
 
-    /// Held buttons, as `MK_*` bits. Only presses this window saw add a
-    /// button; a motion message's `MK_*` key state, which is authoritative,
-    /// can only remove one, so a press that began in another window never
-    /// turns motion into a drag.
     buttons_held: u8 = 0,
-    /// Whether `mouse_entered` was reported without a later `mouse_exited`.
     pointer_inside: bool = false,
-    /// Keys reported down and not yet up, by `KeyCode` value, so a focus loss
-    /// can release them: the window that gains focus receives their releases.
     keys_held: KeySet = .empty,
 
-    /// The first half of a UTF-16 surrogate pair, awaiting its second half.
     high_surrogate: ?u16 = null,
-    /// Storage for the `text_input` slice. Valid until the next translation.
     text_buffer: [text_bytes_max]u8 = undefined,
 
     pub fn init(click_settings: ClickSettings) Translator {
@@ -133,9 +79,6 @@ pub const Translator = struct {
         return .{ .click_settings = click_settings };
     }
 
-    /// Translate one message. Returns null for messages that carry no input,
-    /// for input that completes no event yet (half a surrogate pair), and for
-    /// a capture loss with no button left to release.
     pub fn translate(
         self: *Translator,
         message: *const Message,
@@ -167,7 +110,6 @@ pub const Translator = struct {
         };
     }
 
-    /// Pure, so the capture and tracking rules are testable without a window.
     pub fn pointerActions(
         self: *const Translator,
         message_id: u32,
@@ -200,8 +142,6 @@ pub const Translator = struct {
             },
             .mouse_up => {
                 if (self.buttons_held != 0) return PointerActions.none;
-                // A lost capture is already gone, and another window in this
-                // thread may own it now, so only a real release lets go.
                 const lost = message_id == win32.WM_CAPTURECHANGED;
                 return .{
                     .capture = if (lost) .none else .release,
@@ -220,10 +160,6 @@ pub const Translator = struct {
         assert(message.id == win32.WM_MOUSEMOVE);
         assert(context.scale_factor > 0);
         const position = logicalPosition(message.lparam, context.scale_factor);
-        // A held button missing from the key state was released without its
-        // button-up reaching this window, as when a background window cannot
-        // take capture. One such release is reported per motion until the
-        // state agrees, so no widget waits forever for its `mouse_up`.
         const released = self.buttons_held & ~buttonBitsFromWParam(message.wparam);
         if (buttonFirst(released)) |button| {
             return self.buttonReleased(button, position, context);
@@ -234,20 +170,13 @@ pub const Translator = struct {
             .click_count = 0,
             .modifiers = context.modifiers,
         };
-        // Captured motion is a drag wherever the pointer is, so a scrollbar
-        // dragged outside the client never sees enter and exit instead.
         if (self.buttons_held != 0) return .{ .mouse_dragged = mouse };
-        // The first free motion after an arrival or a reported exit reports
-        // the arrival; the window arms `WM_MOUSELEAVE` tracking for it.
         if (self.pointer_inside) return .{ .mouse_moved = mouse };
         self.pointer_inside = true;
         return .{ .mouse_entered = mouse };
     }
 
     fn pointerLeft(self: *Translator, context: *const Context) ?input.InputEvent {
-        // Reported once per arrival, however many leave notifications follow.
-        // A leave during a captured drag is reported too: the pointer is
-        // outside, and the motion that follows stays a drag.
         assert(std.math.isFinite(context.pointer.x));
         if (!self.pointer_inside) return null;
         self.pointer_inside = false;
@@ -260,10 +189,6 @@ pub const Translator = struct {
         } };
     }
 
-    /// Forget every held button after capture moved to another window, and
-    /// report the gesture cancelled. Null when none is held, which is also
-    /// the outcome of the capture change the window's own `ReleaseCapture`
-    /// causes.
     fn captureLost(self: *Translator, context: *const Context) ?input.InputEvent {
         assert(std.math.isFinite(context.pointer.x));
         if (self.buttons_held == 0) return null;
@@ -273,11 +198,6 @@ pub const Translator = struct {
         return .pointer_cancelled;
     }
 
-    /// After the window lost keyboard focus, forget every held button and
-    /// key and report them in one `focus_lost`: their real releases go to
-    /// the window that gained focus, so without it a drag never ends and a
-    /// key stays down. Null when nothing is held. The click sequence is
-    /// dropped, so the first click after focus returns is a single click.
     fn focusLost(self: *Translator, context: *const Context) ?input.InputEvent {
         assert(context.scale_factor > 0);
         self.high_surrogate = null;
@@ -330,8 +250,6 @@ pub const Translator = struct {
         return event;
     }
 
-    /// Remove `button` from the held set and report its release. A release
-    /// of a button not held (pressed in another window) is still reported.
     fn buttonReleased(
         self: *Translator,
         button: MouseButton,
@@ -350,9 +268,6 @@ pub const Translator = struct {
         } };
     }
 
-    /// The click count for a press: one more than the last press when it was
-    /// the same button, soon enough, and close enough; otherwise one.
-    /// `point` is the press position in device client pixels.
     fn nextClickCount(
         self: *const Translator,
         button: MouseButton,
@@ -363,7 +278,6 @@ pub const Translator = struct {
         assert(self.click_settings.distance_px_max > 0);
         const previous = self.click_button orelse return 1;
         if (previous != button) return 1;
-        // Wrapping subtraction: message time wraps every 49.7 days.
         if (time_ms -% self.click_time_ms > self.click_settings.time_ms_max) return 1;
         if (@abs(point.x - self.click_x_px) > self.click_settings.distance_px_max) return 1;
         if (@abs(point.y - self.click_y_px) > self.click_settings.distance_px_max) return 1;
@@ -371,8 +285,6 @@ pub const Translator = struct {
         return self.click_count + 1;
     }
 
-    /// Assemble UTF-16 code units from `WM_CHAR` into UTF-8 text. Control
-    /// characters are dropped: their keys already arrived as `key_down`.
     fn character(self: *Translator, unit: u16) ?input.InputEvent {
         if (self.high_surrogate) |high| {
             assert(high >= 0xD800);
@@ -384,7 +296,6 @@ pub const Translator = struct {
                 return null;
             },
             0xDC00...0xDFFF => blk: {
-                // A low half without its high half is malformed; drop it.
                 const high = self.high_surrogate orelse return null;
                 self.high_surrogate = null;
                 const high_bits: u21 = high - 0xD800;
@@ -396,7 +307,6 @@ pub const Translator = struct {
         self.high_surrogate = null;
         if (code_point < 0x20 or code_point == 0x7F) return null;
 
-        // Surrogates were consumed above, so every remaining value encodes.
         assert(code_point < 0xD800 or code_point > 0xDFFF);
         const length = std.unicode.utf8Encode(code_point, &self.text_buffer) catch unreachable;
         assert(length >= 1);
@@ -412,8 +322,6 @@ fn wheel(axis: WheelAxis, wparam: win32.WPARAM, context: *const Context) input.I
     assert(std.math.isFinite(context.pointer.y));
     const detents = @as(f64, @floatFromInt(win32.wheelDeltaFromWParam(wparam))) /
         @as(f64, @floatFromInt(win32.WHEEL_DELTA));
-    // Windows reports a vertical wheel turned away from the user as positive;
-    // Gooey's scroll delta grows toward the end of the content.
     const delta: geometry.Point(f64) = switch (axis) {
         .vertical => .{ .x = 0, .y = -detents * wheel_detent_px },
         .horizontal => .{ .x = detents * wheel_detent_px, .y = 0 },
@@ -425,13 +333,8 @@ fn wheel(axis: WheelAxis, wparam: win32.WPARAM, context: *const Context) input.I
     } };
 }
 
-/// `VK_PROCESSKEY`: the IME consumed the key, and its effect arrives as
-/// `WM_IME_COMPOSITION`. Reporting it would let a keymap act on a keystroke
-/// that only edited the composition, such as Enter accepting a candidate.
 const virtual_key_ime_processed: u8 = 0xE5;
 
-/// Translate a key message and keep `keys_held` in step with it, so a
-/// focus loss releases exactly the keys reported down.
 fn keyMessage(
     translator: *Translator,
     message: *const Message,
@@ -454,17 +357,13 @@ fn keyMessage(
 fn keyEvent(message: *const Message, context: *const Context) input.KeyEvent {
     assert(message.id == win32.WM_KEYDOWN or message.id == win32.WM_KEYUP or
         message.id == win32.WM_SYSKEYDOWN or message.id == win32.WM_SYSKEYUP);
-    // Virtual-key codes are one byte; the rest of the word is unused.
     assert(message.wparam <= std.math.maxInt(u8));
     const flags: usize = @bitCast(message.lparam);
-    // Bit 30: the key was already down. Always set on release, so only a
-    // press can be a repeat.
     const was_down = flags & (1 << 30) != 0;
     const is_press = message.id == win32.WM_KEYDOWN or message.id == win32.WM_SYSKEYDOWN;
     return .{
         .key = keyCodeFromVirtualKey(@truncate(message.wparam), flags),
         .modifiers = context.modifiers,
-        // Text arrives separately as `WM_CHAR`, after `TranslateMessage`.
         .characters = null,
         .characters_ignoring_modifiers = null,
         .is_repeat = is_press and was_down,
@@ -479,9 +378,6 @@ fn logicalPosition(lparam: win32.LPARAM, scale_factor: f64) geometry.Point(f64) 
     return logicalFromDevice(point, scale_factor);
 }
 
-/// A client position in device pixels, in logical pixels. Negative for a
-/// point left of or above the client, as a captured drag or a wheel message
-/// converted from screen coordinates can report.
 pub fn logicalFromDevice(point: win32.POINT, scale_factor: f64) geometry.Point(f64) {
     assert(scale_factor > 0);
     assert(std.math.isFinite(scale_factor));
@@ -501,17 +397,12 @@ fn buttonBit(button: MouseButton) u8 {
     return bit;
 }
 
-/// The held buttons a mouse message's `wParam` key state reports. Ctrl,
-/// Shift, and the X buttons share the word and are masked off.
 fn buttonBitsFromWParam(wparam: win32.WPARAM) u8 {
     const bits: u8 = @intCast(wparam & button_bits_all);
     assert(bits & ~button_bits_all == 0);
     return bits;
 }
 
-/// The button a drag or release reports for a held set: left, then right,
-/// then middle, so a left drag keeps reporting left while another button is
-/// pressed and released. Null for an empty set.
 fn buttonFirst(bits: u8) ?MouseButton {
     assert(bits & ~button_bits_all == 0);
     const order = [mouse_button_count]MouseButton{ .left, .right, .middle };
@@ -522,14 +413,8 @@ fn buttonFirst(bits: u8) ?MouseButton {
     return null;
 }
 
-/// Bit 29 of a key message's flags, the context code: Alt was held.
 const flag_alt_down: usize = 1 << 29;
 
-/// Whether a `WM_SYSKEYDOWN`, `WM_SYSKEYUP`, or `WM_SYSCHAR` message also goes
-/// to `DefWindowProcW`. Only Alt+F4 (close) and Alt+Space (the system menu,
-/// opened from its `WM_SYSCHAR`) do: Gooey windows have no menu bar, so
-/// `DefWindowProcW` would beep on Alt+letter, and a lone Alt or F10 release
-/// would enter menu mode and swallow the next key.
 pub fn systemKeyUsesDefault(message: *const Message) bool {
     assert(message.id == win32.WM_SYSKEYDOWN or message.id == win32.WM_SYSKEYUP or
         message.id == win32.WM_SYSCHAR);
@@ -537,7 +422,6 @@ pub fn systemKeyUsesDefault(message: *const Message) bool {
     if (message.id == win32.WM_SYSCHAR) return message.wparam == ' ';
 
     const flags: usize = @bitCast(message.lparam);
-    // F10 arrives as a system key without Alt; it only enters menu mode.
     if (flags & flag_alt_down == 0) return false;
     const virtual_key: u8 = @truncate(message.wparam);
     const virtual_key_f4: u8 = @intCast(win32.VK_F4);
@@ -545,10 +429,7 @@ pub fn systemKeyUsesDefault(message: *const Message) bool {
     return virtual_key == virtual_key_f4 or virtual_key == virtual_key_space;
 }
 
-/// Bit 24 of a key message's flags: the key is on the extended block, which
-/// separates right Ctrl, right Alt, and keypad Enter from their twins.
 const flag_extended: usize = 1 << 24;
-/// The scan code, bits 16..23; right Shift is identified only by scan code.
 const scan_code_shift = 16;
 const scan_code_right_shift: u8 = 0x36;
 
@@ -568,16 +449,14 @@ const function_keys = [20]KeyCode{
     .f11, .f12, .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20,
 };
 
-/// Map a Win32 virtual-key code (`VK_*`) and its message flags to Gooey's
-/// positional key code. Unmapped keys become `.unknown`.
 pub fn keyCodeFromVirtualKey(virtual_key: u8, flags: usize) KeyCode {
     const extended = flags & flag_extended != 0;
     return switch (virtual_key) {
         'A'...'Z' => letter_keys[virtual_key - 'A'],
         '0'...'9' => digit_keys[virtual_key - '0'],
-        0x60...0x69 => keypad_digit_keys[virtual_key - 0x60], // VK_NUMPAD0..9
-        0x70...0x83 => function_keys[virtual_key - 0x70], // VK_F1..F20
-        0x08 => .delete, // VK_BACK
+        0x60...0x69 => keypad_digit_keys[virtual_key - 0x60],
+        0x70...0x83 => function_keys[virtual_key - 0x70],
+        0x08 => .delete,
         0x09 => .tab,
         0x0D => if (extended) .keypad_enter else .@"return",
         0x10 => if (@as(u8, @truncate(flags >> scan_code_shift)) == scan_code_right_shift)
@@ -585,7 +464,7 @@ pub fn keyCodeFromVirtualKey(virtual_key: u8, flags: usize) KeyCode {
         else
             .shift,
         0x11 => if (extended) .right_control else .control,
-        0x12 => if (extended) .right_option else .option, // VK_MENU
+        0x12 => if (extended) .right_option else .option,
         0x14 => .caps_lock,
         0x1B => .escape,
         0x20 => .space,
@@ -598,25 +477,25 @@ pub fn keyCodeFromVirtualKey(virtual_key: u8, flags: usize) KeyCode {
         0x27 => .right,
         0x28 => .down,
         0x2E => .forward_delete,
-        0x5B => .command, // VK_LWIN
-        0x5C => .right_command, // VK_RWIN
+        0x5B => .command,
+        0x5C => .right_command,
         0x6A => .keypad_multiply,
         0x6B => .keypad_plus,
         0x6D => .keypad_minus,
         0x6E => .keypad_decimal,
         0x6F => .keypad_divide,
-        0x90 => .keypad_clear, // VK_NUMLOCK, at the keypad-clear position
-        0xBA => .semicolon, // VK_OEM_1
-        0xBB => .equal, // VK_OEM_PLUS
+        0x90 => .keypad_clear,
+        0xBA => .semicolon,
+        0xBB => .equal,
         0xBC => .comma,
         0xBD => .minus,
         0xBE => .period,
-        0xBF => .slash, // VK_OEM_2
-        0xC0 => .grave, // VK_OEM_3
-        0xDB => .left_bracket, // VK_OEM_4
-        0xDC => .backslash, // VK_OEM_5
-        0xDD => .right_bracket, // VK_OEM_6
-        0xDE => .quote, // VK_OEM_7
+        0xBF => .slash,
+        0xC0 => .grave,
+        0xDB => .left_bracket,
+        0xDC => .backslash,
+        0xDD => .right_bracket,
+        0xDE => .quote,
         else => .unknown,
     };
 }
@@ -645,8 +524,6 @@ fn mouseMessage(id: u32, key_state: usize, x_px: i16, y_px: i16) Message {
 }
 
 const leave_message = Message{ .id = win32.WM_MOUSELEAVE, .wparam = 0, .lparam = 0 };
-/// Capture lost to no window or to another; the translator never sees the
-/// gaining handle.
 const capture_lost_message = Message{ .id = win32.WM_CAPTURECHANGED, .wparam = 0, .lparam = 0 };
 
 const Step = struct { event: input.InputEvent, actions: PointerActions };
@@ -693,7 +570,6 @@ test "held buttons are a set and capture is released only after the last" {
     try testing.expectEqual(MouseButton.right, right_down.event.mouse_down.button);
     try expectActions(right_down.actions, .set, false);
 
-    // Releasing right keeps capture and the left drag.
     const right_up = step(&translator, mouseMessage(win32.WM_RBUTTONUP, left_bit, 10, 10)).?;
     try testing.expectEqual(MouseButton.right, right_up.event.mouse_up.button);
     try expectActions(right_up.actions, .none, false);
@@ -718,7 +594,6 @@ test "all three buttons fill the held set and release in any order" {
     const releases = [_]u32{ win32.WM_MBUTTONUP, win32.WM_LBUTTONUP, win32.WM_RBUTTONUP };
     const remaining = [_]u8{ 0x03, 0x02, 0x00 };
     for (releases, remaining) |release, bits| {
-        // A key state of all buttons removes nothing on its own.
         const up = step(&translator, mouseMessage(release, button_bits_all, 0, 0)).?;
         try testing.expectEqual(bits, translator.buttons_held);
         const capture: CaptureAction = if (bits == 0) .release else .none;
@@ -814,8 +689,6 @@ test "motion reports a release the window never saw, one button at a time" {
 }
 
 test "key state never adds a button the window did not see pressed" {
-    // A drag that began in another window moves over with the button down;
-    // it is free motion, not a drag.
     var translator = Translator.init(test_settings);
     const held = win32.MK_LBUTTON | win32.MK_RBUTTON | win32.MK_MBUTTON;
     const arrival = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, held, 10, 10)).?;
@@ -890,7 +763,6 @@ test "click counting honours button, time, and distance thresholds" {
     try testing.expectEqual(@as(u32, 1), pressClickCount(&translator, far, 2201));
     try testing.expectEqual(@as(u32, 1), pressClickCount(&translator, right, 2202));
 
-    // Message time wraps; a press just after the wrap still groups.
     var wrapping = Translator.init(test_settings);
     try testing.expectEqual(@as(u32, 1), pressClickCount(&wrapping, left, 0xFFFF_FFF0));
     try testing.expectEqual(@as(u32, 2), pressClickCount(&wrapping, left, 10));
@@ -910,7 +782,6 @@ test "WM_CHAR assembles surrogate pairs and drops control characters" {
     const latin = translator.translate(&char.message(0xE9), &context).?.text_input.text;
     try testing.expectEqualStrings("\u{E9}", latin);
 
-    // U+1F600 is D83D DE00 in UTF-16.
     try testing.expect(translator.translate(&char.message(0xD83D), &context) == null);
     const emoji = translator.translate(&char.message(0xDE00), &context).?.text_input.text;
     try testing.expectEqualStrings("\u{1F600}", emoji);
@@ -937,9 +808,7 @@ test "virtual keys map to positional key codes" {
     try testing.expectEqual(KeyCode.shift, keyCodeFromVirtualKey(0x10, left_shift_flags));
     try testing.expectEqual(KeyCode.right_shift, keyCodeFromVirtualKey(0x10, right_shift_flags));
 
-    // One past each range, and an unassigned code.
-    try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey(0x84, 0)); // VK_F21
-    // 'Z' + 1 is VK_LWIN, so the letter range is bounded from below instead.
+    try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey(0x84, 0));
     try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey('A' - 1, 0));
     try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey('9' + 1, 0));
     try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey(0xFF, 0));
@@ -952,14 +821,11 @@ test "wheel detents scroll toward the content end when turned toward the user" {
     const scroll = translator.translate(&message, &testContext(0)).?.scroll;
     try testing.expectEqual(wheel_detent_px, scroll.delta.y);
     try testing.expectEqual(@as(f64, 0), scroll.delta.x);
-    // The position is the caller's, not the message's screen coordinates.
     try testing.expectEqual(@as(f64, 10), scroll.position.x);
     try testing.expectEqual(@as(f64, 20), scroll.position.y);
 }
 
 test "device to logical conversion keeps negative client positions" {
-    // A wheel over a window's non-client frame converts to a point above or
-    // left of the client; the conversion must keep the sign.
     const point = logicalFromDevice(.{ .x = -30, .y = 45 }, 1.5);
     try testing.expectEqual(@as(f64, -20), point.x);
     try testing.expectEqual(@as(f64, 30), point.y);
@@ -1029,7 +895,7 @@ test "focus loss with every key held stays within message_event_count_max" {
     }
     _ = step(&translator, mouseMessage(win32.WM_LBUTTONDOWN, win32.MK_LBUTTON, 4, 4)).?;
     _ = step(&translator, mouseMessage(win32.WM_RBUTTONDOWN, win32.MK_RBUTTON, 4, 4)).?;
-    try testing.expect(expected.count() > 64); // More than `nano`'s queue.
+    try testing.expect(expected.count() > 64);
 
     const focus_lost = Message{ .id = win32.WM_KILLFOCUS, .wparam = 0, .lparam = 0 };
     const event = translator.translate(&focus_lost, &context).?;
@@ -1040,7 +906,6 @@ test "focus loss with every key held stays within message_event_count_max" {
 }
 
 test "focus loss with nothing held reports nothing and resets click and text state" {
-    // A dangling surrogate half must not pair with a later low half.
     var translator = Translator.init(test_settings);
     const context = testContext(0);
     const focus_lost = Message{ .id = win32.WM_KILLFOCUS, .wparam = 0, .lparam = 0 };

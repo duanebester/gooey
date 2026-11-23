@@ -1,34 +1,22 @@
 const std = @import("std");
 
-/// Selected with `-Dlinux-backend`; mirrored into `gooey_build_options` and
-/// read by `src/platform/linux_backend.zig`.
 pub const LinuxBackend = enum {
     wayland_vulkan,
     wayland_cpu,
-    /// No display server: CPU renderer on `/dev/fb0`, evdev input.
     fbdev,
-    /// A Bridgetek EVE (BT81x) display controller on spidev; its touch engine is the input.
     eve,
 };
 
-/// Mirrored into `gooey_build_options`. `synthetic` derives every metric from
-/// the point size, so goldens match on every host.
 pub const TextBackend = enum {
     platform,
     synthetic,
 };
 
-/// Selected with `-Dwindows-renderer`; mirrored into `gooey_build_options` and
-/// read by `src/platform/windows/renderer.zig`.
 pub const WindowsRenderer = enum {
     vulkan,
-    /// Direct3D 11, with WARP for machines without a hardware driver.
     dx11,
 };
 
-/// Selected with `-Dframe-trace` (`src/core/frame_trace.zig`); mirrored into
-/// `gooey_build_options` for app modules only: tests, goldens, and benchmarks
-/// always build with `.off`.
 pub const FrameTrace = enum {
     off,
     passive,
@@ -111,13 +99,11 @@ pub fn build(b: *std.Build) void {
     const trace_report_tests = b.addTest(.{ .root_module = trace_report_exe.root_module });
     const run_trace_report_tests = b.addRunArtifact(trace_report_tests);
 
-    // Wired into each branch's `test` step so CI exercises the regression gate's own rules.
     const compare_tests = b.addTest(.{
         .root_module = compare_exe.root_module,
     });
     const run_compare_tests = b.addRunArtifact(compare_tests);
 
-    // Wired into each branch's `test` step so the bench schema and Sampler are exercised in CI.
     const bench_tests = b.addTest(.{
         .root_module = bench_mod,
     });
@@ -130,9 +116,6 @@ pub fn build(b: *std.Build) void {
     if (is_native_windows) addWindowsBuilds(b, target, optimize, frame_trace);
 
     if (is_native_macos) {
-        // A trimmed in-tree port of the subset of mitchellh/zig-objc Gooey used. The system
-        // `objc` library and `Foundation` framework, where these extern symbols resolve,
-        // are linked here so the module is self-contained.
         const objc_mod = b.addModule("objc", .{
             .root_source_file = b.path("src/platform/macos/objc/main.zig"),
             .target = target,
@@ -153,9 +136,6 @@ pub fn build(b: *std.Build) void {
         }));
         linkMacosFrameworks(mod);
 
-        // Benchmarks measure the shipped configuration, so they import a `gooey` built
-        // `.fast` regardless of `-Doptimize`: safety checks are emitted per owning
-        // module, so the default `mod` would time Debug-checked library code.
         const bench_gooey_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
@@ -205,7 +185,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
             .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
         };
-        // `zig build run` runs todo, the default example.
         var todo_exe: ?*std.Build.Step.Compile = null;
         for (native_examples) |example| {
             const example_exe = addNativeExample(
@@ -311,8 +290,6 @@ pub fn build(b: *std.Build) void {
         }
         core_bench_step.dependOn(&core_bench_run.step);
 
-        // Core `validate:` tests, pack's included: they check that each benchmark
-        // measures the output it claims.
         const core_bench_tests = b.addTest(.{
             .root_module = core_bench_exe.root_module,
         });
@@ -362,7 +339,6 @@ pub fn build(b: *std.Build) void {
         }
         accessibility_bench_step.dependOn(&accessibility_bench_run.step);
 
-        // Accessibility `validate:` tests run only in Debug; wired into `test` below.
         const accessibility_bench_tests = b.addTest(.{
             .root_module = accessibility_bench_exe.root_module,
         });
@@ -393,8 +369,6 @@ pub fn build(b: *std.Build) void {
         watcher_cmd.addArg("components/src");
         watcher_cmd.addArg("--");
 
-        // Build scripts can no longer observe passthrough arguments, so the
-        // watcher owns the default: a bare `zig build` becomes `zig build run`.
         watcher_cmd.addArg("zig");
         watcher_cmd.addArg("build");
         watcher_cmd.addPassthruArgs();
@@ -432,18 +406,11 @@ pub fn build(b: *std.Build) void {
             .frame_trace_seconds = frame_trace.seconds,
             .eve = eve_options,
         });
-        // Benchmarks and valgrind measure the shipped configuration.
         const untraced_options_mod = gooeyBuildOptionsModule(b, .{
             .linux_backend = linux_backend,
             .eve = eve_options,
         });
 
-        // Writes directly to the source tree so `@embedFile` can find them.
-        // Requires glslc (from vulkan-tools, shaderc, or the Vulkan SDK).
-        // Pre-compiled .spv files are checked into the repo, so this step can
-        // be skipped in CI or when glslc is not available.
-
-        // Only the Vulkan renderer embeds SPIR-V, so CPU builds skip `glslc`.
         const skip_shader_compile = b.option(
             bool,
             "skip-shader-compile",
@@ -489,8 +456,6 @@ pub fn build(b: *std.Build) void {
                     shader_dir ++ "/" ++ shader.output,
                 });
                 compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
-                // Every stage shares the packed frame's layout; mesh stages also
-                // share the anti-aliasing helpers.
                 compile_cmd.addFileInput(b.path(shader_dir ++ "/packed.glsl"));
                 compile_cmd.addFileInput(b.path(shader_dir ++ "/mesh.glsl"));
                 compile_shaders_step.dependOn(&compile_cmd.step);
@@ -506,7 +471,6 @@ pub fn build(b: *std.Build) void {
 
         linkLinuxGooeyLibraries(mod, linux_backend);
 
-        // Benchmarks measure the shipped configuration; see the macOS branch.
         const bench_gooey_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
@@ -555,8 +519,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
             .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
         };
-        // `zig build run` runs todo, the default example; on EVE, which builds
-        // only the board demos, counter.
         const default_name = if (linux_backend == .eve) "counter" else "todo";
         var default_install: ?*std.Build.Step.InstallArtifact = null;
         for (linux_examples) |example| {
@@ -620,8 +582,6 @@ pub fn build(b: *std.Build) void {
         }
         core_bench_step.dependOn(&core_bench_run.step);
 
-        // Core `validate:` tests, pack's included. The dependOn is added in
-        // the Tests section below.
         const core_bench_tests = b.addTest(.{
             .root_module = core_bench_exe.root_module,
             .use_llvm = true,
@@ -674,8 +634,6 @@ pub fn build(b: *std.Build) void {
         }
         accessibility_bench_step.dependOn(&accessibility_bench_run.step);
 
-        // Accessibility `validate:` tests run only in Debug. The dependOn is
-        // added in the Tests section below.
         const accessibility_bench_tests = b.addTest(.{
             .root_module = accessibility_bench_exe.root_module,
             .use_llvm = true,
@@ -694,11 +652,6 @@ pub fn build(b: *std.Build) void {
 
         const mod_tests = b.addTest(.{
             .root_module = mod,
-            // Force the LLVM backend on Linux: the self-hosted x86_64 backend
-            // in Zig 0.16 is the default for Debug builds but still segfaults
-            // on larger test binaries (see 0.16.0 release notes — "inferior
-            // machine code quality" and still-stabilizing). Using LLVM trades
-            // a bit of compile time for a backend that actually completes.
             .use_llvm = true,
         });
         linkLinuxLibraries(mod_tests, linux_backend);
@@ -762,26 +715,19 @@ pub fn build(b: *std.Build) void {
             fail_fast_exe.step.dependOn(compile_shaders_step);
         }
 
-        // Valgrind does not support modern CPU instructions (AVX, SSE4.2, etc.),
-        // so the test build targets the baseline CPU model while keeping the
-        // native OS/arch so system library search paths still work.
-
         const valgrind_target = b.resolveTargetQuery(.{
-            .cpu_model = .baseline, // No AVX/SSE4.2 - valgrind doesn't support them
+            .cpu_model = .baseline,
         });
 
         const valgrind_mod = b.addModule("gooey-valgrind", .{
             .root_source_file = b.path("src/root.zig"),
             .target = valgrind_target,
-            .optimize = .safe, // ReleaseSafe for meaningful stack traces
+            .optimize = .safe,
         });
         valgrind_mod.addImport("gooey_build_options", untraced_options_mod);
 
         const valgrind_tests = b.addTest(.{
             .root_module = valgrind_mod,
-            // Force LLVM for the same reason as mod_tests above. Valgrind
-            // also requires full DWARF, which the self-hosted backend does
-            // not yet emit completely.
             .use_llvm = true,
         });
         linkLinuxLibraries(valgrind_tests, linux_backend);
@@ -793,11 +739,11 @@ pub fn build(b: *std.Build) void {
         const valgrind_run = b.addSystemCommand(&.{
             "valgrind",
             "--leak-check=full",
-            "--show-leak-kinds=definite,indirect,possible", // Exclude "still reachable" (not real leaks)
-            "--errors-for-leak-kinds=definite,indirect,possible", // Only fail on actual leaks
-            "--num-callers=15", // Enough for useful traces without noise
+            "--show-leak-kinds=definite,indirect,possible",
+            "--errors-for-leak-kinds=definite,indirect,possible",
+            "--num-callers=15",
             "--error-exitcode=1",
-            "--max-stackframe=4000000", // Zig's large stack frames for async/coroutines
+            "--max-stackframe=4000000",
         });
         valgrind_run.addFileArg2(b.path("valgrind.supp"), .{ .prefix = "--suppressions=" });
         valgrind_run.addArtifactArg(valgrind_tests);
@@ -831,9 +777,6 @@ fn addWindowsBuilds(
         "windows-renderer",
         "Windows renderer: vulkan (default) or dx11",
     ) orelse .vulkan;
-    // Linked whichever renderer is selected: an import library adds a DLL
-    // import only for symbols the binary references, so a DirectX 11 build
-    // does not load `vulkan-1.dll`.
     const vulkan_import_library = addVulkanImportLibrary(b);
     const mod = b.addModule("gooey", .{
         .root_source_file = b.path("src/root.zig"),
@@ -863,7 +806,6 @@ fn addWindowsBuilds(
     charts_mod.addImport("gooey", mod);
 
     const examples = [_]struct { name: []const u8, source: []const u8 }{
-        // These run on `platform/windows/core_host.zig`.
         .{ .name = "counter", .source = "src/examples/counter.zig" },
         .{ .name = "todo", .source = "src/examples/todo.zig" },
         .{ .name = "core-file-dialog", .source = "src/examples/core_file_dialog.zig" },
@@ -900,10 +842,6 @@ fn addWindowsBuilds(
         );
     }
 
-    // Two binaries, as on macOS and Linux: the shared tests run against the
-    // same `gooey` module the examples link, so they see the Vulkan import
-    // library. `windows_tests.zig` keeps the Windows-only set explicit rather
-    // than relying on what `root.zig`'s discovery chain happens to reach.
     const shared_tests = b.addTest(.{ .root_module = mod });
     const backend_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -949,15 +887,13 @@ fn addWindowsExample(
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
-    run_cmd.setCwd(b.path(".")); // Run from the project root so assets/ can be found.
+    run_cmd.setCwd(b.path("."));
     run_cmd.addPassthruArgs();
     run_cmd.step.dependOn(b.getInstallStep());
     b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the {s} example", .{name}))
         .dependOn(&run_cmd.step);
 }
 
-/// `test` runs the smoke pass too, so the fuzz targets compile on every CI host
-/// rather than rotting behind a step nothing runs.
 fn addFuzz(
     b: *std.Build,
     gooey_module: *std.Build.Module,
@@ -985,10 +921,6 @@ fn addFuzz(
     test_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
 }
 
-/// Generates `vulkan-1.lib`, the import library for the system Vulkan loader, from
-/// `src/platform/windows/vulkan-1.def` with the bundled `zig dlltool`. This is what
-/// lets a Windows build link Vulkan with only the loader GPU drivers install, without
-/// the Vulkan SDK.
 fn addVulkanImportLibrary(b: *std.Build) std.Build.LazyPath {
     const dlltool = b.addSystemCommand(&.{ b.graph.zig_exe, "dlltool", "-m", "i386:x86-64" });
     dlltool.addArg("-d");
@@ -997,10 +929,6 @@ fn addVulkanImportLibrary(b: *std.Build) std.Build.LazyPath {
     return dlltool.addOutputFileArg("vulkan-1.lib");
 }
 
-/// Adds `compile-hlsl`: rewrites the DirectX 11 renderer's checked-in DXBC from its HLSL
-/// with `src/tools/compile_hlsl.zig`, which calls the system `D3DCompiler_47.dll`. Builds
-/// embed the checked-in files, so only a shader edit needs this step, and only a Windows
-/// host can run it.
 fn addHlslCompile(b: *std.Build) void {
     const step = b.step("compile-hlsl", "Compile the DirectX 11 HLSL shaders to DXBC");
     if (b.graph.host.result.os.tag != .windows) return;
@@ -1013,8 +941,6 @@ fn addHlslCompile(b: *std.Build) void {
         }),
     });
     const shader_dir = "src/platform/windows/shaders/";
-    // Each entry point becomes `<source>.<entry>.dxbc`, which the renderer
-    // embeds by that name.
     const shaders = [_]struct { source: []const u8, entry: []const u8, profile: []const u8 }{
         .{ .source = "quad", .entry = "vs_main", .profile = "vs_5_0" },
         .{ .source = "quad", .entry = "ps_main", .profile = "ps_5_0" },
@@ -1036,7 +962,6 @@ fn addHlslCompile(b: *std.Build) void {
         std.debug.assert(shader.entry.len > 3);
         const run = b.addRunArtifact(exe);
         run.setCwd(b.path("."));
-        // The output is a source file Zig's cache does not track; always run.
         run.has_side_effects = true;
         run.addArgs(&.{
             b.fmt("{s}{s}.hlsl", .{ shader_dir, shader.source }),
@@ -1048,9 +973,6 @@ fn addHlslCompile(b: *std.Build) void {
     }
 }
 
-/// Adds `typecheck-windows`: semantic analysis of the Windows backend from any host,
-/// with no linking; every Win32 and Vulkan binding is a plain `extern`, so analysis
-/// needs no SDK and no import library.
 fn addWindowsTypecheck(b: *std.Build) void {
     const step = b.step(
         "typecheck-windows",
@@ -1062,7 +984,6 @@ fn addWindowsTypecheck(b: *std.Build) void {
         .abi = .gnu,
     });
     std.debug.assert(windows_target.result.os.tag == .windows);
-    // Each renderer selects different code in `platform/windows/window.zig`.
     for ([_]WindowsRenderer{ .vulkan, .dx11 }) |windows_renderer| {
         addWindowsTypecheckRoots(b, step, windows_target, windows_renderer);
     }
@@ -1090,8 +1011,6 @@ fn addWindowsTypecheckRoots(
             .imports = &.{.{ .name = "gooey_build_options", .module = options }},
         }),
     });
-    // Every shared `test {}` block and the `refAllDecls` discovery chain, the
-    // same coverage `typecheck-linux` gets from its `root.zig` test root.
     const shared_tests = b.addTest(.{ .root_module = gooey_mod });
 
     const components_mod = b.createModule(.{
@@ -1100,8 +1019,6 @@ fn addWindowsTypecheckRoots(
         .optimize = .debug,
         .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
     });
-    // The core host: window binding, render thread, IME, clipboard, file dialogs,
-    // and UI Automation.
     const core_app = b.addExecutable(.{
         .name = b.fmt("typecheck-windows-todo-{s}", .{@tagName(windows_renderer)}),
         .root_module = b.createModule(.{
@@ -1115,17 +1032,11 @@ fn addWindowsTypecheckRoots(
         }),
     });
 
-    // Depend on the compile steps only; see `addLinuxTypecheckRoot`.
     step.dependOn(&tests.step);
     step.dependOn(&core_app.step);
-    // The shared tests reach the renderer only through the window, which the
-    // two roots above already analyze for this renderer; run them once.
     if (windows_renderer == .vulkan) step.dependOn(&shared_tests.step);
 }
 
-/// `typecheck-macos`: semantically analyze the macOS backend, its tests, and the goldens
-/// from any host. Frameworks are not linked: extern declarations need no library to
-/// type-check, and no binary is emitted.
 fn addMacosTypecheck(b: *std.Build) void {
     const step = b.step("typecheck-macos", "Semantically analyze the macOS backend from any host");
     const macos_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
@@ -1151,14 +1062,11 @@ fn addMacosTypecheck(b: *std.Build) void {
             .name = b.fmt("typecheck-macos-{t}", .{text_backend}),
             .root_module = gooey_mod,
         });
-        // Depend on the compile step only; see `addLinuxTypecheckRoot`.
         step.dependOn(&tests.step);
         if (text_backend == .platform) addMacosCoreExampleTypecheck(b, step, gooey_mod);
     }
 }
 
-/// Each example's `App.main` reaches the macOS host only from an executable root, so
-/// analyze each as one. Nothing links: no binary is requested.
 fn addMacosCoreExampleTypecheck(
     b: *std.Build,
     step: *std.Build.Step,
@@ -1213,9 +1121,6 @@ fn addMacosCoreExampleTypecheck(
     }
 }
 
-/// Call this on your executable's compile step so the linker finds the frameworks and
-/// shared libraries Gooey uses. The gooey module already declares its links, so
-/// transitive linking usually suffices; this helper is a safety net for non-module usage.
 pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
     const mod = step.root_module;
     const os = step.rootModuleTarget().os.tag;
@@ -1231,8 +1136,6 @@ pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
         mod.link_libc = true;
     }
 
-    // The default backend's libraries. Consumers selecting another
-    // `linux-backend` get the right set transitively from the gooey module.
     if (os == .linux) {
         linkLinuxLibraries(step, .wayland_vulkan);
     }
@@ -1277,9 +1180,6 @@ fn addNativeExample(
     return exe;
 }
 
-/// Adds `zig build import-ban` (`src/tools/import_ban.zig`), which fails on deleted
-/// 0.3.1 paths and on `gooey.internals` references in components or charts, and makes
-/// `test` run it and its own tests.
 fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     const module = b.createModule(.{
         .root_source_file = b.path("src/tools/import_ban.zig"),
@@ -1289,7 +1189,6 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     const exe = b.addExecutable(.{ .name = "import-ban", .root_module = module });
     const run = b.addRunArtifact(exe);
     run.setCwd(b.path("."));
-    // The tree is the input, which Zig's cache cannot see, so run every time.
     run.has_side_effects = true;
     const description = "Fail on deleted 0.3.1 paths and on internals in components or charts";
     b.step("import-ban", description).dependOn(&run.step);
@@ -1299,11 +1198,6 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
-/// Adds the fail-fast checks for frame- and input-path failures to `test_step`.
-///
-/// Each mode drives one path that panics instead of dropping work, and each run step
-/// asserts the abort and the named message. A panic cannot be caught in-process, so
-/// every mode runs in its own child process.
 fn addFailFastChecks(
     b: *std.Build,
     gooey_module: *std.Build.Module,
@@ -1456,50 +1350,21 @@ fn addFailFastChecks(
     return exe;
 }
 
-/// Absolute ceiling on the number of Linux typecheck roots. Each root is a
-/// full semantic analysis of the Linux tree, so the count bounds both build
-/// graph size and worst-case step wall time.
 const typecheck_linux_root_count_max: usize = 8;
 
-/// A single semantic-analysis root for the `typecheck-linux` step.
 const TypecheckRoot = struct {
     source: []const u8,
-    /// True when the root is the `gooey` library itself and must be analyzed
-    /// as a test binary so `test {}` blocks are reachable; false when it is an
-    /// example that imports `gooey` as a dependency.
     as_test: bool,
-    /// Backend the root is analyzed for. Each non-default backend replaces a
-    /// slice of `src/platform`, so each needs its own root to stay compiling.
     linux_backend: LinuxBackend = .wayland_vulkan,
-    /// Embedded boards are mostly Arm, 64-bit or 32-bit, so the framebuffer
-    /// backend is also analyzed there to catch ABI-dependent `ioctl` and
-    /// struct layouts, and code that assumes a 64-bit `usize`.
     cpu_arch: std.Target.Cpu.Arch = .x86_64,
 };
 
-/// Adds the `typecheck-linux` step: full semantic analysis of the Linux/Wayland/Vulkan
-/// backend from any host, with no linking. Linux-only code is otherwise unreachable from
-/// macOS and Windows hosts, and every Linux binding is a plain `extern`, so analysis
-/// needs no C headers, options, or downloads.
-///
-/// Not wired into `install` or `test` because re-analyzing the whole library for a
-/// second target roughly doubles their wall time; CI runs it as its own job.
-///
-/// No system libraries are linked: library resolution happens before semantic analysis,
-/// so a single `-lvulkan` would fail on a macOS host and hide the errors this step
-/// exists to find. Binary emission is suppressed by depending on the compile step alone:
-/// `std.Build.Step.Compile` leaves `generated_bin` null until `getEmittedBin()` is
-/// called and then passes `-fno-emit-bin` itself.
 fn addLinuxTypecheck(b: *std.Build) void {
     const step = b.step(
         "typecheck-linux",
         "Semantically analyze the Linux backend from any host",
     );
 
-    // `src/examples/todo.zig` reaches each backend's host: the Wayland host with
-    // Vulkan and with the CPU renderer, the fbdev host, and the EVE host. The
-    // `src/root.zig` test roots cover far more: every `test {}` block plus the
-    // `refAllDecls` discovery chain.
     const roots = [_]TypecheckRoot{
         .{ .source = "src/root.zig", .as_test = true },
         .{ .source = "src/examples/todo.zig", .as_test = false },
@@ -1516,7 +1381,6 @@ fn addLinuxTypecheck(b: *std.Build) void {
             .cpu_arch = .aarch64,
         },
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev, .cpu_arch = .arm },
-        // The EVE host and renderer on the 32-bit Arm boards that carry EVE panels.
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .eve, .cpu_arch = .arm },
         .{
             .source = "src/examples/counter.zig",
@@ -1531,7 +1395,6 @@ fn addLinuxTypecheck(b: *std.Build) void {
         const linux_target = b.resolveTargetQuery(.{
             .cpu_arch = root.cpu_arch,
             .os_tag = .linux,
-            // 32-bit Arm Linux boards use the hard-float glibc ABI.
             .abi = if (root.cpu_arch == .arm) .gnueabihf else .gnu,
         });
         std.debug.assert(linux_target.result.os.tag == .linux);
@@ -1590,8 +1453,6 @@ fn addLinuxTypecheckRoot(
         });
     };
 
-    // Depend on the compile step *only*. Installing it or calling
-    // `getEmittedBin()` would populate `generated_bin` and re-enable linking.
     step.dependOn(&compile.step);
 }
 
@@ -1675,7 +1536,6 @@ const WasmModules = struct {
 };
 
 fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
-    // The WebGPU renderer's one shader module (`src/platform/web/renderer.zig`).
     const path = "src/platform/wgpu/shaders/packed.wgsl";
     std.debug.assert(std.mem.endsWith(u8, path, ".wgsl"));
     module.addAnonymousImport("packed_wgsl", .{ .root_source_file = b.path(path) });
@@ -1770,15 +1630,13 @@ fn addLinuxExample(
     const step_desc = b.fmt("Run the {s} example", .{name});
     const step = b.step(step_name, step_desc);
     const run_cmd = b.addRunArtifact(exe);
-    run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+    run_cmd.setCwd(b.path("."));
     run_cmd.addPassthruArgs();
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
     return install;
 }
 
-/// `zig build run` runs the todo example, and `zig build todo` installs only
-/// its binary so previews stay focused. Every Linux backend builds it.
 fn addLinuxDefaultSteps(
     b: *std.Build,
     install: *std.Build.Step.InstallArtifact,
@@ -1789,26 +1647,18 @@ fn addLinuxDefaultSteps(
     const only_step = b.step(name, b.fmt("Build only the {s} example", .{name}));
     only_step.dependOn(&install.step);
     const run_cmd = b.addRunArtifact(install.artifact);
-    run_cmd.setCwd(b.path(".")); // Run from the project root so assets/ can be found.
+    run_cmd.setCwd(b.path("."));
     run_cmd.addPassthruArgs();
     run_cmd.step.dependOn(&install.step);
     run_step.dependOn(&run_cmd.step);
 }
 
-/// Build options for the `bench` module. The Cachegrind gate sets
-/// `fixed_iterations` so every benchmark runs a fixed number of iterations.
 fn benchOptionsModule(b: *std.Build, values: struct { fixed_iterations: bool }) *std.Build.Module {
     const options = b.addOptions();
     options.addOption(bool, "fixed_iterations", values.fixed_iterations);
     return options.createModule();
 }
 
-/// The Linux instruction-count gate (`src/bench/cachegrind_gate.zig`). `bench-ir-build`
-/// installs the four benchmark harnesses into `zig-out/bench-ir/`, built ReleaseFast for
-/// the baseline CPU (Valgrind decodes nothing past AVX2) with fixed iteration counts and
-/// Valgrind client requests compiled in, so each run can instrument exactly one benchmark.
-/// `bench-ir-gate` runs both sides' harnesses under Cachegrind and fails on an
-/// instruction-count regression.
 fn addBenchIrGate(b: *std.Build, config: struct {
     valgrind_target: std.Build.ResolvedTarget,
     gooey_options: *std.Build.Module,
@@ -1911,9 +1761,6 @@ fn linkLinuxLibraries(step: *std.Build.Step.Compile, linux_backend: LinuxBackend
     mod.link_libc = true;
 }
 
-/// Libraries that differ by backend. A CPU build never links Vulkan, and the
-/// fbdev build links no display-server library at all, so an embedded image
-/// needs neither installed.
 fn linkLinuxBackendLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend) void {
     switch (linux_backend) {
         .wayland_vulkan => {
@@ -1925,24 +1772,17 @@ fn linkLinuxBackendLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend
     }
 }
 
-/// The Wayland client library, plus libwayland-cursor for the XCursor theme fallback on
-/// compositors without `wp_cursor_shape_v1`.
 fn linkWaylandLibraries(mod: *std.Build.Module) void {
     mod.linkSystemLibrary("wayland-client", .{});
     mod.linkSystemLibrary("wayland-cursor", .{});
 }
 
-/// Platform wiring the goldens' `gooey` module needs on the host target.
 const GoldensWiring = struct {
     objc: ?*std.Build.Module = null,
     linux_backend: ?LinuxBackend = null,
-    /// A step the compile must wait for (Linux shader compilation).
     compile_dependency: ?*std.Build.Step = null,
 };
 
-/// Goldens (`src/testing/goldens/`): a `gooey` module built with the synthetic text
-/// backend, so paint records match on every host. Adds the golden checks to `test_step`
-/// and a `goldens` step that rewrites the golden files.
 fn addGoldens(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -1970,9 +1810,6 @@ fn addGoldens(
             .imports = goldens_imports,
         }),
     });
-    // The VOPR (`src/testing/vopr.zig`) drives the goldens' examples through
-    // the same driver: its fuzz smoke runs with the tests, and `zig build
-    // vopr -- [seed]` runs one seed.
     const vopr_tests = b.addTest(.{
         .name = "vopr-test",
         .root_module = b.createModule(.{
@@ -1998,7 +1835,6 @@ fn addGoldens(
         vopr.step.dependOn(dependency);
     }
     const run_tests = b.addRunArtifact(tests);
-    // The images check decodes `assets/` files relative to the project root.
     run_tests.setCwd(b.path("."));
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&b.addRunArtifact(vopr_tests).step);
@@ -2019,9 +1855,6 @@ fn addGoldens(
     addVoprCoverage(b, target, wiring);
 }
 
-/// `vopr-llvm`: install a Debug VOPR built with LLVM at zig-out/bin/vopr-llvm,
-/// for line coverage with kcov (`kcov OUT zig-out/bin/vopr-llvm -- ...`). The
-/// self-hosted backend's DWARF does not give kcov the line tables it needs.
 fn addVoprCoverage(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensWiring) void {
     const vopr = b.addExecutable(.{
         .name = "vopr-llvm",
@@ -2038,8 +1871,6 @@ fn addVoprCoverage(b: *std.Build, target: std.Build.ResolvedTarget, wiring: Gold
     b.step("vopr-llvm", "Install a Debug, LLVM-built VOPR for kcov").dependOn(&install.step);
 }
 
-/// The jobs' no-worker path, the web's and `-fsingle-threaded`'s, checked
-/// natively: the same `gooey` module built single-threaded.
 fn addJobsMainThreadTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -2078,9 +1909,6 @@ fn addJobsMainThreadTests(
     test_step.dependOn(&b.addRunArtifact(main_thread_tests).step);
 }
 
-/// `vopr-soak`: run the VOPR on random seeds for hours, one child process per seed
-/// (`src/testing/vopr_soak.zig`). The VOPR is built ReleaseSafe for throughput with its
-/// assertions still on.
 fn addVoprSoak(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensWiring) void {
     const vopr = b.addExecutable(.{
         .name = "vopr-safe",
@@ -2104,7 +1932,6 @@ fn addVoprSoak(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensW
     run_soak.addArtifactArg(vopr);
     run_soak.addPassthruArgs();
     run_soak.setCwd(b.path("."));
-    // A soak is never cached: each run draws new seeds.
     run_soak.has_side_effects = true;
     const description = "Run the VOPR on random seeds: vopr-soak -- " ++
         "[--app NAME] [--hours H | --minutes M] [--jobs N] [--out DIR]";
@@ -2277,8 +2104,6 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
-    // The VOPR's model-free frame invariants, so a golden can hold a frame
-    // the VOPR never reaches to the same rules.
     const vopr_invariants_mod = b.createModule(.{
         .root_source_file = b.path("src/testing/vopr_invariants.zig"),
         .target = target,
@@ -2313,8 +2138,6 @@ fn goldensImports(
     }) catch @panic("OOM");
 }
 
-/// Build-time choices mirrored into `gooey_build_options`. Defaults are the shipped
-/// configuration.
 const GooeyBuildOptions = struct {
     linux_backend: LinuxBackend = .wayland_vulkan,
     text_backend: TextBackend = .platform,
@@ -2324,10 +2147,6 @@ const GooeyBuildOptions = struct {
     eve: EveOptions = .default,
 };
 
-/// Examples whose `ResourceLimits` fit an EVE chip: the `.embedded` board
-/// demos. Every other profile allows frames longer than the chip's display
-/// list (`EveLimits.check`), and the EVE host refuses it at compile time, so
-/// an eve build skips those examples.
 fn fitsEveChip(name: []const u8) bool {
     std.debug.assert(name.len > 0);
     const board_demos = [_][]const u8{ "counter", "logo" };
@@ -2337,18 +2156,13 @@ fn fitsEveChip(name: []const u8) bool {
     return false;
 }
 
-/// The EVE backend's board wiring (`-Deve-device`, `-Deve-spi-hz`), read by
-/// `src/platform/eve/platform.zig`. Other backends ignore it.
 const EveOptions = struct {
     device: []const u8,
     spi_hz: u32,
 
-    /// The MicroZed EVE board's wiring, and an SPI clock every BT81x boots at.
     const default = EveOptions{ .device = "/dev/spidev1.0", .spi_hz = 10_000_000 };
 };
 
-/// The `gooey_build_options` module: build-time choices the source tree reads
-/// at comptime. Every module rooted at `src/root.zig` must import it.
 fn gooeyBuildOptionsModule(b: *std.Build, choices: GooeyBuildOptions) *std.Build.Module {
     const options = b.addOptions();
     options.addOption(LinuxBackend, "linux_backend", choices.linux_backend);

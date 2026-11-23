@@ -1,13 +1,3 @@
-//! evdev input for the fbdev backend: keyboards, mice, and touchscreens read
-//! straight from `/dev/input/event*` with no display server or libinput.
-//! Devices are discovered once during initialization by probing their
-//! capability bits; hot-plugged devices are not picked up. `Translator` is a
-//! pure state machine that accumulates each device's packet and emits events
-//! at `SYN_REPORT`, so motion, buttons, and touch contacts from one packet
-//! are reported together and in that order. Key codes are the same evdev
-//! codes Wayland delivers, so key mapping and the built-in US layout come
-//! from `linux/input.zig`.
-
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
@@ -21,7 +11,6 @@ pub const device_scan_max: u32 = 32;
 pub const device_count_max: u32 = 16;
 pub const raw_batch_max: u32 = 64;
 
-/// Room for `/dev/input/event<index>` and its terminator.
 const device_path_bytes_max: usize = 32;
 
 comptime {
@@ -29,11 +18,8 @@ comptime {
     assert(longest.len + 1 <= device_path_bytes_max);
 }
 
-/// Scroll distance reported per wheel detent, in logical pixels. Matches the
-/// value libinput gives Wayland compositors for one detent.
 pub const scroll_per_detent: f64 = 15.0;
 
-// Event types and codes from <linux/input-event-codes.h>.
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
@@ -50,13 +36,10 @@ const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
 const BTN_TOUCH: u16 = 0x14a;
-/// Codes below this are keyboard keys; at and above it are buttons.
 const BTN_MISC: u16 = 0x100;
 
 const key_bit_bytes: usize = 0x300 / 8;
 
-/// `struct input_event`. The kernel declares the timestamp as two
-/// `__kernel_ulong_t`, which is `unsigned long` on every Linux ABI.
 pub const RawEvent = extern struct {
     seconds: c_ulong,
     microseconds: c_ulong,
@@ -65,7 +48,6 @@ pub const RawEvent = extern struct {
     value: i32,
 };
 
-/// `struct input_absinfo`.
 const AbsInfo = extern struct {
     value: i32,
     minimum: i32,
@@ -80,7 +62,6 @@ comptime {
     assert(@sizeOf(AbsInfo) == 24);
 }
 
-/// `_IOC(dir, 'E', nr, size)`, valid on x86 and Arm.
 fn evdevIoctl(direction: u32, number: u32, size: u32) u32 {
     assert(direction <= 3);
     assert(size < (1 << 14));
@@ -97,13 +78,10 @@ fn eviocgabs(axis: u32) u32 {
 
 const EVIOCGRAB: u32 = 0x4004_4590;
 
-/// What a device can report.
 pub const Capabilities = struct {
     keyboard: bool = false,
     relative_pointer: bool = false,
-    /// Absolute axes with a left button: tablets and virtual-machine pointers.
     absolute_pointer: bool = false,
-    /// Absolute axes with `BTN_TOUCH`: touchscreens.
     touch: bool = false,
 
     pub fn any(self: Capabilities) bool {
@@ -120,7 +98,6 @@ pub const AxisRange = struct {
     maximum: i32 = 1,
 };
 
-// Values of one device's packet, accumulated until `SYN_REPORT`.
 const Packet = struct {
     relative_x: i32 = 0,
     relative_y: i32 = 0,
@@ -128,7 +105,6 @@ const Packet = struct {
     wheel_y: i32 = 0,
     absolute_x: ?i32 = null,
     absolute_y: ?i32 = null,
-    /// Bit per button (`button_bits`) pressed or released in this packet.
     pressed: u8 = 0,
     released: u8 = 0,
     touch: enum { unchanged, down, up } = .unchanged,
@@ -142,16 +118,11 @@ pub const Device = struct {
     packet: Packet = .{},
 };
 
-/// Gooey events produced by one raw event, with storage for the one-byte
-/// strings `text_input` events point at.
 pub const Batch = struct {
     events: [capacity]input.InputEvent = undefined,
     text: [capacity][1]u8 = undefined,
     count: u32 = 0,
 
-    /// A `SYN_REPORT` emits at most one motion, three buttons, one touch
-    /// change, and one scroll; a key emits a key event, a modifier change,
-    /// and a character.
     pub const capacity: u32 = 8;
 
     fn push(self: *Batch, event: input.InputEvent) void {
@@ -179,23 +150,19 @@ const button_bits = [_]struct { code: u16, bit: u8 }{
 };
 
 const modifier_keys = [_]struct { code: u32, bit: u8 }{
-    .{ .code = 42, .bit = 1 << 0 }, // KEY_LEFTSHIFT
-    .{ .code = 54, .bit = 1 << 1 }, // KEY_RIGHTSHIFT
-    .{ .code = 29, .bit = 1 << 2 }, // KEY_LEFTCTRL
-    .{ .code = 97, .bit = 1 << 3 }, // KEY_RIGHTCTRL
-    .{ .code = 56, .bit = 1 << 4 }, // KEY_LEFTALT
-    .{ .code = 100, .bit = 1 << 5 }, // KEY_RIGHTALT
-    .{ .code = 125, .bit = 1 << 6 }, // KEY_LEFTMETA
-    .{ .code = 126, .bit = 1 << 7 }, // KEY_RIGHTMETA
+    .{ .code = 42, .bit = 1 << 0 },
+    .{ .code = 54, .bit = 1 << 1 },
+    .{ .code = 29, .bit = 1 << 2 },
+    .{ .code = 97, .bit = 1 << 3 },
+    .{ .code = 56, .bit = 1 << 4 },
+    .{ .code = 100, .bit = 1 << 5 },
+    .{ .code = 125, .bit = 1 << 6 },
+    .{ .code = 126, .bit = 1 << 7 },
 };
 
-// Pointer, button, and modifier state shared by every device, in logical
-// pixels of the screen.
 pub const Translator = struct {
     screen_width: f64,
     screen_height: f64,
-    /// Device pixels per logical pixel; relative motion arrives in device
-    /// pixels.
     scale_factor: f64,
     pointer_x: f64 = 0,
     pointer_y: f64 = 0,
@@ -257,7 +224,6 @@ pub const Translator = struct {
             },
             EV_SYN => switch (raw.code) {
                 SYN_REPORT => self.flushPacket(device, timeMilliseconds(raw), out),
-                // The kernel dropped events: the partial packet is unusable.
                 SYN_DROPPED => packet.* = .{},
                 else => {},
             },
@@ -280,7 +246,6 @@ pub const Translator = struct {
             out.push(linux_input.keyUpEvent(key, modifiers));
             return;
         }
-        // Value 2 is the kernel's own autorepeat.
         out.push(linux_input.keyDownEvent(key, modifiers, value == 2));
         if (modifiers.ctrl or modifiers.alt or modifiers.cmd) return;
         if (linux_input.evdevKeyToChar(key, modifiers.shift)) |char| out.pushText(char);
@@ -329,8 +294,6 @@ pub const Translator = struct {
         }
         self.applyTouch(packet.touch, out);
         if (packet.wheel_x != 0 or packet.wheel_y != 0) {
-            // Wayland axis values grow rightward and downward; a positive
-            // `REL_WHEEL` is a turn away from the user, which scrolls up.
             const delta_x = @as(f64, @floatFromInt(packet.wheel_x)) * scroll_per_detent;
             const delta_y = -@as(f64, @floatFromInt(packet.wheel_y)) * scroll_per_detent;
             out.push(linux_input.scrollEvent(
@@ -395,7 +358,6 @@ pub const Translator = struct {
     }
 };
 
-/// Map a raw absolute axis value onto `[0, extent)` logical pixels.
 fn mapAxis(raw: i32, range: AxisRange, extent: f64) f64 {
     assert(range.maximum > range.minimum);
     assert(extent > 0);
@@ -407,7 +369,6 @@ fn mapAxis(raw: i32, range: AxisRange, extent: f64) f64 {
 fn timeMilliseconds(raw: RawEvent) u32 {
     assert(raw.microseconds < 1_000_000);
     const ms = @as(u64, raw.seconds) * 1000 + @as(u64, raw.microseconds) / 1000;
-    // Truncation wraps every 49 days; `ClickTracker` subtracts with wrapping.
     return @truncate(ms);
 }
 
@@ -415,16 +376,14 @@ pub const DeviceSet = struct {
     devices: [device_count_max]Device = undefined,
     count: u32 = 0,
 
-    // Open every usable `/dev/input/event*` node. Nodes that cannot be
-    // opened (permissions) or report nothing useful are skipped; a device
-    // with no input at all is a valid, if unusual, configuration.
     pub fn openAll(self: *DeviceSet, grab: bool) void {
         assert(self.count == 0);
         var index: u32 = 0;
         while (index < device_scan_max and self.count < device_count_max) : (index += 1) {
             var path_buffer: [device_path_bytes_max]u8 = undefined;
-            // Cannot fail: the longest path fits `device_path_bytes_max` (see
-            // the comptime check there), and formatting writes nothing else.
+            comptime assert(std.fmt.count("/dev/input/event{d}", .{
+                std.math.maxInt(u32),
+            }) < path_buffer.len);
             const path = std.fmt.bufPrintSentinel(
                 &path_buffer,
                 "/dev/input/event{d}",
@@ -445,8 +404,6 @@ pub const DeviceSet = struct {
         self.count = 0;
     }
 
-    /// Close and forget the device at `index`. The last device moves into its
-    /// slot, so callers iterating while removing walk from the end.
     pub fn remove(self: *DeviceSet, index: u32) void {
         assert(index < self.count);
         assert(self.count <= device_count_max);
@@ -490,8 +447,6 @@ fn openDevice(path: [:0]const u8, grab: bool) ?Device {
             return null;
         };
     }
-    // An exclusive grab keeps keystrokes from also reaching the virtual
-    // console underneath. A refusal (another grabber) leaves shared access.
     if (grab) _ = linux.ioctl(fd, EVIOCGRAB, 1);
     return device;
 }
@@ -547,10 +502,6 @@ pub fn rawCountMax(room: u32) u32 {
     return count;
 }
 
-// Read up to `buffer.len` (at most `raw_batch_max`) pending events from a
-// non-blocking device. Returns an empty slice when nothing is pending, and
-// `error.DeviceLost` when the device can no longer be read (unplugged or
-// revoked).
 pub fn readEvents(
     device: *const Device,
     buffer: []RawEvent,
@@ -566,7 +517,6 @@ pub fn readEvents(
             return error.DeviceLost;
         },
     };
-    // The kernel only ever returns whole events.
     assert(count % @sizeOf(RawEvent) == 0);
     return buffer[0 .. count / @sizeOf(RawEvent)];
 }
@@ -588,9 +538,6 @@ fn testEvent(event_type: u16, code: u16, value: i32) RawEvent {
     return .{ .seconds = 1, .microseconds = 0, .type = event_type, .code = code, .value = value };
 }
 
-/// Feeds `events` one at a time and flattens the translated events into
-/// `out`. Each raw event gets its own caller-owned batch because `text_input`
-/// slices point into their batch and must outlive this call.
 fn feedAll(
     translator: *Translator,
     device: *Device,
@@ -680,7 +627,7 @@ test "shifted key produces an uppercase character; ctrl suppresses text" {
     var batches: [8]Batch = undefined;
     const key_a: u16 = @intCast(evdev_keys.KEY_A);
     var count = feedAll(&translator, &device, &.{
-        testEvent(EV_KEY, 54, 1), // KEY_RIGHTSHIFT
+        testEvent(EV_KEY, 54, 1),
         testEvent(EV_KEY, key_a, 1),
     }, &batches, &events);
     try testing.expectEqual(@as(u32, 3), count);
@@ -690,7 +637,7 @@ test "shifted key produces an uppercase character; ctrl suppresses text" {
 
     count = feedAll(&translator, &device, &.{
         testEvent(EV_KEY, 54, 0),
-        testEvent(EV_KEY, 29, 1), // KEY_LEFTCTRL
+        testEvent(EV_KEY, 29, 1),
         testEvent(EV_KEY, key_a, 2),
     }, &batches, &events);
     try testing.expectEqual(@as(u32, 3), count);

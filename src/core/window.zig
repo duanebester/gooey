@@ -1,6 +1,3 @@
-//! Everything is reserved in `initInPlace` from `ResourceLimits`; after the
-//! initialization boundary the window only claims and releases slots.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const id_mod = @import("id.zig");
@@ -37,11 +34,6 @@ pub const PackedFrame = @import("packed_frame.zig").PackedFrame;
 
 pub const Phase = enum { idle, drain, build, layout, emit, pack, draw };
 
-/// How far a wheel delta moves a scroll offset, for every scrolling element
-/// (scroll boxes and text engines alike): the platform's delta in logical
-/// pixels, inverted where `wheel_delta_inverted` is set (macOS). Linux and
-/// Windows report a positive delta, 15 px per notch, toward the end of the
-/// content.
 pub fn wheelOffset(delta: f32) f32 {
     assert(std.math.isFinite(delta));
     const offset = if (wheel_delta_inverted) -delta else delta;
@@ -49,24 +41,10 @@ pub fn wheelOffset(delta: f32) f32 {
     return offset;
 }
 
-/// Whether the platform's wheel delta is positive toward the start of the
-/// content, so `wheelOffset` inverts it. AppKit's `scrollingDelta` is, with
-/// the person's natural-scrolling choice already applied, so this is not that
-/// preference. Browsers, Linux and Windows report toward the end; one wasm
-/// build serves every OS, and its default (false) is right in all of them.
-/// Native targets know their OS at build time. A platform or a harness may
-/// write it during init, before the first frame, and nothing writes it
-/// afterwards: it is process-global, so every window in a process shares it.
 pub var wheel_delta_inverted: bool = builtin.os.tag == .macos;
 
-/// Stack scratch in the router, emit and debugger holds a path or a level per
-/// box depth at the framework ceiling (128 entries); each window's own depth
-/// is `limits.build.box_depth_max`, asserted where the scratch is written.
 pub const box_depth_ceiling = limits_mod.box_depth_ceiling;
 
-/// Every core path splits a text into shaping runs first
-/// (`text_system.runLength`), so a run past the shapers' bound is a
-/// programmer error in that split.
 pub fn textFailed(window: *const Window, content: []const u8, err: anyerror) noreturn {
     if (err == error.TextRunTooLong) {
         std.debug.panic("a shaping run of {d} codepoints passed " ++
@@ -83,30 +61,22 @@ pub fn textFailed(window: *const Window, content: []const u8, err: anyerror) nor
     });
 }
 
-/// `render_deadline_ns` when the last build asked for no timed render.
 pub const deadline_none: u64 = std.math.maxInt(u64);
 
-/// The longest `cx.requestRenderAfter` delay, shared with the platforms.
 pub const render_delay_ms_max: u32 = @import("../platform/interface.zig").render_delay_ms_max;
 
 pub const NodeKind = enum { box, text, paint };
 
-/// One built element. Index `i` is layout element `i` (both pre-order).
 pub const Node = struct {
     kind: NodeKind,
     id: ElementId,
     parent: u32,
     depth: u8,
-    /// Unkeyed children seen so far, for `ElementId.auto`.
     child_count: u32,
     focusable: bool,
-    /// Tab reaches it: focusable and `Box.tab_stop`.
     tab_stop: bool,
     hit: bool,
-    /// `Style.pointer_events == .auto`: its hit record takes the pointer.
     pointer: bool,
-    /// The product of its own and its ancestors' `Style.opacity`, which emit
-    /// folds into every record the node draws.
     opacity: f32,
     cursor: ?element.CursorShape,
     on_click: u32,
@@ -114,7 +84,6 @@ pub const Node = struct {
     on_context_menu: u32,
     on_key: u32,
     on_pointer_drag: u32,
-    /// `Box.draggable` and `Box.drop_target`; a type of 0 means none.
     drag_type: usize,
     drag_payload: u64,
     drop_type: usize,
@@ -137,44 +106,25 @@ pub const Node = struct {
     paint_data: ?*const anyopaque,
     clip: bool,
     scroll: ?retained_mod.Handle(ScrollState),
-    /// A box with a layer opens a fragment that emit paints after the
-    /// fragment that opened it.
     layer: ?element.Layer,
-    /// `Style.source`, for the debugger; no storage in release builds.
     source: debugger_mod.NodeSource,
 };
 
-/// A focused box's place in its innermost scroll box's content, which a
-/// scroll does not change and a layout change above or around it does; the
-/// box's own bounds when no scroll box encloses it.
 pub const FocusPlace = struct {
     id: ElementId,
-    /// The build that drew it.
     frame_number: u64,
     content: records.Rect,
 };
 
-/// A scroll box's offset, retained by its key, and what the
-/// last emit measured, so the router clamps a wheel step and the next build
-/// clamps a shrunk content without waiting for layout. The scrollbar's
-/// geometry lives here too, so emit draws the bar the router hit-tests.
 pub const ScrollState = struct {
     offset_x: f32,
     offset_y: f32,
     content_width: f32,
     content_height: f32,
-    /// The box's bounds at the last emit, unclipped.
     viewport: records.Rect,
     axes: element.Scroll,
-    /// An `Effects.scrollTo` the next build hands its layout, which resolves
-    /// it against that frame's content; emit clears it.
     target: ?Target,
-    /// The offset was at the content's end along every axis it scrolls, as
-    /// of its last move or measurement: a box with `Scroll.anchor = .end`
-    /// follows the end while this holds (`clamp`).
     at_end: bool,
-    /// The thumb the pointer is dragging, with the pointer coordinate and
-    /// offset along that axis at the press.
     dragging: ?ScrollAxis,
     drag_pointer_start: f32,
     drag_offset_start: f32,
@@ -183,13 +133,8 @@ pub const ScrollState = struct {
     pub const scrollbar_padding: f32 = 2;
     pub const scrollbar_room: f32 = scrollbar_size + scrollbar_padding;
     pub const scrollbar_thumb_min: f32 = 30;
-    /// How near the end an offset counts as at it, for rounding in a
-    /// scrollbar drag or a fractional wheel delta.
     pub const end_slop_px: f32 = 0.5;
 
-    /// `element.ScrollTarget` with its child's key resolved to an id, since
-    /// a name key's bytes do not outlive the handler. An index key is kept,
-    /// so a `List` builds the row it names.
     pub const Target = union(enum) {
         start,
         end,
@@ -243,11 +188,6 @@ pub const ScrollState = struct {
         };
     }
 
-    /// Keep the offset inside the last measured content and note whether it
-    /// rests at the end. Every move goes through here (the wheel, the
-    /// scrollbar, focus reveal, a resolved `scrollTo`, a measurement), so a
-    /// move away from the end releases `Scroll.anchor = .end` and a move back
-    /// pins it. Returns whether the offset moved.
     pub fn clamp(self: *ScrollState) bool {
         const x = std.math.clamp(self.offset_x, 0, self.maxX());
         const y = std.math.clamp(self.offset_y, 0, self.maxY());
@@ -261,22 +201,16 @@ pub const ScrollState = struct {
         return moved;
     }
 
-    /// Whether the next layout places the box at its content's end: a
-    /// pending `.end`, or an `.end` anchor still pinned.
     pub fn followsEnd(self: *const ScrollState) bool {
         if (self.target) |target| return target == .end;
         return self.axes.anchor == .end and self.at_end;
     }
 
-    /// Scroll by a wheel delta: offsets follow the delta, inverted on macOS
-    /// (`wheel_delta_inverted`). Returns whether the offset moved, so a box
-    /// that cannot scroll lets the wheel reach its ancestors.
     pub fn wheel(self: *ScrollState, delta_x: f32, delta_y: f32) bool {
         assert(std.math.isFinite(delta_x));
         assert(std.math.isFinite(delta_y));
         const before_x = self.offset_x;
         const before_y = self.offset_y;
-        // The person's scroll wins over a request not yet laid out.
         self.target = null;
         if (self.maxX() > 0) self.offset_x += wheelOffset(delta_x);
         if (self.maxY() > 0) self.offset_y += wheelOffset(delta_y);
@@ -284,8 +218,6 @@ pub const ScrollState = struct {
         return self.offset_x != before_x or self.offset_y != before_y;
     }
 
-    /// The scrollbar track along `axis`, inset by the padding at the box's
-    /// far edge; null when the content does not overflow that axis.
     pub fn track(self: *const ScrollState, axis: ScrollAxis) ?records.Rect {
         if (self.max(axis) == 0) return null;
         const box = self.viewport;
@@ -305,9 +237,6 @@ pub const ScrollState = struct {
         };
     }
 
-    /// The thumb within `bar` (`track(axis)`): proportional to the visible
-    /// share of the content, at least `scrollbar_thumb_min`, placed by the
-    /// scroll fraction.
     pub fn thumb(self: *const ScrollState, axis: ScrollAxis, bar: records.Rect) records.Rect {
         const span = self.thumbSpan(axis, bar);
         var rect = bar;
@@ -344,9 +273,6 @@ pub const ScrollState = struct {
         return .{ .start = range * fraction, .length = length, .range = range };
     }
 
-    /// A press on a scrollbar: on the thumb it starts a drag; elsewhere on
-    /// the track it jumps to the pressed fraction. Returns whether the point
-    /// was on a scrollbar.
     pub fn press(self: *ScrollState, x: f32, y: f32) bool {
         assert(self.dragging == null);
         const axis = self.scrollbarAt(x, y) orelse return false;
@@ -366,8 +292,6 @@ pub const ScrollState = struct {
         return true;
     }
 
-    /// The scrollbar whose track holds (`x`, `y`), the vertical one first
-    /// where they cross; null when the point is on neither.
     pub fn scrollbarAt(self: *const ScrollState, x: f32, y: f32) ?ScrollAxis {
         assert(std.math.isFinite(x));
         assert(std.math.isFinite(y));
@@ -379,8 +303,6 @@ pub const ScrollState = struct {
         return null;
     }
 
-    /// Follow a dragged thumb: the pointer's travel along the track, scaled
-    /// from the thumb's range to the offset's. Returns whether it moved.
     pub fn drag(self: *ScrollState, x: f32, y: f32) bool {
         const axis = self.dragging.?;
         const bar = self.track(axis) orelse return false;
@@ -398,8 +320,6 @@ pub const ScrollState = struct {
 
 pub const ScrollAxis = enum { x, y };
 
-/// A family name copied out of a handler's `Effects.setFont`, so the request
-/// outlives the handler's slice.
 pub const PendingFont = struct {
     name_buffer: [name_bytes_max]u8,
     name_len: u8,
@@ -432,22 +352,12 @@ pub const A11yBuilt = struct {
     selection: ?element.TextSelection,
 };
 
-/// A pointer capture (`Box.on_pointer_drag`): from a press on a box with
-/// the handler until its button's release, Escape, or
-/// `pointer_cancelled`. One per window. Handlers are looked up by `id` in
-/// the frame on screen at each step rather than kept, since an entity or
-/// retained target behind one could be gone by the next frame.
 pub const Capture = struct {
-    /// The capturing box, or `.root` when nothing is captured.
     id: ElementId,
     button: input_mod.MouseButton,
     start_x: f32,
     start_y: f32,
-    /// The pointer went more than `click_slop_px` from the press, so the
-    /// release clicks nothing.
     moved: bool,
-    /// The cursor under the press, kept while captured so a resize cursor
-    /// holds when the pointer leaves a thin divider.
     cursor: element.CursorShape,
 
     pub const click_slop_px: f32 = 2;
@@ -462,14 +372,6 @@ pub const Capture = struct {
     };
 };
 
-/// A drag of a `Box.draggable`: armed by a press on it, and started once
-/// the pointer moves past `Capture.click_slop_px`. One per window. The
-/// payload is copied in, so the drag outlives its source's record; `over` is
-/// the innermost drop target of the payload's type under the pointer, or
-/// `.root`, recomputed by `router.updateHover` on each move and after each
-/// flip. A keyboard drag (`effects.startDrag`) starts active, ignores the
-/// pointer, and moves `over` with the keys, and `x`, `y` are the centre of
-/// `over`, or of the source over none.
 pub const Drag = struct {
     phase: enum { idle, armed, active },
     keyboard: bool,
@@ -498,8 +400,6 @@ pub const Drag = struct {
     };
 };
 
-/// Frame-wide set of keyed ids: duplicate detection during build, and the
-/// "was this scope rendered" query for the retained sweep.
 pub const KeySet = struct {
     slots: []ElementId,
     count: u32,
@@ -520,7 +420,6 @@ pub const KeySet = struct {
         self.count = 0;
     }
 
-    /// Insert `id`; false when it was already present this frame.
     pub fn insert(self: *KeySet, id: ElementId, frame: u64) bool {
         assert(id != .root);
         if (self.count * 2 >= self.slots.len) {
@@ -556,14 +455,8 @@ pub const KeySet = struct {
     }
 };
 
-/// Draws a packed frame. TestBackend binds the `NullRenderer`; a platform
-/// window binds its renderer. One call per tick.
 pub const Presenter = struct {
     context: *anyopaque,
-    /// Runs on the render side. Reads only its arguments: the main thread
-    /// may be draining events into the window meanwhile.
-    /// `frame` is the records frame `packed_frame` was packed from, for its
-    /// viewport and frame number.
     draw: *const fn (
         context: *anyopaque,
         packed_frame: *const PackedFrame,
@@ -572,14 +465,6 @@ pub const Presenter = struct {
     ) void,
 };
 
-/// Opens a file dialog on the main thread, during the drain.
-///
-/// `open` returns the outcome when the dialog ran to completion inside the
-/// call, in the platform's modal loop. It returns null when the dialog stays
-/// open while the host's loop keeps turning: the backend then pushes
-/// `.completion` with `request_id` onto `queue` on the main thread, between
-/// ticks, once the dialog closes, and schedules a tick. The request's
-/// handler slot stays claimed until that completion is routed.
 pub const FileDialogService = struct {
     context: *anyopaque,
     open: *const fn (
@@ -590,14 +475,12 @@ pub const FileDialogService = struct {
     ) ?events.Completion.Outcome,
 };
 
-/// The host's thread-safe wake (`Window.bindWake`).
 pub const WakeService = images_mod.WakeService;
 
 pub const Window = struct {
     gpa: std.mem.Allocator,
     limits: ResourceLimits,
     theme: *const element.Theme,
-    /// The app's keymap, parsed at compile time (static storage).
     keymap: []const keymap_mod.Compiled,
     store: *handler_mod.Store,
     resources: *AppResources,
@@ -611,125 +494,66 @@ pub const Window = struct {
     completions: events.CompletionRing,
     images: images_mod.Loader,
     jobs: jobs_mod.Pool,
-    /// The job deliveries the drain took from `completions`, as many as
-    /// the ring holds.
     job_inbox: events.JobInbox,
     retained: retained_mod.Retained,
     inputs: text_engine.InputPool,
-    /// Reserved only when `limits.text.area.count_max > 0`; retaining an
-    /// area otherwise fails fast (`areaPool`).
     areas: text_engine.AreaPool,
     areas_reserved: bool,
-    /// Reserved only when `limits.text.editor.count_max > 0` (`editorPool`).
     editors: text_engine.EditorPool,
     editors_reserved: bool,
-    /// The text engines' clipboard; a host binds its platform service.
     clipboard: clipboard_mod.Clipboard,
     clipboard_bytes: []u8,
-    /// A save request's folder and suggested name, copied when its handler
-    /// returns so they outlive the handler's frame
-    /// (`limits.events.dialog_path_bytes_max` bytes).
     dialog_request_bytes: []u8,
-    /// What pack writes and the presenter draws; render side only.
     packed_frame: PackedFrame,
     text_scratch: []u8,
     text_scratch_allocator: std.heap.FixedBufferAllocator,
     presenter: ?Presenter,
     file_dialog: ?FileDialogService,
-    // Interaction state, owned by the router.
     focus: ElementId,
-    /// The focus moved by keyboard (Tab, or a handler for a key), so the
-    /// focused element draws its focus ring; a pointer press clears it.
     focus_visible: bool,
-    /// Keyboard focus moved since the last emit, which scrolls the focused
-    /// box into its scroll box's view once, so the ring is seen.
     focus_reveal: bool,
-    /// Where the last build drew the focus ring, so the next one sees a
-    /// layout change move the focused box and scrolls it back into view.
     focus_place: FocusPlace,
-    /// `build.box_depth_max` ids, reserved at init like `press_path`.
     hover_path: []ElementId,
     hover_len: u32,
-    /// Ids from the focused record up to the root in the frame on screen,
-    /// set before each build (`router.updateFocusPath`) for
-    /// `cx.focusVisibleWithin`. Empty while focus is not visible.
     focus_path: []ElementId,
     focus_len: u32,
-    /// The hovered record's cursor, or the nearest ancestor's that sets one;
-    /// `.default` over none. Hosts apply it after a tick when it changed.
     cursor: element.CursorShape,
-    /// Ids from the pressed record up to the root, captured on press. A
-    /// release fires the click handlers of records in this path only, so a
-    /// press that slides off a button does not click it.
     press_path: []ElementId,
     press_len: u32,
-    /// The scroll box whose thumb is being dragged, or `.root`. The drag
-    /// lives in its `ScrollState` until the release.
     scroll_drag: ElementId,
-    /// The `Box.on_pointer_drag` gesture in progress, or `Capture.none`.
     capture: Capture,
-    /// The `Box.draggable` gesture in progress, or `Drag.idle`. A press
-    /// starts at most one of `capture` and `drag`.
     drag: Drag,
     pointer: ?struct { x: f32, y: f32 },
     phase: Phase,
-    /// Set by the main thread when a built frame is complete and cleared by
-    /// the render side once it has drawn it. The only field
-    /// both threads touch: its release and acquire order the frame contents,
-    /// and while it is set the main thread neither builds nor flips frames.
     frame_in_flight: std.atomic.Value(bool),
-    /// The main thread published a frame and has not yet made it `rendered`.
     awaiting_flip: bool,
-    /// The render side's phase (idle, pack, draw); only that side touches it.
     render_phase: Phase,
-    /// This window's key in the shared atlas upload journal: its platform
-    /// window's address once a host registers it as a consumer, else its own.
     atlas_consumer_key: usize,
-    /// The atlas frame the last build opened; glyphs used since stay resident
-    /// until the consumer has uploaded it, older ones may be evicted.
     atlas_frame: u64,
     frame_number: u64,
     render_requested: bool,
-    /// The earliest `cx.requestRenderAfter` of the last build, on the window
-    /// clock, or `deadline_none`. Main thread only: wasm32 has no 64-bit
-    /// atomics, so a host whose render thread needs it keeps its own copy.
     render_deadline_ns: u64,
-    /// The earliest request of the build in progress (main thread only).
     build_deadline_ns: u64,
     quit_requested: bool,
     pending_dialog: ?handler_mod.FileDialogRequest,
-    /// A font change from `Effects.setFont`, applied by the next tick that
-    /// finds no frame in flight; the latest request wins.
     pending_font: ?PendingFont,
-    /// Announcements made since the last build, which hands them to its frame.
     announcements: records.Announcements,
-    /// The platform's screen-reader bridge and the tree it diffs.
     screen_reader: *A11ySystem,
     screen_reader_poll: screen_reader_mod.Poll,
-    /// The inspector and profiler (Cmd/Ctrl+Shift+I); `void` in release builds.
     debugger: debugger_mod.State,
-    /// Per-frame phase timestamps (`-Dframe-trace`); `void` when off.
     trace: frame_trace.State,
-    /// One slot per pending file dialog, indexed by its request id
-    /// (`limits.events.dialog_count_max` slots).
     dialog_handlers: []?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
     width: f32,
     height: f32,
     scale_factor: f32,
-    /// The window controls a transparent title bar draws over the content
-    /// (`cx.titleBarInset`); all zero until the host reports them.
     title_bar_inset: events.TitleBar.Inset,
     clear_color: records.Color,
-    // Build state, owned by `Cx`.
-    /// Open boxes, `build.box_depth_max` deep.
     open_stack: []u32,
     open_depth: u32,
     component_depth: u32,
     component_depth_peak: u32,
-    /// Stack addresses for the depth measurement: the outermost `render`
-    /// of the current build, and the outermost and deepest of the peak.
     depth_base_address: usize,
     depth_peak_base_address: usize,
     depth_peak_address: usize,
@@ -738,19 +562,12 @@ pub const Window = struct {
         return &self.frames[self.built_index];
     }
 
-    /// When the last build asked to render again, if it did.
     pub fn renderDeadlineNs(self: *const Window) ?u64 {
         assert(self.phase == .idle);
         const deadline = self.render_deadline_ns;
         return if (deadline == deadline_none) null else deadline;
     }
 
-    /// Queue one resize when the platform window's logical size or scale
-    /// differs from the core's. A host calls it once, after binding and
-    /// before the first build: the core starts at the app's configured size,
-    /// and the window may already differ (a tiling compositor's first
-    /// configure, AppKit fitting a window to the screen) with no later
-    /// resize to report it.
     pub fn bindViewport(self: *Window, viewport: Frame.Viewport) void {
         assert(self.phase == .idle);
         assert(self.frame_number == 0);
@@ -788,8 +605,6 @@ pub const Window = struct {
         return id != .root and self.focus == id;
     }
 
-    /// The drop target a keyboard drag is `over`: it holds focus, and shows
-    /// the ring, though it is not `focusable`.
     pub fn isKeyboardDropTarget(self: *const Window, id: ElementId) bool {
         if (id == .root) return false;
         if (!self.drag.keyboard) return false;
@@ -814,9 +629,6 @@ pub const Window = struct {
         return false;
     }
 
-    /// Stack bytes per component level at the deepest nesting seen: the
-    /// distance between the outermost and the deepest `cx.render` frames,
-    /// divided by the levels between them. Zero until a nesting of 2.
     pub fn stackBytesPerLevel(self: *const Window) u64 {
         if (self.component_depth_peak < 2) return 0;
         assert(self.depth_peak_base_address >= self.depth_peak_address);
@@ -824,10 +636,6 @@ pub const Window = struct {
         return span / (self.component_depth_peak - 1);
     }
 
-    /// Replace the headless bridge with the platform's, during
-    /// initialization, once the native window exists. `native_window` and
-    /// `native_view` are what `accessibility.createPlatformBridge` takes:
-    /// NSWindow and NSView on macOS, null elsewhere.
     pub fn bindScreenReader(self: *Window, native_window: anytype, native_view: anytype) void {
         assert(self.phase == .idle);
         self.screen_reader.bindPlatform(native_window, native_view);
@@ -835,22 +643,17 @@ pub const Window = struct {
         assert(self.screen_reader.bridgeAddressValid());
     }
 
-    /// Bind or unbind the host's thread-safe wake: the image worker and job
-    /// workers call it after pushing onto the completion ring, so a result
-    /// is drawn without waiting for input.
     pub fn bindWake(self: *Window, service: ?images_mod.WakeService) void {
         self.images.bindWake(service);
         self.jobs.bindWake(service);
         if (service == null) assert(self.jobs.wake == null);
     }
 
-    /// Return to the headless bridge before the native window goes away.
     pub fn unbindScreenReader(self: *Window) void {
         assert(self.phase == .idle);
         self.screen_reader.bindHeadless();
     }
 
-    /// The area engines, which an app reserves with `limits.text.area`.
     pub fn areaPool(self: *Window) *text_engine.AreaPool {
         if (!self.areas_reserved) {
             std.debug.panic("text pool 'area' has capacity 0: set limits.text.area.count_max " ++
@@ -859,7 +662,6 @@ pub const Window = struct {
         return &self.areas;
     }
 
-    /// The editor engines, which an app reserves with `limits.text.editor`.
     pub fn editorPool(self: *Window) *text_engine.EditorPool {
         if (!self.editors_reserved) {
             std.debug.panic("text pool 'editor' has capacity 0: set " ++
@@ -884,14 +686,8 @@ pub const Options = struct {
     keymap: []const keymap_mod.Compiled,
     store: *handler_mod.Store,
     resources: *AppResources,
-    /// `Config.jobs` as `handler.typeId`s, in static storage; empty starts
-    /// no workers.
     job_types: []const usize = &.{},
-    /// `.worker` on every host; `.stepped` for a simulation that plays the
-    /// image decode worker itself (`images.Mode`).
     image_decodes: images_mod.Mode,
-    /// `jobs.Mode.host` on every host; `.stepped` for a simulation that
-    /// plays the job workers itself.
     job_runs: jobs_mod.Mode,
 };
 
@@ -968,8 +764,6 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
 }
 
 comptime {
-    // ReleaseFast and ReleaseSmall reserve nothing for the debugger: neither
-    // the window's state nor a node's source.
     if (!debugger_mod.enabled) {
         assert(@sizeOf(@FieldType(Window, "debugger")) == 0);
         assert(@sizeOf(@FieldType(Node, "source")) == 0);
@@ -978,7 +772,7 @@ comptime {
 }
 
 fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
-    const element_count = limits.build.element_count_frame_max + 1; // The window root.
+    const element_count = limits.build.element_count_frame_max + 1;
     const capacity = layout_mod.LayoutCapacity.fromLimits(limits);
     assert(capacity.element_count_max == element_count);
     self.layout = try gpa.create(LayoutEngine);
@@ -992,7 +786,6 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     self.node_count = 0;
     try self.keys.initInPlace(gpa, limits.build.key_count_frame_max);
     errdefer self.keys.deinit(gpa);
-    // The debugger overlay paints into its own headroom (`reservedLimits`).
     const reserved = debugger_mod.reservedLimits(limits);
     const announcements = records.Announcements.Capacity{
         .polite_pending_max = limits.a11y.announcement_polite_pending_max,
@@ -1027,8 +820,6 @@ fn deinitBuildStorage(self: *Window, gpa: std.mem.Allocator) void {
     gpa.destroy(self.layout);
 }
 
-/// The open, hover, focus and press paths, one entry per level of box
-/// nesting.
 fn initPaths(self: *Window, gpa: std.mem.Allocator, depth_max: u32) !void {
     assert(depth_max > 0);
     assert(depth_max <= box_depth_ceiling);
@@ -1045,7 +836,6 @@ fn initPaths(self: *Window, gpa: std.mem.Allocator, depth_max: u32) !void {
     self.press_path = try gpa.alloc(ElementId, depth_max);
 }
 
-/// Zeroed before they go back to `gpa`, which may hand them to another owner.
 fn deinitPaths(self: *Window, gpa: std.mem.Allocator) void {
     assert(self.press_path.len == self.open_stack.len);
     assert(self.focus_path.len == self.open_stack.len);
@@ -1095,8 +885,6 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, options: *const Opt
         .sweep_delay_frames = limits.retained.sweep_delay_frames,
     });
     errdefer self.retained.deinit(gpa);
-    // A text kind with a count of 0 reserves nothing; an app without inputs
-    // still gets a one-slot pool so the store's entity table is uniform.
     try self.inputs.initInPlace(gpa, poolCapacity(.input, &limits.text));
     errdefer self.inputs.deinit(gpa);
     self.areas_reserved = limits.text.area.count_max > 0;
@@ -1107,8 +895,6 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, options: *const Opt
         try self.editors.initInPlace(gpa, poolCapacity(.editor, &limits.text));
     }
     errdefer if (self.editors_reserved) self.editors.deinit(gpa);
-    // One clipboard buffer for copy and paste, as large as the largest kind
-    // that has engines.
     self.clipboard_bytes = try gpa.alloc(u8, clipboardBytes(&limits.text));
     errdefer gpa.free(self.clipboard_bytes);
     self.clipboard = .init(self.clipboard_bytes);
@@ -1119,7 +905,6 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, options: *const Opt
     self.text_scratch = try gpa.alloc(u8, limits_mod.textScratchBytes(&limits.events));
     errdefer gpa.free(self.text_scratch);
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
-    // Headless until a host binds its platform's bridge (`bindScreenReader`).
     self.screen_reader = try gpa.create(A11ySystem);
     errdefer gpa.destroy(self.screen_reader);
     try self.screen_reader.initInPlace(&.fromLimits(limits));
@@ -1128,8 +913,6 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, options: *const Opt
     try frame_trace.init(&self.trace, gpa, self.resources.io);
 }
 
-/// The image decode worker and the job workers, which push onto the
-/// completion ring; the decode worker only in `.worker` mode.
 fn initWorkers(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
     const io = self.resources.io;
     const limits = options.limits;
@@ -1153,9 +936,6 @@ fn deinitWorkers(self: *Window, gpa: std.mem.Allocator) void {
     self.images.deinit(gpa);
 }
 
-/// One engine pool's capacity from the app's text budget. The input pool has
-/// at least one slot even at a count of 0, so the store's entity table is
-/// uniform.
 fn poolCapacity(
     comptime kind: text_engine.Kind,
     text: *const limits_mod.TextLimits,
@@ -1172,8 +952,6 @@ fn poolCapacity(
     };
 }
 
-/// The largest `bytes_max` among text kinds with engines; at least the
-/// input kind's, which always has a pool.
 fn clipboardBytes(text: *const limits_mod.TextLimits) u32 {
     var bytes = text.input.bytes_max;
     if (text.area.count_max > 0) bytes = @max(bytes, text.area.bytes_max);
@@ -1182,9 +960,6 @@ fn clipboardBytes(text: *const limits_mod.TextLimits) u32 {
     return bytes;
 }
 
-/// What the render side draws from: the packed frame, at the app's limits
-/// plus the debugger overlay's headroom in safe builds
-/// (`debugger.reservedLimits`).
 fn initRenderTargets(self: *Window, limits: *const ResourceLimits) !void {
     const reserved = debugger_mod.reservedLimits(limits);
     assert(reserved.check() == null);
@@ -1213,7 +988,6 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     if (self.areas_reserved) self.areas.deinit(gpa);
     self.inputs.deinit(gpa);
     self.retained.deinit(gpa);
-    // The workers push onto the completion ring until they are joined.
     deinitWorkers(self, gpa);
     gpa.free(self.dialog_handlers);
     gpa.free(self.job_inbox.entries);
@@ -1224,8 +998,6 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
 pub fn deinit(self: *Window) void {
     assert(self.phase == .idle);
     const gpa = self.gpa;
-    // The text system outlives the window; hand shaped runs back to its own
-    // allocator before the scratch goes away.
     self.resources.text_system.run_allocator = self.resources.text_system.allocator;
     deinitRuntimeStorage(self, gpa);
     deinitBuildStorage(self, gpa);

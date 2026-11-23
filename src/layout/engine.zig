@@ -1,6 +1,3 @@
-// Facade: element building and `endFrame`; the layout passes live in
-// sibling files.
-
 const std = @import("std");
 
 const types = @import("types.zig");
@@ -29,36 +26,13 @@ const TextConfig = types.TextConfig;
 const LayoutArena = arena_mod.LayoutArena;
 const limits_mod = @import("../core/limits.zig");
 
-/// Every capacity one layout engine reserves at initialization. All of them
-/// come from the app's `ResourceLimits` (`fromLimits`); tests, fuzzers and
-/// benchmarks build one from a named profile, so no layout path holds a
-/// capacity the budget does not name (CLAUDE.md §2).
-///
-/// Memory per engine: `element_count_max` × 384 B of elements, `arena_bytes`,
-/// `word_count_text_max` × 24 B of word scratch and
-/// `wrapped_line_count_frame_max` × 12 B of line scratch, all from fresh
-/// pages and resident only as far as frames write. At `nano` that is 0.19 MiB
-/// of elements, a 72 KiB arena and 32 KiB of scratch.
 pub const LayoutCapacity = struct {
-    /// `build.element_count_frame_max` plus the window root.
     element_count_max: u32,
-    /// `build.box_depth_max`: the open stack, and the depth every pass's
-    /// explicit stack walks.
     box_depth_max: u32,
-    /// `build.layer_count_frame_max`: every floating element is a layer box.
     floating_count_max: u32,
-    /// Words one wrap batch measures before packing them onto lines
-    /// (`sizing_pass.wrapText`); a longer text wraps in several batches, so
-    /// this bounds the scratch, not a text. `run_codepoint_count_max`, a
-    /// batch as long as one shaping run of one-codepoint words.
     word_count_text_max: u32,
-    /// `paint.glyph_count_frame_max`: a frame that wraps more lines than it
-    /// can draw glyphs is almost all blank lines. One text's lines may take
-    /// all of them, so the line scratch holds this many.
     wrapped_line_count_frame_max: u32,
-    /// The per-frame arena (`arenaBytes`).
     arena_bytes: u32,
-    /// `build.grid_count_frame_max`: one `grid.GridSlot` per grid box.
     grid_count_max: u32,
 
     pub fn fromLimits(limits: *const limits_mod.ResourceLimits) LayoutCapacity {
@@ -77,7 +51,7 @@ pub const LayoutCapacity = struct {
     }
 
     fn assertValid(self: *const LayoutCapacity) void {
-        std.debug.assert(self.element_count_max > 1); // The root and one element.
+        std.debug.assert(self.element_count_max > 1);
         std.debug.assert(self.element_count_max <= limits_mod.element_count_frame_ceiling + 1);
         std.debug.assert(self.box_depth_max > 0);
         std.debug.assert(self.box_depth_max <= limits_mod.box_depth_ceiling);
@@ -92,17 +66,12 @@ pub const LayoutCapacity = struct {
         std.debug.assert(self.grid_count_max <= self.element_count_max);
     }
 
-    /// The arena holds the frame's text copies (at most the text budget,
-    /// doubled for alignment gaps between them and the line slices) and its
-    /// wrapped lines, capped at the glyph budget by
-    /// `wrapped_line_count_frame_max`.
     fn arenaBytes(limits: *const limits_mod.ResourceLimits) u32 {
         const text_bytes: u64 = limits.build.text_bytes_frame_max;
         const line_count: u64 = limits.paint.glyph_count_frame_max;
         std.debug.assert(text_bytes > 0);
         std.debug.assert(line_count > 0);
         comptime std.debug.assert(@sizeOf(types.WrappedLine) == 12);
-        // A line's length is a `u30`: every text the core declares fits it.
         comptime std.debug.assert(limits_mod.BuildLimits.ceiling.text_bytes_frame_max <=
             types.line_length_max);
         const bytes = text_bytes * 2 + line_count * @sizeOf(types.WrappedLine);
@@ -111,25 +80,17 @@ pub const LayoutCapacity = struct {
     }
 };
 
-/// Threshold for treating a max constraint as effectively unconstrained
-/// (detects grow elements without a meaningful upper bound in the fast path).
 pub const UNCONSTRAINED_MAX: f32 = 1e10;
 
-/// One unit of text wrapping: a word, measured once, and the run of spaces
-/// and tabs after it, each at its own advance. A paragraph's leading
-/// whitespace is a unit with an empty word.
 pub const WordInfo = struct {
-    start: u32, // byte offset where word starts
-    end: u32, // byte offset where word ends (exclusive); its whitespace starts here
-    space_end: u32, // byte offset where its whitespace ends (exclusive)
-    width: f32, // measured width of this word
-    space_width: f32, // advance of its whitespace, every space and tab counted
-    has_newline: bool, // a newline at `space_end` ends the unit's line
+    start: u32,
+    end: u32,
+    space_end: u32,
+    width: f32,
+    space_width: f32,
+    has_newline: bool,
 };
 
-/// A list over storage the engine reserved at initialization: it never
-/// allocates, and a full list reports `error.Overflow` for its owner to fail
-/// fast with the budget field that sized it.
 pub fn BoundedList(comptime T: type) type {
     return struct {
         buffer: []T,
@@ -182,9 +143,7 @@ pub const ElementDeclaration = struct {
     scroll: ?types.ScrollConfig = null,
     floating: ?types.FloatingConfig = null,
     user_data: ?*anyopaque = null,
-    /// Opacity for the entire element subtree (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1.0,
-    /// Whether this element is a canvas (for deferred paint callbacks)
     is_canvas: bool = false,
 };
 
@@ -198,19 +157,10 @@ pub const TextData = struct {
     config: TextConfig,
     measured_width: f32 = 0,
     measured_height: f32 = 0,
-    /// The narrowest it can be without cutting its content: the ellipsis's
-    /// width for an `.ellipsis` text, its widest word when it wraps at
-    /// words, else `measured_width`; never above `measured_width`.
     floor_width: f32 = 0,
-    /// The width of `types.ellipsis` in its font, measured once when an
-    /// `.ellipsis` text is declared; 0 for every other text.
     ellipsis_width: f32 = 0,
     wrapped_lines: ?[]const types.WrappedLine = null,
-    /// Container width for text alignment (set during wrapping)
     container_width: f32 = 0,
-    /// The container's content left edge, scrolled, that `.center` and
-    /// `.right` lines align from (set during positioning). Not the text's
-    /// own x: the parent's alignment has already moved that.
     container_x: f32 = 0,
 };
 
@@ -219,11 +169,6 @@ pub const ComputedLayout = struct {
     content_box: BoundingBox = .{},
     min_width: f32 = 0,
     min_height: f32 = 0,
-    /// The narrowest the element can be without cutting its content, at most
-    /// `min_width`: an overflowing parent shrinks it no further, and a grow
-    /// element takes at least this much. Wrapping text makes it smaller than
-    /// `min_width`, which is the content's one-line width. Heights have no
-    /// such field: before text wraps, `min_height` is already the floor.
     floor_width: f32 = 0,
     sized_width: f32 = 0,
     sized_height: f32 = 0,
@@ -238,53 +183,28 @@ pub const LayoutElement = struct {
     child_count: u32 = 0,
     computed: ComputedLayout = .{},
     element_type: ElementType = .container,
-    /// Whether this child starts a line of its wrapping parent. The sizing
-    /// pass breaks the lines once and sets it; positions and fit-content
-    /// heights read it, so they never break the lines differently.
     line_start: bool = false,
-    /// Whether this element's minimum height may differ from the one the
-    /// minimum pass took from one-line text: it is a text that wrapped
-    /// taller, an aspect ratio, a wrapping row, or the parent of one whose
-    /// minimum changed. `sizing_pass.computeHeights` reads and clears it.
     min_height_dirty: bool = false,
-    /// Whether this element's children need their heights sized again: its
-    /// own height changed, or a child's minimum did. Read and cleared by
-    /// `sizing_pass.computeHeights`.
     heights_dirty: bool = false,
-    /// A cell's column: as declared (`types.cell_column_auto` for the next
-    /// free) until its grid places it, then the column it took
-    /// (`grid.placeCells`).
     cell_column: u8 = types.cell_column_auto,
-    /// The columns a cell spans; a row box spans them all once placed.
     cell_span: u8 = 1,
-    /// A grid box's slot in `LayoutEngine.grid_slots`; `grid_slot_none` for
-    /// every other box.
     grid_slot: u16 = grid_slot_none,
     text_data: ?TextData = null,
 };
 
 pub const grid_slot_none: u16 = std.math.maxInt(u16);
 
-/// What `LayoutEngine.openElementWith` adds to an element's declaration: a
-/// grid box's tracks, and where a child of a grid or a row box sits.
 pub const OpenOptions = struct {
     grid: ?*const types.GridConfig = null,
     cell: types.Cell = .{},
 };
 
-/// Element storage: one reservation of `LayoutCapacity.element_count_max`
-/// elements, never grown.
 pub const ElementList = struct {
     elements: std.ArrayList(LayoutElement),
-    /// Most elements any frame has held; `deinit` zeroes this prefix (§21).
     element_count_max: u32,
 
     const Self = @This();
 
-    /// Reserves exactly the per-frame element budget through
-    /// `core/reservation.zig`, so only the elements a frame writes become
-    /// resident. A failed reservation is returned rather than ignored: an
-    /// engine without it would allocate on the frame path (CLAUDE.md §2).
     pub fn init(count_max: u32) error{OutOfMemory}!Self {
         std.debug.assert(count_max > 0);
         const list = Self{
@@ -305,10 +225,6 @@ pub const ElementList = struct {
         self.elements.clearRetainingCapacity();
     }
 
-    /// Exhaustion is a capacity-planning error (CLAUDE.md §2): it stops with
-    /// the pool name and the budget field rather than growing a reservation no
-    /// allocator owns. The core fails first, in `cx.addNode`, at the same
-    /// budget; direct layout callers reach this one.
     pub fn append(self: *Self, elem: LayoutElement) u32 {
         const index: u32 = @intCast(self.elements.items.len);
         if (index < self.elements.capacity) {
@@ -357,53 +273,29 @@ pub const MeasureTextFn = *const fn (
 pub const LayoutEngine = struct {
     capacity: LayoutCapacity,
     arena: LayoutArena,
-    /// The arena's reservation and its high-water mark, zeroed on release (§21).
     arena_buffer: []u8,
     arena_used_max: usize,
     elements: ElementList,
-    /// Open container indices, `box_depth_max` deep.
     open_element_stack: BoundedList(u32),
     root_index: ?u32 = null,
     viewport_width: f32 = 0,
     viewport_height: f32 = 0,
     measure_text_fn: ?MeasureTextFn = null,
     measure_text_user_data: ?*anyopaque = null,
-    /// Floating elements to position after main layout, `floating_count_max`.
     floating_roots: BoundedList(u32),
-    /// One slot per grid box this frame, claimed in declaration order,
-    /// `capacity.grid_count_max` of them; `grid_count_used_max` is the
-    /// high-water mark zeroed on release (§21).
     grid_slots: []grid_mod.GridSlot,
     grid_count: u32 = 0,
     grid_count_used_max: u32 = 0,
-    /// One wrap batch's words and one text's wrapped lines while it wraps,
-    /// reserved once so a wrap needs no stack buffer (`sizing_pass.wrapText`).
     word_scratch: []WordInfo,
     line_scratch: []types.WrappedLine,
-    /// The scratch tables' high-water marks, zeroed on release (§21).
     word_count_used_max: u32 = 0,
     line_count_used_max: u32 = 0,
-    /// Wrapped lines this frame, across every text, against
-    /// `capacity.wrapped_line_count_frame_max`.
     wrapped_line_count: u32 = 0,
-    /// Whether a height followed from a width this frame: an aspect ratio, a
-    /// wrapping row's lines, or a text that wrapped to other than one line,
-    /// set where each is found. Only then are the heights the sizing pass
-    /// took from one-line text wrong, so only then does the frame size its
-    /// heights again (`sizing_pass.computeHeights`).
     heights_derived: bool = false,
-    /// Whether a text this frame wraps at words with its widest word narrower
-    /// than its line, set by `text`. Only then does any element's floor
-    /// differ from its minimum, so without one the minimum pass copies the
-    /// minimum instead of summing floors (`sizing_pass.computeMinSizes`).
     floors_differ: bool = false,
 
     const Self = @This();
 
-    /// Reserves every per-frame table from `capacity` at initialization and
-    /// returns a failed reservation instead of ignoring it, so the frame path
-    /// never allocates to make up for it (CLAUDE.md §2, §17). Every table comes
-    /// from fresh pages (`core/reservation.zig`): resident only where written.
     pub fn init(capacity: *const LayoutCapacity) error{OutOfMemory}!Self {
         capacity.assertValid();
 
@@ -445,8 +337,6 @@ pub const LayoutEngine = struct {
         return engine;
     }
 
-    /// Zero every prefix any frame wrote before the pages go back (§21). The
-    /// open stack and floating roots are zeroed whole: each is at most 1 KiB.
     pub fn deinit(self: *Self) void {
         self.arena_used_max = @max(self.arena_used_max, self.arena.bytesUsed());
         reservation.release(grid_mod.GridSlot, self.grid_slots, self.grid_count_used_max);
@@ -465,9 +355,6 @@ pub const LayoutEngine = struct {
         self.measure_text_user_data = user_data;
     }
 
-    /// `content` as a text element with `config` sizes in a parent whose
-    /// content is `max_width` wide, without adding an element: wrapped by
-    /// layout's own word breaking, one measured line when it does not wrap.
     pub fn measureText(
         self: *Self,
         content: []const u8,
@@ -495,36 +382,22 @@ pub const LayoutEngine = struct {
         self.grid_count = 0;
     }
 
-    /// Open a container with the default cell. Only a row box needs the
-    /// checks of `openElementWith`; every other box takes the path it took
-    /// before grids, inlined into the caller with no copy of `decl`. A call
-    /// through `openElementWith` copied it twice, which the Cachegrind gate
-    /// measured at +9 to +90 % on layouts without a grid.
     pub inline fn openElement(self: *Self, decl: ElementDeclaration) !void {
-        std.debug.assert(decl.layout.grid != .grid); // A grid opens with its tracks.
+        std.debug.assert(decl.layout.grid != .grid);
         if (decl.layout.grid == .row) return self.openElementWith(decl, .{});
         const index = try self.createElement(&decl, .container);
-        // `createElement` checked the room (`checkOpenDepth`); the core checks
-        // the same budget first, in `cx.checkBoxDepth`.
         std.debug.assert(self.open_element_stack.len < self.capacity.box_depth_max);
         self.open_element_stack.append(index) catch unreachable;
     }
 
-    /// Open a container with a grid's tracks, a cell, or both: a grid box
-    /// claims a grid slot and copies `options.grid` into it, and a child of a
-    /// grid or a row box takes `options.cell`. Misuse panics, naming the
-    /// field, as the core's other style checks do.
     pub fn openElementWith(self: *Self, decl: ElementDeclaration, options: OpenOptions) !void {
         std.debug.assert((decl.layout.grid == .grid) == (options.grid != null));
-        // Rows run across a grid and its row boxes; the core sets `.row`.
         if (decl.layout.grid != .none) {
             std.debug.assert(decl.layout.layout_direction == .left_to_right);
         }
         self.checkCell(&decl, options.cell);
         if (options.grid) |config| checkGrid(&decl, config);
         const index = try self.createElement(&decl, .container);
-        // `createElement` checked the room (`checkOpenDepth`); the core checks
-        // the same budget first, in `cx.checkBoxDepth`.
         std.debug.assert(self.open_element_stack.len < self.capacity.box_depth_max);
         self.open_element_stack.append(index) catch unreachable;
         const elem = self.elements.get(index);
@@ -533,8 +406,6 @@ pub const LayoutEngine = struct {
         if (options.grid) |config| self.claimGrid(elem, config);
     }
 
-    /// A cell's span and column against its grid's columns, and a row box's
-    /// place: directly in a grid, with no column, padding across, or wrap.
     fn checkCell(self: *const Self, decl: *const ElementDeclaration, cell: types.Cell) void {
         const parent_index = self.open_element_stack.last();
         const parent_role: types.GridRole = if (parent_index) |pi|
@@ -580,7 +451,6 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// A grid's track counts and bounds, and the fields a grid cannot have.
     fn checkGrid(decl: *const ElementDeclaration, config: *const types.GridConfig) void {
         const column_count = config.columns.len;
         if (column_count == 0 or column_count > types.grid_track_count_max) {
@@ -621,8 +491,6 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// Claim the frame's next grid slot for `elem` and copy its tracks. A
-    /// frame past the pool is a capacity-planning error naming its budget.
     fn claimGrid(self: *Self, elem: *LayoutElement, config: *const types.GridConfig) void {
         std.debug.assert(elem.grid_slot == grid_slot_none);
         if (self.grid_count == self.capacity.grid_count_max) {
@@ -672,10 +540,6 @@ pub const LayoutEngine = struct {
             elem.text_data.?.measured_height = measured.height;
             elem.text_data.?.floor_width = measured.width;
             if (config.overflow == .ellipsis) {
-                // A text that ends in "…" when cut can be cut to the ellipsis
-                // alone, so it floors there and needs no scan for its widest
-                // word. Measured once per text; a shape-cache hit after the
-                // first frame.
                 const mark = measure_fn(
                     types.ellipsis,
                     config.font_id,
@@ -691,8 +555,6 @@ pub const LayoutEngine = struct {
                 elem.text_data.?.floor_width = @min(measured.width, widest);
             }
         } else {
-            // Fallback estimate: 0.6 is an average glyph advance ratio, 1.2 a
-            // typical line-height ratio.
             const font_size_f: f32 = @floatFromInt(config.font_size);
             elem.text_data.?.measured_width = @as(f32, @floatFromInt(content.len)) * font_size_f * 0.6;
             elem.text_data.?.measured_height = font_size_f * 1.2;
@@ -702,10 +564,6 @@ pub const LayoutEngine = struct {
         if (elem.text_data.?.floor_width < elem.text_data.?.measured_width) self.floors_differ = true;
     }
 
-    /// Appends the element, tracks it as a floating root when it floats, and
-    /// links it to its parent.
-    /// Inline into its three callers, as it was into two before grids: a
-    /// call of its own copied every whole declaration once more.
     inline fn createElement(
         self: *Self,
         decl: *const ElementDeclaration,
@@ -720,7 +578,6 @@ pub const LayoutEngine = struct {
             .element_type = elem_type,
         });
 
-        // Floating elements are positioned after the main layout.
         if (decl.floating != null) {
             self.floating_roots.append(index) catch self.floatingRootsFailed();
         }
@@ -730,8 +587,6 @@ pub const LayoutEngine = struct {
         return index;
     }
 
-    /// A container past the open stack is a capacity-planning error that names
-    /// the budget field sizing it.
     fn checkOpenDepth(self: *const Self) void {
         const depth = self.open_element_stack.len;
         std.debug.assert(depth <= self.capacity.box_depth_max);
@@ -743,8 +598,6 @@ pub const LayoutEngine = struct {
         });
     }
 
-    /// The core opens one floating element per layer box, so a frame past
-    /// this pool has more layers than `build.layer_count_frame_max` allows.
     fn floatingRootsFailed(self: *const Self) noreturn {
         std.debug.assert(self.floating_roots.len == self.capacity.floating_count_max);
         std.debug.panic("layout pool 'floating roots' exhausted: capacity {d}, {d} in use, " ++
@@ -754,9 +607,6 @@ pub const LayoutEngine = struct {
         });
     }
 
-    /// Links the element into its parent's child list; `last_child_index`
-    /// keeps the append O(1). Promotes the element to root when no parent is
-    /// open.
     fn linkToParent(self: *Self, index: u32, parent_index: ?u32) void {
         if (parent_index) |pi| {
             const parent = self.elements.get(pi);
@@ -772,8 +622,6 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// End frame and compute every element's bounds. `core/emit.zig` reads
-    /// them through `elements` to write the frame's paint records.
     pub fn endFrame(self: *Self) !void {
         const root = self.root_index orelse return;
         std.debug.assert(root < self.elements.len());
@@ -783,8 +631,6 @@ pub const LayoutEngine = struct {
 
         sizing_pass.computeFinalSizes(self, root, self.viewport_width, self.viewport_height);
 
-        // Widths are final: wrap text at them, then size heights from the
-        // wrapped text, as Clay orders its passes.
         try sizing_pass.computeTextWrapping(self, root);
         if (self.heights_derived) sizing_pass.computeHeights(self, root, self.viewport_height);
 

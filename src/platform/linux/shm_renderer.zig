@@ -1,14 +1,3 @@
-//! CPU rendering presented through Wayland shared memory
-//! (`-Dlinux-backend=wayland_cpu`), for machines without a usable Vulkan
-//! driver. The CPU renderer rasterizes straight into a `wl_shm` buffer, so
-//! there is no extra copy and no GPU, Vulkan loader, or driver involved.
-//!
-//! Everything is reserved while the window initializes, from the app's
-//! `ResourceLimits`, and never resized. The renderer is a contract `Renderer`
-//! (`backend.verifyRenderer`). Pacing: each slot is busy from `attach` until
-//! the compositor's `release`; the host draws only once a slot is free, and a
-//! frame is skipped and logged once if both are busy anyway.
-
 const std = @import("std");
 const posix = std.posix;
 const wayland = @import("wayland.zig");
@@ -19,17 +8,11 @@ const cpu = @import("../cpu/renderer.zig");
 
 const assert = std.debug.assert;
 
-/// One slot the compositor may still be reading, one being drawn. The CPU
-/// renderer draws synchronously and has no GPU frames in flight, so it keeps
-/// the minimum presentation depth at every rung; `ResourceLimits.frame` sizes
-/// the GPU renderers' rings (see `FrameLimits`).
 pub const buffer_count: u32 = limits_mod.MIN_FRAMES_IN_FLIGHT;
 
 const bytes_per_pixel: u32 = 4;
 
 comptime {
-    // `wl_shm.create_pool` and `create_buffer` take signed 32-bit sizes, so
-    // the pool must fit at the framework's largest window budget.
     const ceiling = limits_mod.WindowLimits.ceiling;
     const slot_bytes_max = ceiling.framebufferPixelCountMax() * bytes_per_pixel;
     assert(slot_bytes_max * buffer_count <= std.math.maxInt(i32));
@@ -39,7 +22,6 @@ const buffer_listener = wayland.BufferListener{ .release = Slot.release };
 
 const Slot = struct {
     buffer: ?*wayland.Buffer = null,
-    /// Attached and not yet released by the compositor.
     busy: bool = false,
     width: u32 = 0,
     height: u32 = 0,
@@ -52,8 +34,6 @@ const Slot = struct {
     }
 };
 
-/// What `initInPlace` takes as `Surface.native`: the compositor's `wl_shm`
-/// and the window's surface, both of which must outlive the renderer.
 pub const NativeSurface = struct {
     shm: *wayland.Shm,
     surface: *wayland.Surface,
@@ -64,20 +44,14 @@ pub const ShmRenderer = struct {
     pool: ?*wayland.ShmPool = null,
     pool_fd: posix.fd_t = -1,
     pool_memory: []align(std.heap.page_size_min) u8 = &.{},
-    /// Bytes per slot: the budget's largest frame, rounded up to a page.
     slot_bytes: usize = 0,
     slots: [buffer_count]Slot = @splat(.{}),
-    /// Valid while `pool` is set.
     renderer: cpu.Renderer = undefined,
-    /// The framebuffer size of the last `resize` (or init), which `draw`
-    /// asserts. Zero on either axis while the window has no extent.
     size_px: backend.SizePx = .{ .width = 0, .height = 0 },
     window_limits: limits_mod.WindowLimits = undefined,
 
-    /// Primitive counts of the last presented frame.
     last_stats: cpu.RenderStats = .{},
     frames_deferred: u64 = 0,
-    /// A skipped frame was logged and no frame has been drawn since.
     skip_logged: bool = false,
 
     const Self = @This();
@@ -86,7 +60,6 @@ pub const ShmRenderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// `surface.native` points at a `NativeSurface`.
     pub fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -155,7 +128,6 @@ pub const ShmRenderer = struct {
         assert(self.pool == null);
     }
 
-    /// Drawing is synchronous, so no earlier frame still reads it.
     pub fn uploadAtlas(
         self: *Self,
         kind: backend.AtlasKind,
@@ -167,7 +139,6 @@ pub const ShmRenderer = struct {
         self.renderer.uploadAtlas(kind, dirty, pixels);
     }
 
-    /// Slot buffers follow when each slot is next drawn.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.pool != null);
         assert(size_px.width <= self.window_limits.framebuffer_width_max);
@@ -181,10 +152,6 @@ pub const ShmRenderer = struct {
         return self.renderer.capabilities();
     }
 
-    /// Deliver the compositor's buffer releases on `queue` (null: the default
-    /// queue). A thread that draws on its own queue routes them there, so the
-    /// slots it reads are written only on that thread. Slot buffers made
-    /// later inherit the pool's queue; existing ones move with it.
     pub fn setEventQueue(self: *Self, queue: ?*wayland.EventQueue) void {
         assert(self.pool != null);
         wayland.wl_proxy_set_queue(@ptrCast(self.pool.?), queue);
@@ -198,9 +165,6 @@ pub const ShmRenderer = struct {
         return self.freeSlotIndex() != null;
     }
 
-    /// A zero-size viewport presents nothing; uploads already landed in
-    /// `uploadAtlas`. When the compositor holds every slot the frame is
-    /// skipped and logged once.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -257,8 +221,6 @@ pub const ShmRenderer = struct {
         return null;
     }
 
-    /// Make the slot's `wl_buffer` match the current frame size. The slot is
-    /// free, so the compositor holds no reference to its old buffer.
     fn prepareSlot(self: *Self, slot: *Slot, index: usize) void {
         assert(!slot.busy);
         assert(index < buffer_count);
@@ -268,8 +230,6 @@ pub const ShmRenderer = struct {
         if (slot.buffer) |old| wayland.bufferDestroy(old);
         slot.* = .{};
 
-        // libwayland returns null only when it cannot allocate the proxy, and
-        // a frame without a buffer cannot be presented at all.
         const buffer = wayland.shmPoolCreateBuffer(
             self.pool.?,
             @intCast(index * self.slot_bytes),

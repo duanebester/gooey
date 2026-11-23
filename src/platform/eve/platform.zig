@@ -1,17 +1,3 @@
-//! Bridgetek EVE (BT81x) platform for embedded Linux boards whose panel sits
-//! behind an EVE display controller on SPI, with no framebuffer (selected
-//! with `-Dlinux-backend=eve`). Input is the chip's capacitive touch engine,
-//! read once per loop turn and delivered as left-button mouse events, so
-//! buttons, hovers, and drags work as with a mouse; there is no keyboard.
-//!
-//! Configuration: `-Deve-device` (build): the spidev node, default
-//! `/dev/spidev1.0`; `-Deve-spi-hz` (build): the SPI clock, 1 to 30 MHz,
-//! default 10 MHz; `GOOEY_EVE_SIMULATE=<path>` (environment): draw into a
-//! simulated chip instead of the device, dumping `RAM_G` and `RAM_DL` to
-//! `<path>` at every swap for `eve_preview.py`. The chip must already be
-//! booted and scanning out: board bring-up (reset, clocks, panel timing,
-//! backlight) stays with the board's own driver.
-
 const std = @import("std");
 const build_options = @import("gooey_build_options");
 const window_registry = @import("../window_registry.zig");
@@ -25,11 +11,8 @@ const assert = std.debug.assert;
 const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 
-/// Interval between touch reads while nothing draws: how quickly a touch is
-/// seen. While frames draw, each loop turn reads touch once per refresh.
 pub const touch_poll_ns: u64 = 16 * std.time.ns_per_ms;
 
-/// Events one touch read can produce: a press with its move, or a release.
 pub const touch_event_count_max: u32 = 2;
 
 comptime {
@@ -39,14 +22,10 @@ comptime {
 }
 
 pub const EvePlatform = struct {
-    /// Cleared only by `quit`; the core host's loop ends when the window
-    /// closes.
     running: bool = false,
     window_registry: WindowRegistry,
     chip: chip_mod.Chip,
-    /// The one window. The panel has no room for a second.
     window: ?*EveWindow = null,
-    /// The contact of the last touch read, in panel pixels; null when none.
     contact: ?[2]f64 = null,
     click_tracker: linux_input.ClickTracker = .{},
 
@@ -74,9 +53,6 @@ pub const EvePlatform = struct {
         self.chip.close();
     }
 
-    /// Read the touch engine once and deliver what changed. A failed read
-    /// counts as no contact, so a lost bus releases a press rather than
-    /// leaving it held.
     pub fn dispatchTouch(self: *Self, now_ms: u32) void {
         assert(self.chip.panel_width > 0);
         const touch = self.chip.readTouch() catch |err| blk: {
@@ -96,7 +72,6 @@ pub const EvePlatform = struct {
                     point[1],
                     linux_input.evdev.BTN_LEFT,
                 );
-                // Move first, so hover state reaches the pressed element.
                 _ = window.handleInput(linux_input.mouseMovedEvent(point[0], point[1], modifiers));
                 _ = window.handleInput(linux_input.mouseDownEvent(
                     point[0],
@@ -119,7 +94,6 @@ pub const EvePlatform = struct {
         }
     }
 
-    /// The touch engine reports slightly past the panel's edges.
     fn clampToPanel(self: *const Self, touch: chip_mod.Touch) [2]f64 {
         assert(self.chip.panel_width > 0);
         assert(self.chip.panel_height > 0);
@@ -156,15 +130,11 @@ pub const EvePlatform = struct {
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    // Kept only while 0.3.1 `context/window.zig` compiles; the core never
-    // calls these, and they go when phase 6 deletes that file.
-
     pub fn quit(self: *Self) void {
         self.running = false;
         assert(!self.running);
     }
 
-    /// Frames render on the main thread, so there is no lock.
     pub fn lockRenderThreads(self: *Self) void {
         assert(self.window_registry.count() <= 1);
     }
@@ -174,7 +144,6 @@ pub const EvePlatform = struct {
     }
 };
 
-/// Milliseconds on the chip's clock, for `Window.requestRenderAfter`.
 pub fn nowMilliseconds() i64 {
     const ms = @divFloor(chip_mod.nowNanoseconds(), std.time.ns_per_ms);
     assert(ms <= std.math.maxInt(i64));

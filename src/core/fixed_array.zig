@@ -1,5 +1,3 @@
-//! A generic, fixed-capacity array that never allocates after initialization.
-
 const std = @import("std");
 
 pub fn FixedArray(comptime T: type, comptime capacity: u32) type {
@@ -15,7 +13,6 @@ pub fn FixedArray(comptime T: type, comptime capacity: u32) type {
             self.len += 1;
         }
 
-        /// Read the item at `index`.
         pub fn get(self: *const Self, index: usize) T {
             std.debug.assert(index < self.len);
             return self.buffer[index];
@@ -58,7 +55,6 @@ pub fn FixedArray(comptime T: type, comptime capacity: u32) type {
             return self.buffer[self.len];
         }
 
-        /// Reset length to zero without touching buffer contents.
         pub fn clear(self: *Self) void {
             self.len = 0;
         }
@@ -101,7 +97,7 @@ test "orderedRemove preserves order" {
     arr.appendAssumeCapacity(3);
     arr.appendAssumeCapacity(4);
 
-    const removed = arr.orderedRemove(1); // Remove '2'
+    const removed = arr.orderedRemove(1);
     try std.testing.expectEqual(@as(i32, 2), removed);
     try std.testing.expectEqual(@as(usize, 3), arr.len);
     try std.testing.expectEqual(@as(i32, 1), arr.get(0));
@@ -125,7 +121,6 @@ test "swapRemove is O(1) and does not preserve order" {
     arr.appendAssumeCapacity(30);
     arr.appendAssumeCapacity(40);
 
-    // Remove index 1 (value 20).
     const removed = arr.swapRemove(1);
     try std.testing.expectEqual(@as(i32, 20), removed);
     try std.testing.expectEqual(@as(usize, 3), arr.len);

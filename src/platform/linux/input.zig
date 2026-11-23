@@ -4,7 +4,6 @@ const geometry = @import("../../geometry/geometry.zig");
 
 const assert = std.debug.assert;
 
-/// Linux evdev keycodes, from `linux/input-event-codes.h`.
 pub const evdev = struct {
     pub const KEY_ESC: u32 = 1;
     pub const KEY_F1: u32 = 59;
@@ -95,17 +94,17 @@ pub const evdev = struct {
     pub const KEY_LEFTMETA: u32 = 125;
     pub const KEY_RIGHTMETA: u32 = 126;
 
-    pub const KEY_MINUS: u32 = 12; // - _
-    pub const KEY_EQUAL: u32 = 13; // = +
-    pub const KEY_LEFTBRACE: u32 = 26; // [ {
-    pub const KEY_RIGHTBRACE: u32 = 27; // ] }
-    pub const KEY_SEMICOLON: u32 = 39; // ; :
-    pub const KEY_APOSTROPHE: u32 = 40; // ' "
-    pub const KEY_GRAVE: u32 = 41; // ` ~
-    pub const KEY_BACKSLASH: u32 = 43; // \ |
-    pub const KEY_COMMA: u32 = 51; // , <
-    pub const KEY_DOT: u32 = 52; // . >
-    pub const KEY_SLASH: u32 = 53; // / ?
+    pub const KEY_MINUS: u32 = 12;
+    pub const KEY_EQUAL: u32 = 13;
+    pub const KEY_LEFTBRACE: u32 = 26;
+    pub const KEY_RIGHTBRACE: u32 = 27;
+    pub const KEY_SEMICOLON: u32 = 39;
+    pub const KEY_APOSTROPHE: u32 = 40;
+    pub const KEY_GRAVE: u32 = 41;
+    pub const KEY_BACKSLASH: u32 = 43;
+    pub const KEY_COMMA: u32 = 51;
+    pub const KEY_DOT: u32 = 52;
+    pub const KEY_SLASH: u32 = 53;
 
     pub const KEY_NUMLOCK: u32 = 69;
     pub const KEY_KPASTERISK: u32 = 55;
@@ -126,16 +125,11 @@ pub const evdev = struct {
     pub const KEY_KPSLASH: u32 = 98;
     pub const KEY_KPEQUAL: u32 = 117;
 
-    // Mouse buttons. Wayland's wl_pointer reports these same codes. They
-    // live here rather than in wayland.zig so the fbdev backend's evdev input
-    // can use this file without importing Wayland.
     pub const BTN_LEFT: u32 = 0x110;
     pub const BTN_RIGHT: u32 = 0x111;
     pub const BTN_MIDDLE: u32 = 0x112;
 };
 
-/// Simple US QWERTY layout mapping; full xkbcommon integration would be
-/// needed for proper international keyboard support.
 pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
     const char: ?u8 = switch (key) {
         evdev.KEY_A => if (shift) 'A' else 'a',
@@ -188,10 +182,6 @@ pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
         evdev.KEY_DOT => if (shift) '>' else '.',
         evdev.KEY_SLASH => if (shift) '?' else '/',
 
-        // Whitespace. Tab types no text, as Return does not: the core gives
-        // its key_down to the focused handler and otherwise moves focus, and
-        // a '\t' sent after it would land in whichever field focus reached.
-        // Windows drops control characters from WM_CHAR for the same reason.
         evdev.KEY_SPACE => ' ',
 
         else => null,
@@ -199,14 +189,13 @@ pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
     return char;
 }
 
-/// Standard XKB modifier bit positions
 pub const xkb_mod = struct {
     pub const SHIFT: u32 = 1 << 0;
     pub const CAPS: u32 = 1 << 1;
     pub const CTRL: u32 = 1 << 2;
-    pub const ALT: u32 = 1 << 3; // Mod1
-    pub const NUM: u32 = 1 << 4; // Mod2
-    pub const SUPER: u32 = 1 << 6; // Mod4
+    pub const ALT: u32 = 1 << 3;
+    pub const NUM: u32 = 1 << 4;
+    pub const SUPER: u32 = 1 << 6;
 };
 
 pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
@@ -288,8 +277,6 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_F19 => .f19,
         evdev.KEY_F20 => .f20,
 
-        // Punctuation. KeyCode names are positional (US ANSI); text input goes
-        // through the layout-aware path, so positional names are fine here.
         evdev.KEY_MINUS => .minus,
         evdev.KEY_EQUAL => .equal,
         evdev.KEY_LEFTBRACE => .left_bracket,
@@ -302,8 +289,6 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_SLASH => .slash,
         evdev.KEY_GRAVE => .grave,
 
-        // Keypad. NumLock maps to keypad_clear: same physical position, and
-        // macOS keyboards have no NumLock key to name it after.
         evdev.KEY_KP0 => .keypad_0,
         evdev.KEY_KP1 => .keypad_1,
         evdev.KEY_KP2 => .keypad_2,
@@ -400,7 +385,7 @@ pub fn createKeyEvent(
     return .{
         .key = evdevToKeyCode(evdev_key),
         .modifiers = modifiers,
-        .characters = null, // TODO: xkbcommon integration for text input
+        .characters = null,
         .characters_ignoring_modifiers = null,
         .is_repeat = is_repeat,
     };
@@ -576,55 +561,22 @@ pub const ClickTracker = struct {
     }
 };
 
-/// Client-side key repeat for one seat's keyboard.
-///
-/// Wayland leaves repeat to the client: `wl_keyboard.repeat_info` gives a rate
-/// in keys per second and a delay in milliseconds, and the compositor sends one
-/// `pressed` and one `released` per physical keystroke. This arms a deadline on
-/// each press; the event loop sleeps until it (`timeoutMs`) and takes at most
-/// one repeat per turn (`fire`), so a stalled loop slows the cadence instead of
-/// bursting a backlog into the event queue. Timing follows GTK 4: the first
-/// repeat comes `delay_ms` after the press, the rest every `interval_ms` on a
-/// fixed grid, and any modifier or lock key event stops the repeat.
-///
-/// Some compositors synthesize repeats anyway, in two shapes: a second
-/// `pressed` for a key never released, and a release immediately re-pressed
-/// every interval. `press` classifies both as `.synthesized`, which the
-/// platform forwards as a repeat while the timer stays off, so exactly one
-/// source owns the cadence and no character is typed twice.
-///
-/// Times are monotonic milliseconds from the caller, so tests drive the clock.
 pub const KeyRepeat = struct {
-    /// Milliseconds between repeats; zero while repeat is off, which is the
-    /// state before `repeat_info` and after a rate of zero.
     interval_ms: u32 = 0,
-    /// Milliseconds a key is held before its first repeat.
     delay_ms: u32 = 0,
-    /// The key the timer repeats, or 0 for none (evdev 0 is KEY_RESERVED).
     repeat_key: u32 = 0,
-    /// When `repeat_key` repeats next.
     deadline_ms: u64 = 0,
-    /// The latest press not yet released, tracked even while repeat is off: a
-    /// second `pressed` for it can only come from the compositor.
     held_key: u32 = 0,
-    /// The latest release and its time, to recognize a re-press that only a
-    /// compositor's repeat could make.
     released_key: u32 = 0,
     released_ms: u64 = 0,
 
-    /// A release re-pressed within this many milliseconds is a compositor
-    /// repeat: no hand re-presses a key that fast.
     pub const repress_gap_ms_max: u64 = 60;
 
     pub const Press = enum { fresh, synthesized };
 
-    /// Apply `repeat_info`. A rate of zero or less turns repeat off and stops
-    /// any armed repeat; the protocol forbids negative values, so a negative
-    /// delay is read as zero rather than trusted.
     pub fn configure(self: *KeyRepeat, rate_per_second: i32, delay_ms: i32) void {
         self.delay_ms = @intCast(@max(delay_ms, 0));
         if (rate_per_second > 0) {
-            // A rate above 1000 Hz still repeats once per millisecond.
             self.interval_ms = @max(@divFloor(1000, @as(u32, @intCast(rate_per_second))), 1);
             assert(self.interval_ms >= 1);
         } else {
@@ -635,10 +587,6 @@ pub const KeyRepeat = struct {
         if (self.interval_ms == 0) assert(self.repeat_key == 0);
     }
 
-    /// Record a `pressed` event at `now_ms`. A fresh press of a repeating key
-    /// arms the timer for it, replacing any other key's repeat; a modifier or
-    /// lock key stops the repeat. A synthesized press stops the timer, which
-    /// stays off until the next fresh press.
     pub fn press(self: *KeyRepeat, key: u32, now_ms: u64) Press {
         if (key != 0 and key == self.held_key) {
             self.repeat_key = 0;
@@ -663,8 +611,6 @@ pub const KeyRepeat = struct {
         return .fresh;
     }
 
-    /// Record a `released` event at `now_ms`. Releasing the repeating key or
-    /// any modifier stops the repeat; releasing another key leaves it running.
     pub fn release(self: *KeyRepeat, key: u32, now_ms: u64) void {
         if (key == self.repeat_key or !repeats(key)) self.repeat_key = 0;
         if (key == self.held_key) self.held_key = 0;
@@ -674,8 +620,6 @@ pub const KeyRepeat = struct {
         assert(self.held_key != key or key == 0);
     }
 
-    /// Forget every key, for keyboard focus moving away or back: the
-    /// compositor sends no release for a key held while focus leaves.
     pub fn clear(self: *KeyRepeat) void {
         self.repeat_key = 0;
         self.held_key = 0;
@@ -683,15 +627,11 @@ pub const KeyRepeat = struct {
         assert(self.timeoutMs(0) == null);
     }
 
-    /// Stop the timer and keep the held key, for an input method taking the
-    /// keyboard while a key repeats.
     pub fn stop(self: *KeyRepeat) void {
         self.repeat_key = 0;
         assert(self.timeoutMs(0) == null);
     }
 
-    /// Milliseconds from `now_ms` until the next repeat, 0 when one is due,
-    /// or null when none is armed.
     pub fn timeoutMs(self: *const KeyRepeat, now_ms: u64) ?u32 {
         if (self.repeat_key == 0) return null;
         assert(self.interval_ms > 0);
@@ -699,9 +639,6 @@ pub const KeyRepeat = struct {
         return @intCast(@min(self.deadline_ms - now_ms, std.math.maxInt(i32)));
     }
 
-    /// The key to repeat at `now_ms`, or null. Returns at most one repeat per
-    /// call. The next deadline stays on the interval grid, so the rate matches
-    /// `repeat_info`; a deadline already passed restarts the grid at `now_ms`.
     pub fn fire(self: *KeyRepeat, now_ms: u64) ?u32 {
         const key = self.repeat_key;
         if (key == 0) return null;
@@ -715,8 +652,6 @@ pub const KeyRepeat = struct {
     }
 };
 
-/// Whether holding `key` repeats it. Modifier and lock keys never repeat, as
-/// in xkeyboard-config's keymaps; holding Shift sends one Shift press.
 pub fn repeats(key: u32) bool {
     return switch (key) {
         0,

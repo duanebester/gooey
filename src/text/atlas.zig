@@ -1,5 +1,3 @@
-//! Fixed-size shelf-packed texture atlas with LRU shelf eviction.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -45,59 +43,41 @@ pub const Format = enum {
     }
 };
 
-/// Caches keep `shelf` and `generation` to validate a placement.
 pub const Placement = struct {
     region: Region,
     shelf: u16,
     generation: u32,
 };
 
-/// Shelf index for items that occupy no atlas space (spaces, empty glyphs).
 pub const shelf_none: u16 = std.math.maxInt(u16);
 
-/// Shelf heights are rounded up to this many rows so similar items share shelves.
 pub const shelf_height_quantum: u32 = 4;
 
-/// Zero border written around every item so sampling one texel past it reads
-/// zero.
 pub const item_border: u32 = 1;
 
 pub const Atlas = struct {
     allocator: std.mem.Allocator,
     kind: AtlasKind,
     format: Format,
-    /// Side in pixels; fixed for the atlas's lifetime.
     size: u32,
     storage: AtlasStorage,
-    /// `size × size × bpp` pixels for `.cpu_texture`, from `reservation`; empty
-    /// for `.gpu_upload`. Fresh pages read zero and stay non-resident until an
-    /// item is written; only item rectangles and their borders are read.
     data: []u8,
-    /// One past the lowest pixel row ever written to `data`: the reservation's
-    /// high-water mark, zeroed on release.
     data_rows_written_end: u32,
-    /// Shelf slots; a slot index is a stable shelf identity.
     shelves: []Shelf,
     uploads: *AtlasUploads,
-    /// Rows covered by active shelves, and their peak (occupancy reporting).
     rows_active: u32,
     rows_active_peak: u32,
 
     const Self = @This();
 
     const Shelf = struct {
-        /// Frame in which an item in this shelf was last placed or used.
         frame_used: u64,
-        /// Journal sequence after this shelf's newest staged record.
         sequence_end: u64,
-        /// Increases whenever the shelf stops being active or is condemned.
         generation: u32,
         y: u16,
         height: u16,
-        /// Next free column of an active shelf.
         x_cursor: u16,
         state: State,
-        /// Condemned by `clear`: no live items remain, so evict it first.
         dead: bool,
 
         const State = enum(u8) { unused, free, active };
@@ -164,12 +144,6 @@ pub const Atlas = struct {
         self.rows_active = 0;
     }
 
-    /// Whether a placement still refers to live pixels. Inline: it runs on
-    /// every glyph cache hit, so it compares the generation alone. That is
-    /// exact because a placement's generation is read while its shelf is
-    /// active and alive, and every way out of that state (`evict`, `clear`)
-    /// bumps the generation before the slot can be merged, reused, or
-    /// reactivated. The state checks below are that proof, asserted.
     pub inline fn isLive(self: *const Self, shelf: u16, generation: u32) bool {
         if (shelf == shelf_none) return true;
         assert(shelf < self.shelves.len);
@@ -180,11 +154,6 @@ pub const Atlas = struct {
         return true;
     }
 
-    /// Mark a live placement's shelf as used in `frame`, which the caller read
-    /// from `uploads.frameCurrent()`; any frame at or after the caller's own
-    /// open frame keeps the shelf protected for that frame. No assertion
-    /// re-reads the clock: an atomic load survives ReleaseFast even when only
-    /// an assert uses it.
     pub inline fn touch(self: *Self, shelf: u16, frame: u64) void {
         if (shelf == shelf_none) return;
         assert(shelf < self.shelves.len);
@@ -194,9 +163,6 @@ pub const Atlas = struct {
         if (entry.frame_used < frame) entry.frame_used = frame;
     }
 
-    /// Place a `width × height` item and write its pixels with a zero border.
-    /// Returns null when this frame's upload staging is full; the caller skips
-    /// the item and the frame renders again. Panics when the item cannot fit.
     pub fn insert(self: *Self, width: u32, height: u32, pixels: []const u8) ?Placement {
         assert(width > 0);
         assert(height > 0);
@@ -218,8 +184,6 @@ pub const Atlas = struct {
         return placement;
     }
 
-    /// Evict the least recently used unprotected shelf, for caches whose entry
-    /// table is full. Returns false when every shelf is protected.
     pub fn evictOne(self: *Self) bool {
         self.uploads.lock();
         defer self.uploads.unlock();
@@ -228,8 +192,6 @@ pub const Atlas = struct {
         return true;
     }
 
-    /// Condemn every item: placements stop validating at once, and the space
-    /// is reclaimed by eviction once no open frame or pending upload needs it.
     pub fn clear(self: *Self) void {
         for (self.shelves) |*shelf| {
             if (shelf.state != .active) continue;
@@ -239,15 +201,12 @@ pub const Atlas = struct {
         }
     }
 
-    /// Pixel store of a `.cpu_texture` atlas.
     pub fn getData(self: *const Self) []const u8 {
         assert(self.storage == .cpu_texture);
         assert(self.data.len == @as(usize, self.size) * self.size * self.format.bytesPerPixel());
         return self.data;
     }
 
-    /// Find room for a `width × height` item and its border, evicting as
-    /// needed. Caller holds the uploads mutex.
     fn place(self: *Self, width: u32, height: u32) Placement {
         const outer_width = width + 2 * item_border;
         const outer_height = height + 2 * item_border;
@@ -260,8 +219,6 @@ pub const Atlas = struct {
             const victim = self.evictionCandidate() orelse break;
             self.evict(victim);
         }
-        // Every unprotected shelf is gone, so any remaining shelf is protected
-        // already: a taller one, or one grown into free rows, pins nothing new.
         const taller: ShelfQuery = .{ .height_min = outer_height, .height_max = self.size };
         const slot = self.findActiveShelf(outer_width, taller) orelse
             self.growShelf(outer_width, shelf_height, 0) orelse
@@ -269,12 +226,6 @@ pub const Atlas = struct {
         return self.append(slot, width, height);
     }
 
-    /// A shelf with room, in order: an active shelf of exactly `shelf_height`;
-    /// a protected shelf at most twice as tall, which pins nothing new; a new
-    /// shelf cut from free space; a protected shelf grown into the free space
-    /// below it. Placing an item in an older, taller shelf would protect that
-    /// whole shelf for one small item, so it waits until eviction has nothing
-    /// else to offer.
     fn findShelf(self: *Self, outer_width: u32, outer_height: u32, shelf_height: u32) ?u16 {
         assert(shelf_height >= outer_height);
         assert(shelf_height <= self.size);
@@ -291,10 +242,6 @@ pub const Atlas = struct {
         return self.growShelf(outer_width, shelf_height, frame_protected);
     }
 
-    /// Grow the active shelf with `outer_width` columns left that needs the
-    /// fewest extra rows to reach `shelf_height`, taking them from the free
-    /// shelf directly below. Items keep their rows, so their regions stay valid.
-    /// Only shelves used at or after `frame_used_min` qualify.
     fn growShelf(self: *Self, outer_width: u32, shelf_height: u32, frame_used_min: u64) ?u16 {
         assert(shelf_height <= self.size);
         var best: ?u16 = null;
@@ -333,8 +280,6 @@ pub const Atlas = struct {
         frame_used_min: u64 = 0,
     };
 
-    /// Shortest active shelf matching `query` with `outer_width` columns left;
-    /// ties go to the lowest `y`.
     fn findActiveShelf(self: *const Self, outer_width: u32, query: ShelfQuery) ?u16 {
         assert(query.height_min <= query.height_max);
         var best: ?u16 = null;
@@ -354,8 +299,6 @@ pub const Atlas = struct {
         return best;
     }
 
-    /// Cut a `shelf_height` active shelf from the top of the shortest free
-    /// shelf that holds it (lowest `y` on ties).
     fn openShelf(self: *Self, shelf_height: u32) ?u16 {
         var best: ?u16 = null;
         for (self.shelves, 0..) |*shelf, index| {
@@ -388,8 +331,6 @@ pub const Atlas = struct {
         return slot;
     }
 
-    /// Claim the next `width + 2` columns of `slot`. The returned region is the
-    /// item itself, inset by the border.
     fn append(self: *Self, slot: u16, width: u32, height: u32) Placement {
         const shelf = &self.shelves[slot];
         const outer_width = width + 2 * item_border;
@@ -411,7 +352,6 @@ pub const Atlas = struct {
         };
     }
 
-    /// The shelf to evict next, or null when every active shelf is protected.
     fn evictionCandidate(self: *const Self) ?u16 {
         const frame_protected = self.uploads.frameProtectedLocked();
         const sequence_retired = self.uploads.sequenceRetiredLocked();
@@ -428,7 +368,6 @@ pub const Atlas = struct {
         return best;
     }
 
-    /// Dead shelves first, then least recently used, then lowest `y`.
     fn evictsBefore(a: *const Shelf, b: *const Shelf) bool {
         assert(a.state == .active);
         assert(b.state == .active);
@@ -437,7 +376,6 @@ pub const Atlas = struct {
         return a.y < b.y;
     }
 
-    /// Free an active shelf and merge it with free neighbours.
     fn evict(self: *Self, slot: u16) void {
         const shelf = &self.shelves[slot];
         assert(shelf.state == .active);
@@ -461,7 +399,6 @@ pub const Atlas = struct {
         assert(self.shelves[merged].state == .free);
     }
 
-    /// The free shelf ending at `edge` (`.above`) or starting at it (`.below`).
     fn freeNeighbour(self: *const Self, edge: u32, side: enum { above, below }) ?u16 {
         assert(edge <= self.size);
         for (self.shelves, 0..) |*shelf, index| {
@@ -479,13 +416,9 @@ pub const Atlas = struct {
         for (self.shelves, 0..) |*shelf, index| {
             if (shelf.state == .unused) return @intCast(index);
         }
-        // Shelves partition the atlas in multiples of the quantum, so at most
-        // `size / quantum` slots are ever in use; a split needs one more only
-        // when a used slot is at least two quanta tall.
         unreachable;
     }
 
-    /// Write the item and its zero border into the pixel store or the journal.
     fn writeItem(self: *Self, placement: Placement, pixels: []const u8) void {
         const region = placement.region;
         assert(region.x >= item_border);
@@ -524,8 +457,6 @@ pub const Atlas = struct {
 
     const Item = struct { width: u32, height: u32, bpp: u32 };
 
-    /// Fill a `(width + 2) × (height + 2)` rectangle of `target` with rows of
-    /// `stride` bytes: zero border, item pixels inside.
     fn writeBordered(target: []u8, stride: usize, pixels: []const u8, item: Item) void {
         const outer_row = (@as(usize, item.width) + 2) * item.bpp;
         const inner_row = @as(usize, item.width) * item.bpp;
@@ -574,8 +505,6 @@ fn roundUpQuantum(value: u32) u32 {
 
 const testing = std.testing;
 
-/// A 64×64 atlas whose 62×14 test items each fill one 16-row shelf, so the
-/// atlas holds exactly four. Consumer 1 stands in for a renderer.
 const TestAtlas = struct {
     uploads: AtlasUploads,
     atlas: Atlas,
@@ -606,7 +535,6 @@ const TestAtlas = struct {
         self.uploads.deinit();
     }
 
-    /// Begin a frame and upload it at once, so only the new frame is protected.
     fn frame(self: *TestAtlas) void {
         _ = self.uploads.beginFrame(consumer);
         _ = self.uploads.consumeBegin(consumer);
@@ -623,16 +551,12 @@ const TestAtlas = struct {
         return self.atlas.isLive(placement.shelf, placement.generation);
     }
 
-    /// Pixel at `(x, y)` of a `.cpu_texture` grayscale atlas.
     fn pixel(self: *const TestAtlas, x: u32, y: u32) u8 {
         return self.atlas.getData()[y * self.atlas.size + x];
     }
 };
 
 test "atlas evicts the least recently used shelf, lowest y on ties" {
-    // Four shelves filled in frames 2-5 hold a, b, c, d. Touching a in frame 6
-    // makes b the oldest; once a and e share frame 6, the tie goes to a, the
-    // lower shelf. A FIFO or lowest-y policy would fail at e or f.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();
@@ -659,14 +583,12 @@ test "atlas evicts the least recently used shelf, lowest y on ties" {
     const g = t.item(22);
     try testing.expectEqual(d.region.y, g.region.y);
 
-    // a and e were both last used in frame 6; a has the lower y.
     t.frame();
     const h = t.item(23);
     try testing.expectEqual(a.region.y, h.region.y);
     try testing.expect(t.live(e) and t.live(f) and t.live(g) and t.live(h));
     try testing.expect(!t.live(a));
 
-    // The new item's pixels replaced a's, and its border reads zero.
     try testing.expectEqual(@as(u8, 23), t.pixel(h.region.x, h.region.y));
     try testing.expectEqual(@as(u8, 0), t.pixel(h.region.x - 1, h.region.y));
     try testing.expectEqual(@as(u8, 0), t.pixel(h.region.x, h.region.y - 1));
@@ -699,8 +621,6 @@ test "atlas keeps a lagging consumer's shown frame until its next frame uploads"
 }
 
 test "atlas never evicts an item used this frame or awaiting upload" {
-    // In a GPU atlas, items whose records no renderer has uploaded stay
-    // protected however many frames pass.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();
@@ -721,7 +641,6 @@ test "atlas never evicts an item used this frame or awaiting upload" {
     defer g.deinit();
     g.frame();
     for (&placements, 0..) |*placement, index| placement.* = g.item(@intCast(index + 1));
-    // The renderer begins frames but never uploads: nothing may be evicted.
     var frame_index: u32 = 0;
     while (frame_index < 3) : (frame_index += 1) _ = g.uploads.beginFrame(TestAtlas.consumer);
     try testing.expect(!g.atlas.evictOne());

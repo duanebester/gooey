@@ -9,9 +9,6 @@ const ShapedRun = types.ShapedRun;
 
 pub const CoreTextShaper = struct {
     allocator: std.mem.Allocator,
-    /// UTF-16 units of the text being shaped. Fixed: shaping runs every frame
-    /// after initialization and must not allocate. One cluster entry per unit,
-    /// so `MAX_CLUSTER_MAP` bounds both.
     utf16_buf: [MAX_CLUSTER_MAP]ct.UniChar,
 
     glyph_buf: [MAX_GLYPHS_PER_RUN]ct.CGGlyph,
@@ -26,9 +23,6 @@ pub const CoreTextShaper = struct {
     const MAX_GLYPHS_PER_RUN: usize = 1024;
     const MAX_CLUSTER_MAP: usize = 2048;
 
-    // The core stops a run past `text.run_codepoint_count_max` before it is
-    // shaped, so these buffers hold every run it lets through: a codepoint is
-    // at most two UTF-16 units, and one glyph per codepoint.
     comptime {
         std.debug.assert(MAX_CLUSTER_MAP >= 2 * limits.run_codepoint_count_max);
         std.debug.assert(MAX_GLYPHS_PER_RUN >= limits.run_codepoint_count_max);
@@ -134,7 +128,6 @@ pub const CoreTextShaper = struct {
 
             if (glyph_count > MAX_GLYPHS_PER_RUN) return error.RunTooLong;
 
-            // The run's font may be a fallback rather than `face.ct_font`.
             const run_attrs = ct.CTRunGetAttributes(run);
             const run_font: ?ct.CTFontRef = if (ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName))) |f|
                 @ptrCast(@constCast(f))
@@ -166,9 +159,8 @@ pub const CoreTextShaper = struct {
                 else
                     0;
 
-                // positions[i] is absolute from line start, so we need relative offset
                 const x_offset: f32 = if (i == 0)
-                    0 // First glyph of run: no offset, advances handle positioning
+                    0
                 else
                     @floatCast(positions[i].x - positions[i - 1].x - advances[i - 1].width);
 
@@ -179,7 +171,6 @@ pub const CoreTextShaper = struct {
                     .x_advance = @floatCast(advances[i].width),
                     .y_advance = @floatCast(advances[i].height),
                     .cluster = cluster,
-                    // Retained: the CTLine is released while the glyph still references the font.
                     .font_ref = if (is_fallback and run_font != null) blk: {
                         _ = ct.CFRetain(@ptrCast(run_font.?));
                         break :blk run_font;

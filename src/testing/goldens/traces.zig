@@ -1,6 +1,3 @@
-//! Coordinates are logical pixels at the centre of each control, read off the
-//! golden's hit records; a layout change must move them with it.
-
 const trace = @import("trace.zig");
 
 pub const counter = trace.Trace{
@@ -36,10 +33,6 @@ pub const todo = trace.Trace{
         .{ .label = "click the draft input again", .step = .{ .click = .{ .x = 204, .y = 93 } } },
         .{ .label = "compose \"ca\"", .step = .{ .compose = "ca" } },
         .{ .label = "compose \"caf\"", .step = .{ .compose = "caf" } },
-        // End the preedit before committing, as Wayland's text-input-v3 and
-        // AppKit's `unmarkText` do: committing straight over a preedit trips an
-        // assertion (`preedit_cursor` outlives the cleared preedit in
-        // `TextInputState.insertText`), so the shared trace avoids it.
         .{ .label = "end the composition", .step = .{ .compose = "" } },
         .{ .label = "commit \"caf\u{e9}\"", .step = .{ .text = "caf\u{e9}" } },
         .{ .label = "click Add again", .step = .{ .click = .{ .x = 429, .y = 93 } } },
@@ -47,7 +40,6 @@ pub const todo = trace.Trace{
         .{ .label = "filter Active", .step = .{ .click = .{ .x = 104, .y = 143 } } },
         .{ .label = "filter Done", .step = .{ .click = .{ .x = 172, .y = 143 } } },
         .{ .label = "filter All", .step = .{ .click = .{ .x = 44, .y = 143 } } },
-        // The rows fill the list, so Delete sits at its right end.
         .{ .label = "hover the second Delete", .step = .{ .move = .{ .x = 413, .y = 255 } } },
         .{ .label = "delete the second row", .step = .{ .click = .{ .x = 413, .y = 255 } } },
         .{ .label = "clear completed", .step = .{ .click = .{ .x = 146, .y = 521 } } },
@@ -69,7 +61,6 @@ pub const actions = trace.Trace{
             .modifiers = .{ .cmd = true, .shift = true },
         } } },
         .{ .label = "escape", .step = .{ .key = .escape } },
-        // "Editor" is not on the focus path yet, so its binding does not match.
         .{ .label = "cmd-s outside the editor", .step = .{ .chord = .{
             .key = .s,
             .modifiers = .{ .cmd = true },
@@ -89,8 +80,6 @@ pub const actions = trace.Trace{
     },
 };
 
-/// The grid example: a form, a table of row boxes, and a dashboard on one
-/// frame, then the pointer over the second table row to show its hover.
 pub const grid = trace.Trace{
     .name = "grid",
     .width = 1240,
@@ -101,8 +90,6 @@ pub const grid = trace.Trace{
     },
 };
 
-/// `text_truncation`: one frame of cut names and clamped cards, then the
-/// pointer over the sidebar, which nothing in it answers.
 pub const truncation = trace.Trace{
     .name = "truncation",
     .width = 780,

@@ -1,9 +1,3 @@
-//! Trace driver for the core (`gooey`), the port's side of the goldens.
-//! Input goes through the window's event queue, exactly as a platform pushes
-//! it; each frame is one `tick`, which packs the frame and hands it to a
-//! `NullRenderer` through the window's presenter. Hits and the accessibility
-//! tree are read from the rendered frame, the one the router and `Query` use.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const counter = @import("counter_example");
@@ -23,7 +17,6 @@ const core_backend = gooey.internals.backend;
 const records = gooey.internals.records;
 const Window = gooey.internals.window.Window;
 
-/// One frame per 60 Hz refresh, so ticks see a moving clock.
 const frame_interval_ns: u64 = 16_666_667;
 
 pub fn CoreDriver(comptime App: type) type {
@@ -52,7 +45,6 @@ pub fn CoreDriver(comptime App: type) type {
             writeA11y(self.app.window.rendered(), out);
         }
 
-        /// Initialize in place: the app and renderer must not move.
         pub fn initInPlace(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -65,15 +57,11 @@ pub fn CoreDriver(comptime App: type) type {
             });
         }
 
-        /// Who runs the image decodes and the jobs: the hosts' workers, or
-        /// a simulation that plays them itself (`.stepped`).
         pub const Workers = struct {
             image_decodes: gooey.internals.images.Mode,
             job_runs: gooey.internals.jobs.Mode,
         };
 
-        /// `initInPlace` with the workers' modes: the VOPR plays the decode
-        /// worker and the job workers itself.
         pub fn initInPlaceWorkers(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -130,8 +118,6 @@ fn present(
     renderer.draw(packed_frame, viewport, clear);
 }
 
-/// Interactive hit records in tree order, in the dump's format. Keyed
-/// boxes without handlers or focus exist only for hover and are left out.
 pub fn writeHits(frame: *const records.Frame, out: *TextBuffer) void {
     for (frame.hits[0..frame.hit_count]) |*record| {
         const click = record.on_click != records.index_none;

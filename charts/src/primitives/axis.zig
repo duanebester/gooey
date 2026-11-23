@@ -39,7 +39,6 @@ pub const Axis = struct {
         font_size: f32 = 12.0,
     };
 
-    /// `opts` faces `orientation`, themed when a chart theme is set.
     pub fn themed(
         opts: Options,
         orientation: Orientation,
@@ -215,7 +214,6 @@ fn drawLabelText(
     y: f32,
     opts: Axis.Options,
 ) void {
-    // Rough estimate.
     const char_width: f32 = opts.font_size * 0.6;
     const text_width = char_width * @as(f32, @floatFromInt(text.len));
     const text_height = opts.font_size;
@@ -276,7 +274,6 @@ fn drawAxisTitle(
             title_y = y - title_offset - text_height;
         },
         .left => {
-            // For left axis, title is rotated (we approximate with offset)
             title_x = x - title_offset - text_width;
             title_y = range_center - text_height / 2;
         },

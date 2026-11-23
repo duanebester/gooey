@@ -1,10 +1,3 @@
-// Writes `LayoutElement.computed.{bounding_box,content_box}` after the
-// sizing pass. Relies on the sizing pass's invariant that floating elements
-// never affect parent sizing. Nothing recurses (CLAUDE.md §6): placement
-// keeps an explicit stack of open parents bounded by the engine's open
-// depth, and the floating passes walk a subtree's pre-order index range
-// forwards (`sizing_pass.subtreeEnd`).
-
 const std = @import("std");
 
 const engine_mod = @import("engine.zig");
@@ -18,55 +11,30 @@ const LayoutConfig = types.LayoutConfig;
 const BoundingBox = types.BoundingBox;
 const FloatingConfig = types.FloatingConfig;
 
-/// The explicit stack's ceiling; `sizing_pass.zig` explains the choice.
 const box_depth_ceiling = @import("../core/limits.zig").box_depth_ceiling;
 
-/// Place `root` at (`x`, `y`), then place the rest of its subtree.
 pub fn computePositions(engine: *LayoutEngine, root: u32, x: f32, y: f32) void {
     std.debug.assert(root < engine.elements.len());
     placeElement(engine.elements.get(root), x, y);
     positionSubtree(engine, root);
 }
 
-/// One placed parent whose children the walk is placing: where its next
-/// child goes and how its children line up. The walk places one child and,
-/// when that child has children, plans it straight away. A parent whose
-/// children are all leaves is placed on the spot; any other is pushed. A
-/// subtree is therefore placed while its root is still in cache, in the
-/// order the recursive pass used, and the stack holds one frame per open
-/// level.
 const PositionFrame = struct {
-    /// The next child to place, or null once every child is placed.
     cursor: ?u32,
     is_horizontal: bool,
-    /// Whether any non-floating child has children of its own.
     has_grandchildren: bool,
     alignment: types.ChildAlignment,
-    /// The cross-axis extent children align within: the content box's, or
-    /// the current line's in a wrapping row.
     cross_size: f32,
-    /// How the children flow: in one line, in a wrapping row's lines, in a
-    /// grid's rows, or in a row box's cells.
     flow: Flow,
-    /// In a wrapping row or a grid, the top of the next line or row. A
-    /// grid's other row state is in its slot (`GridSlot.position_row`).
     line_y: f32,
-    /// The content box's left edge, shifted by the scroll offset: where a
-    /// child text's `.center` and `.right` lines are aligned from.
     content_x: f32,
-    /// The next child's top-left corner before its cross-axis alignment.
     next_x: f32,
     next_y: f32,
-    /// The main-axis space after each child.
     gap: f32,
 };
 
 const Flow = enum { line, wrap, grid, grid_row };
 
-/// Place the rest of `root`'s subtree, `root` already placed: each parent
-/// places its children inside its content box (honoring its scroll offset)
-/// before they place theirs. Floating subtrees below `root` are skipped;
-/// `computeFloatingPositions` places them.
 fn positionSubtree(engine: *LayoutEngine, root: u32) void {
     std.debug.assert(root < engine.elements.len());
     if (engine.elements.getConst(root).first_child_index == null) return;
@@ -77,13 +45,12 @@ fn positionSubtree(engine: *LayoutEngine, root: u32) void {
         return;
     }
 
-    // A frame per open level: the open stack bounds the tree's depth.
     var stack: [box_depth_ceiling]PositionFrame = undefined;
     stack[0] = root_plan;
     var depth: u32 = 1;
     var open_count: u32 = 1;
     while (depth > 0) {
-        std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
+        std.debug.assert(open_count <= engine.elements.len());
         var opened: PositionFrame = undefined;
         const frame = &stack[depth - 1];
         const pushed = switch (frame.flow) {
@@ -100,13 +67,10 @@ fn positionSubtree(engine: *LayoutEngine, root: u32) void {
     }
 }
 
-/// Plan where `parent_index`'s children go: the main-axis distribution's
-/// start offset and gap, shifted by the parent's scroll offset (negative:
-/// content scrolls under the viewport).
 fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
     const parent = engine.elements.getConst(parent_index);
     const first_child = parent.first_child_index.?;
-    std.debug.assert(first_child > parent_index); // Pre-order: children follow.
+    std.debug.assert(first_child > parent_index);
     const layout = &parent.config.layout;
     const content_box = parent.computed.content_box;
     std.debug.assert(content_box.width >= 0);
@@ -118,7 +82,7 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
         .has_grandchildren = false,
         .alignment = layout.child_alignment,
         .cross_size = if (is_horizontal) content_box.height else content_box.width,
-        .flow = if (layout.wrap) .wrap else .line, // `planGridPositions` sets a grid's.
+        .flow = if (layout.wrap) .wrap else .line,
         .line_y = 0,
         .content_x = content_box.x,
         .next_x = 0,
@@ -127,8 +91,6 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
     };
     const totals = sumChildrenAlongMainAxis(engine, first_child, is_horizontal);
     if (totals.child_count == 0) {
-        // Only floating children: nothing flows here, and a scroll target
-        // finds no content to move through.
         if (parent.config.scroll != null) {
             engine.elements.get(parent_index).config.scroll.?.target = .none;
         }
@@ -146,7 +108,6 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
             });
         }
     }
-    // Read after `resolveScrollTarget`, which may have just moved it.
     const offset_x: f32 = if (parent.config.scroll) |s| -s.scroll_offset.x else 0;
     const offset_y: f32 = if (parent.config.scroll) |s| -s.scroll_offset.y else 0;
     frame.content_x = content_box.x + offset_x;
@@ -154,18 +115,15 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
     frame.next_y = content_box.y + offset_y + if (!is_horizontal) dist.start_offset else 0;
     frame.gap = dist.effective_gap;
     frame.has_grandchildren = totals.has_grandchildren;
-    frame.line_y = content_box.y + offset_y; // Each line sets its own x and gap.
+    frame.line_y = content_box.y + offset_y;
     if (layout.grid != .none) {
-        @branchHint(.unlikely); // Out of line, so boxes that are not grids keep their code.
+        @branchHint(.unlikely);
         planGridPositions(engine, parent_index, &frame);
     }
     std.debug.assert(frame.gap >= 0);
     return frame;
 }
 
-/// A grid starts each row at a `line_start` child (`beginGridRow`); a row
-/// box is one row, its content box's height. Either places each cell at
-/// its column's edge, from the content box's scrolled left.
 noinline fn planGridPositions(
     engine: *const LayoutEngine,
     parent_index: u32,
@@ -173,7 +131,7 @@ noinline fn planGridPositions(
 ) void {
     const parent = engine.elements.getConst(parent_index);
     std.debug.assert(parent.config.layout.grid != .none);
-    std.debug.assert(!parent.config.layout.wrap); // `checkGrid` and `checkCell` refuse it.
+    std.debug.assert(!parent.config.layout.wrap);
     frame.next_x = frame.content_x;
     frame.gap = 0;
     if (parent.config.layout.grid == .grid) {
@@ -188,16 +146,11 @@ noinline fn planGridPositions(
     frame.flow = .grid_row;
     frame.next_y = frame.line_y;
     frame.cross_size = parent.computed.content_box.height;
-    // Cells line up across the grid's columns, as its own cells do.
     const grid = engine.elements.getConst(parent.parent_index.?);
     std.debug.assert(grid.config.layout.grid == .grid);
     frame.alignment.x = grid.config.layout.child_alignment.x;
 }
 
-/// Start the row of a grid at `first`, its `line_start` child: as tall as
-/// its track and its tallest child make it, and move the next row below it.
-/// The row's cells, a row box's among them, are placed before the next row
-/// starts, since the walk finishes a subtree before its next sibling.
 fn beginGridRow(engine: *const LayoutEngine, frame: *PositionFrame, first: u32) void {
     std.debug.assert(frame.flow == .grid);
     const grid = grid_mod.gridOfCell(engine, engine.elements.getConst(first));
@@ -214,9 +167,6 @@ fn beginGridRow(engine: *const LayoutEngine, frame: *PositionFrame, first: u32) 
     slot.position_row = row + 1;
 }
 
-/// Place one cell of a grid or a row box at its column's left edge,
-/// aligned in its cell by its column's alignment across and its row's down,
-/// each the grid's when `.auto`. A row box fills its row.
 fn placeCell(engine: *const LayoutEngine, frame: *const PositionFrame, child: *LayoutElement) void {
     std.debug.assert(child.config.floating == null);
     std.debug.assert(frame.flow == .grid or frame.flow == .grid_row);
@@ -244,9 +194,6 @@ fn placeCell(engine: *const LayoutEngine, frame: *const PositionFrame, child: *L
     if (child.text_data) |*text| text.container_x = left;
 }
 
-/// Where a child `free` px smaller than its cell sits along it: by
-/// `alignment`, or by `fallback` when it is `.auto`. A child larger than
-/// its cell starts at its start.
 fn alignOffset(alignment: types.TrackAlignment, fallback: types.TrackAlignment, free: f32) f32 {
     std.debug.assert(fallback != .auto);
     if (free <= 0) return 0;
@@ -259,9 +206,6 @@ fn alignOffset(alignment: types.TrackAlignment, fallback: types.TrackAlignment, 
     };
 }
 
-/// Start the line of a wrapping row at `first`, its `line_start` child:
-/// distribute its children along it as `main_axis_distribution` says,
-/// align them within its height, and move the next line below it.
 fn beginLine(engine: *const LayoutEngine, frame: *PositionFrame, first: u32) void {
     std.debug.assert(frame.flow == .wrap);
     const child = engine.elements.getConst(first);
@@ -272,7 +216,7 @@ fn beginLine(engine: *const LayoutEngine, frame: *PositionFrame, first: u32) voi
     var cursor: ?u32 = first;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        std.debug.assert(visited < engine.elements.len());
         const sibling = engine.elements.getConst(index);
         cursor = sibling.next_sibling_index;
         if (sibling.config.floating != null) continue;
@@ -290,22 +234,12 @@ fn beginLine(engine: *const LayoutEngine, frame: *PositionFrame, first: u32) voi
     frame.line_y += line_height + @as(f32, @floatFromInt(parent.config.layout.child_gap));
 }
 
-/// The flow children's extent, as `planChildPositions` lays them out.
 const ContentPlan = struct {
     totals: MainAxisTotals,
     dist: DistributionParams,
     is_horizontal: bool,
 };
 
-/// Resolve a scroll container's `target` against the content this frame laid
-/// out, before its children are placed, so the frame that adds content can
-/// already show its end. The offset is clamped to the content, along the
-/// axes the container scrolls, and written back to `scroll_offset`; the
-/// target is consumed. The content's extent is what emit measures: the
-/// flow children's main-axis run from the content box's start, and their
-/// widest cross size.
-///
-/// Work: one walk over the container's children.
 fn resolveScrollTarget(engine: *LayoutEngine, parent_index: u32, plan: ContentPlan) void {
     const parent = engine.elements.get(parent_index);
     const scroll = &parent.config.scroll.?;
@@ -323,8 +257,6 @@ fn resolveScrollTarget(engine: *LayoutEngine, parent_index: u32, plan: ContentPl
         grid_mod.rowPlan(engine, parent, content_box.height)
     else
         .{ .per_weight = 0, .percent_basis = 0, .definite = false };
-    // A wrapping row's lines and a grid's rows fit its width and run down
-    // it: its children scroll into view along the cross axis.
     const cross_length = if (is_grid)
         grid_mod.rowSpan(engine, parent, row_plan, null).size
     else if (is_wrap)
@@ -368,7 +300,6 @@ fn resolveScrollTarget(engine: *LayoutEngine, parent_index: u32, plan: ContentPl
     std.debug.assert(scroll.scroll_offset.y <= max_y);
 }
 
-/// The widest flow child across the main axis.
 fn crossExtent(engine: *const LayoutEngine, first_child: u32, is_horizontal: bool) f32 {
     var extent: f32 = 0;
     var child_index: ?u32 = first_child;
@@ -389,8 +320,6 @@ fn crossExtent(engine: *const LayoutEngine, first_child: u32, is_horizontal: boo
 
 const Span = struct { start: f32, size: f32 };
 
-/// Where flow child `target` starts along the main axis, from the content
-/// box's start, and its size there.
 fn childSpan(engine: *const LayoutEngine, first_child: u32, target: u32, plan: ContentPlan) Span {
     std.debug.assert(target >= first_child);
     const is_horizontal = plan.is_horizontal;
@@ -408,11 +337,9 @@ fn childSpan(engine: *const LayoutEngine, first_child: u32, target: u32, plan: C
         if (child.config.floating == null) start += size + plan.dist.effective_gap;
         child_index = child.next_sibling_index;
     }
-    unreachable; // The core names only a child it opened under this container.
+    unreachable;
 }
 
-/// The offset that places `span` in a view of `view` px as `alignment` says;
-/// `.nearest` keeps `current` when the span already shows whole.
 fn alignSpan(alignment: types.ScrollAlignment, span: Span, view: f32, current: f32) f32 {
     std.debug.assert(span.size >= 0);
     std.debug.assert(view >= 0);
@@ -428,13 +355,6 @@ fn alignSpan(alignment: types.ScrollAlignment, span: Span, view: f32, current: f
     };
 }
 
-/// Place `frame`'s remaining children until one has grandchildren: plan it
-/// into `opened` and return true for the walk to push it, its siblings left
-/// for later; or return false once every child is placed. A child whose own
-/// children are all leaves is finished here, without a frame. Floating
-/// children are placed by `computeFloatingPositions`.
-/// `flow` is `frame.flow`, at compile time, so a row that neither wraps nor
-/// is a grid runs the loop it ran before either existed.
 fn placeSiblings(
     comptime flow: Flow,
     engine: *LayoutEngine,
@@ -443,10 +363,10 @@ fn placeSiblings(
 ) bool {
     std.debug.assert(frame.flow == flow);
     std.debug.assert(frame.gap >= 0);
-    var local = frame.*; // Kept in registers across a wide row.
+    var local = frame.*;
     var sibling_count: u32 = 0;
     while (local.cursor) |child_index| {
-        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        std.debug.assert(sibling_count < engine.elements.len());
         sibling_count += 1;
         const child = engine.elements.get(child_index);
         local.cursor = child.next_sibling_index;
@@ -467,7 +387,6 @@ fn placeSiblings(
     return false;
 }
 
-/// Place every child of a parent whose non-floating children are all leaves.
 fn placeLeaves(engine: *LayoutEngine, plan: PositionFrame) void {
     switch (plan.flow) {
         .line => placeLeafChildren(.line, engine, plan),
@@ -479,8 +398,6 @@ fn placeLeaves(engine: *LayoutEngine, plan: PositionFrame) void {
     }
 }
 
-/// A grid's or a row box's leaves, out of line: inlining their two
-/// specializations into `placeLeaves` cost every other box its inlining.
 noinline fn placeGridLeaves(engine: *LayoutEngine, plan: PositionFrame) void {
     std.debug.assert(plan.flow == .grid or plan.flow == .grid_row);
     if (plan.flow == .grid) {
@@ -490,14 +407,13 @@ noinline fn placeGridLeaves(engine: *LayoutEngine, plan: PositionFrame) void {
     }
 }
 
-/// `flow` is `plan.flow`, at compile time, as in `placeSiblings`.
 fn placeLeafChildren(comptime flow: Flow, engine: *LayoutEngine, plan: PositionFrame) void {
     std.debug.assert(plan.flow == flow);
     std.debug.assert(!plan.has_grandchildren);
     var local = plan;
     var sibling_count: u32 = 0;
     while (local.cursor) |child_index| {
-        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        std.debug.assert(sibling_count < engine.elements.len());
         sibling_count += 1;
         const child = engine.elements.get(child_index);
         local.cursor = child.next_sibling_index;
@@ -508,8 +424,6 @@ fn placeLeafChildren(comptime flow: Flow, engine: *LayoutEngine, plan: PositionF
     }
 }
 
-/// Place one flow child as its parent's flow places it, starting a line or
-/// a row at each `line_start` child of a wrapping row or a grid.
 inline fn placeFlowChild(
     comptime flow: Flow,
     engine: *const LayoutEngine,
@@ -532,8 +446,6 @@ inline fn placeFlowChild(
     }
 }
 
-/// Place one non-floating child at its parent's next slot, aligned on the
-/// cross axis, and advance the slot past it and the gap.
 inline fn placeNext(frame: *PositionFrame, child: *LayoutElement) void {
     std.debug.assert(child.config.floating == null);
     std.debug.assert(frame.gap >= 0);
@@ -550,8 +462,6 @@ inline fn placeNext(frame: *PositionFrame, child: *LayoutElement) void {
     }
 }
 
-/// Set one element's `bounding_box` at (`x`, `y`) and its `content_box`
-/// inside its padding.
 fn placeElement(elem: *LayoutElement, x: f32, y: f32) void {
     std.debug.assert(!std.math.isNan(x));
     std.debug.assert(!std.math.isNan(y));
@@ -564,7 +474,6 @@ fn placeElement(elem: *LayoutElement, x: f32, y: f32) void {
         .height = elem.computed.sized_height,
     };
 
-    // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
     elem.computed.content_box = .{
         .x = x + @as(f32, @floatFromInt(padding.left)),
         .y = y + @as(f32, @floatFromInt(padding.top)),
@@ -573,15 +482,12 @@ fn placeElement(elem: *LayoutElement, x: f32, y: f32) void {
     };
 }
 
-/// A parent's non-floating children: their summed main-axis size, their
-/// count, and whether any has children of its own.
 const MainAxisTotals = struct {
     total_size: f32,
     child_count: u32,
     has_grandchildren: bool,
 };
 
-/// Floating siblings are excluded: they don't participate in flow.
 fn sumChildrenAlongMainAxis(engine: *LayoutEngine, first_child: u32, is_horizontal: bool) MainAxisTotals {
     std.debug.assert(first_child < engine.elements.len());
 
@@ -607,15 +513,11 @@ fn sumChildrenAlongMainAxis(engine: *LayoutEngine, first_child: u32, is_horizont
     };
 }
 
-/// Resolved `main_axis_distribution` parameters — concrete gap and start
-/// offset both ≥ 0.
 const DistributionParams = struct {
     effective_gap: f32,
     start_offset: f32,
 };
 
-/// Clamps both outputs to ≥ 0: children overflowing the container would
-/// otherwise produce negative gaps the cursor loop reads as overlap.
 fn distributionParams(
     layout: LayoutConfig,
     content_box: BoundingBox,
@@ -648,7 +550,6 @@ fn distributionParams(
             start_offset = container_main_size - total_with_gaps;
         },
         .space_between => {
-            // Single-child layouts collapse to start.
             effective_gap = if (totals.child_count > 1) remaining_space / @as(f32, @floatFromInt(totals.child_count - 1)) else 0;
             start_offset = 0;
         },
@@ -669,10 +570,6 @@ fn distributionParams(
     };
 }
 
-/// Compute the cross-axis offset for a single child given the parent's
-/// `child_alignment` and the `cross_size` it aligns within. The cross axis
-/// is height when laying out horizontally and width when laying out
-/// vertically.
 fn crossAxisOffset(
     alignment: types.ChildAlignment,
     cross_size: f32,
@@ -694,9 +591,6 @@ fn crossAxisOffset(
     };
 }
 
-/// Position each floating element in two passes per element. Re-enters the
-/// sizing pass for the floating subtree so nested layouts see the parent's
-/// bbox as their constraint, then assigns concrete coordinates.
 pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
     std.debug.assert(engine.floating_roots.len <= engine.capacity.floating_count_max);
 
@@ -718,9 +612,6 @@ pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
     }
 }
 
-/// Resolve the bbox to position a floating element relative to: the direct
-/// parent when `attach_to_parent` is set (dropdowns), else the viewport
-/// (modals).
 fn resolveFloatingParentBbox(
     engine: *LayoutEngine,
     elem: *const LayoutElement,
@@ -738,9 +629,6 @@ fn resolveFloatingParentBbox(
     return bbox;
 }
 
-/// Size a floating subtree within `max_width` and `max_height` in the main
-/// pass's order: widths, then text wrapped at them, then heights from the
-/// wrapped text. Nested floating subtrees are skipped; each has its own pass.
 pub fn computeFloatingSizesWithText(
     engine: *LayoutEngine,
     float_root: u32,
@@ -756,12 +644,6 @@ pub fn computeFloatingSizesWithText(
     if (engine.heights_derived) sizing_pass.computeHeights(engine, float_root, max_height);
 }
 
-/// A parent-attached floating element that runs past the viewport's top or
-/// bottom opens on its parent's other side when it fits there, as a native
-/// menu opens upward near the screen's bottom: its span is mirrored about
-/// the parent's vertical centre, so a menu below its trigger lands above
-/// it with the same gap. Otherwise it keeps `y` for the clamp, which may
-/// cover the parent.
 fn flipIntoViewport(y: f32, height: f32, parent: BoundingBox, viewport_height: f32) f32 {
     std.debug.assert(height >= 0);
     std.debug.assert(parent.height >= 0);
@@ -773,8 +655,6 @@ fn flipIntoViewport(y: f32, height: f32, parent: BoundingBox, viewport_height: f
     return mirrored;
 }
 
-/// Position a floating element and its children, clamping to the viewport
-/// so floating elements don't render off-screen.
 fn positionFloatingElement(
     engine: *LayoutEngine,
     float_idx: u32,
@@ -814,7 +694,6 @@ fn positionFloatingElement(
     elem.computed.content_box = .{
         .x = final_x + @as(f32, @floatFromInt(padding.left)),
         .y = final_y + @as(f32, @floatFromInt(padding.top)),
-        // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
         .width = @max(0, elem.computed.sized_width - padding.totalX()),
         .height = @max(0, elem.computed.sized_height - padding.totalY()),
     };

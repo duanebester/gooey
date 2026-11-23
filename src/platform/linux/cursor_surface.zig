@@ -1,34 +1,17 @@
-// Fallback for compositors without `wp_cursor_shape_v1` (GNOME 43 to 47 and
-// others; mutter 48 added the protocol): the client draws the cursor itself
-// from an XCursor theme. Everything is loaded during platform initialization:
-// libwayland-cursor reads the whole theme into one shm pool when it loads and
-// creates an image's `wl_buffer` on the first `wl_cursor_image_get_buffer`, so
-// `load` asks for the buffer of every `CursorShape` and a hover change only
-// sends requests on objects that already exist. The theme is loaded at the
-// output scale known at initialization; a window that moves to another scale
-// keeps that cursor size, because reloading allocates.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const wayland = @import("wayland.zig");
 const CursorShape = @import("../interface.zig").CursorShape;
 
-/// XCursor's conventional size, used when XCURSOR_SIZE is unset or unusable.
 const cursor_size_default: u32 = 24;
-/// Largest XCURSOR_SIZE accepted, in logical pixels. XCursor themes ship at most 256.
 const cursor_size_max: u32 = 256;
-/// Largest output scale the theme is loaded at; a larger reported scale is clamped.
 const output_scale_max: u32 = 8;
-/// Largest image edge accepted from a theme file, in buffer pixels.
 const image_edge_px_max: u32 = cursor_size_max * output_scale_max;
-/// Most theme names tried for one shape; see `shape_names`.
 const shape_name_count_max: u32 = 3;
-/// `wl_surface.damage_buffer` needs version 4; `set_buffer_scale` needs 3.
 const surface_version_min: u32 = 4;
 const shape_count = @typeInfo(CursorShape).@"enum".field_names.len;
 
 comptime {
-    // `images` is indexed by `@intFromEnum(shape)`, so the tags must be 0 through count - 1.
     for (@typeInfo(CursorShape).@"enum".field_values, 0..) |value, index| {
         assert(value == index);
     }
@@ -39,18 +22,14 @@ comptime {
 }
 
 pub const CursorSurface = struct {
-    /// Owns the shm pool and every image buffer in `images`.
     theme: ?*wayland.CursorTheme = null,
-    /// The surface given the cursor role. Non-null exactly when `theme` is.
     surface: ?*wayland.Surface = null,
-    /// Indexed by `CursorShape`. Every entry is set when `surface` is, and none otherwise.
     images: [shape_count]?Image = @splat(null),
 
     pub const Image = struct {
         buffer: *wayland.Buffer,
         width_px: i32,
         height_px: i32,
-        /// Surface-local, so already divided by `buffer_scale`.
         hotspot_x: i32,
         hotspot_y: i32,
         buffer_scale: i32,
@@ -59,12 +38,9 @@ pub const CursorSurface = struct {
     pub const LoadOptions = struct {
         compositor: *wayland.Compositor,
         shm: *wayland.Shm,
-        /// `wl_output.scale` of the output known at initialization.
         output_scale: i32,
     };
 
-    /// Best effort: when the theme cannot be loaded the pointer keeps the
-    /// compositor's cursor, as before this fallback existed.
     pub fn load(self: *CursorSurface, options: LoadOptions) void {
         assert(self.theme == null);
         assert(self.surface == null);
@@ -101,7 +77,6 @@ pub const CursorSurface = struct {
         assert(self.images[@backingInt(CursorShape.default)] != null);
     }
 
-    /// Runs before the display disconnects; safe when `load` never ran or failed.
     pub fn deinit(self: *CursorSurface) void {
         if (self.surface) |surface| {
             assert(self.theme != null);
@@ -116,7 +91,6 @@ pub const CursorSurface = struct {
         assert(self.surface == null);
     }
 
-    /// Returns false when no theme is loaded, so the caller keeps its current state.
     pub fn show(
         self: *const CursorSurface,
         pointer: *wayland.Pointer,
@@ -145,8 +119,6 @@ pub const CursorSurface = struct {
     }
 };
 
-/// A shape the theme lacks gets the default arrow. Returns false, leaving
-/// `images` untouched, when the theme has no default arrow either.
 fn load_images(
     images: *[shape_count]?CursorSurface.Image,
     theme: *wayland.CursorTheme,
@@ -164,7 +136,6 @@ fn load_images(
     return true;
 }
 
-/// Animation is not supported: every shape Gooey sets is a still image in common themes.
 fn load_image(theme: *wayland.CursorTheme, shape: CursorShape, scale: u32) ?CursorSurface.Image {
     const names = shape_names(shape);
     assert(names.len >= 1);
@@ -178,9 +149,6 @@ fn load_image(theme: *wayland.CursorTheme, shape: CursorShape, scale: u32) ?Curs
     return null;
 }
 
-/// Theme names for `shape`, most preferred first: the CSS name current themes use, then the
-/// X11 names of older themes and of libwayland-cursor's built-in set (`left_ptr`, `xterm`,
-/// and `hand1`). The switch is exhaustive, so a new `CursorShape` cannot compile without one.
 fn shape_names(shape: CursorShape) []const [*:0]const u8 {
     return switch (shape) {
         .default => &.{ "default", "left_ptr" },
@@ -212,9 +180,6 @@ fn image_from_frame(frame: *wayland.CursorImage, scale: u32) ?CursorSurface.Imag
     };
 }
 
-/// Compositors reject a buffer whose size is not a multiple of its scale, so
-/// an image whose theme lacks the exact size shows at scale 1, larger than
-/// intended but valid.
 fn buffer_scale_for_image(width_px: u32, height_px: u32, scale: u32) u32 {
     assert(width_px >= 1);
     assert(height_px >= 1);

@@ -31,7 +31,6 @@ pub const StrokeStyle = struct {
 };
 
 pub const ExpandedStroke = struct {
-    /// Outline polygon of the stroke, CCW winding.
     points: FixedArray(Vec2, MAX_STROKE_OUTPUT),
     closed: bool,
 };
@@ -50,9 +49,6 @@ pub const StrokeError = error{
     DegeneratePath,
 };
 
-/// Expands a polyline into a thick outline polygon: start cap, left offsets
-/// forward, end cap, right offsets reversed — one continuous polygon for
-/// triangulation.
 pub fn expandStroke(
     points: []const Vec2,
     width: f32,
@@ -103,10 +99,6 @@ pub fn expandStroke(
     if (!closed) {
         try addEndCap(&result.points, points[n - 2], points[n - 1], half_width, cap);
     }
-    // Closed paths get no end cap; the polygon closes naturally, but this can
-    // leave a small visual gap at the closure (the ear-clipper handles the
-    // resulting concave ring). Generating triangles directly as a quad-strip
-    // would fix it.
 
     var i: usize = right_offsets.len;
     while (i > 0) {
@@ -117,8 +109,6 @@ pub fn expandStroke(
     return result;
 }
 
-/// Expands stroke directly to triangles, bypassing the ear-clipper: more
-/// reliable for closed paths, which create concave ring polygons.
 pub fn expandStrokeToTriangles(
     points: []const Vec2,
     width: f32,
@@ -445,7 +435,6 @@ fn generateOffsetPoints(
         const has_next = (i < n - 1) or closed;
 
         if (!has_prev and !has_next) {
-            // Unreachable with n >= 2; kept defensive.
             continue;
         }
 
@@ -630,7 +619,6 @@ fn addEndCap(
     }
 }
 
-/// Unit normal of p0→p1 pointing left of the direction.
 fn segmentNormal(p0: Vec2, p1: Vec2) Vec2 {
     std.debug.assert(!std.math.isNan(p0.x) and !std.math.isNan(p1.x));
 
@@ -672,7 +660,6 @@ fn addArcToHalf(
 ) StrokeError!void {
     std.debug.assert(segments > 0);
 
-    // atan2(cross, dot) gives the signed angle of the shorter arc.
     const cross = from_offset.x * to_offset.y - from_offset.y * to_offset.x;
     const dot = from_offset.x * to_offset.x + from_offset.y * to_offset.y;
     const angle_diff = std.math.atan2(cross, dot);

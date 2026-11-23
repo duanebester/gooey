@@ -4,13 +4,8 @@ const limits = @import("../core/limits.zig");
 
 const assert = std.debug.assert;
 
-/// Re-exported so call sites can use `svg_mod.Vec2` without importing
-/// geometry directly.
 pub const Vec2 = vec2_mod.Vec2;
 
-/// Re-exported `IndexSlice` carries the optional `closed` flag used by
-/// stroke rasterization to distinguish subpaths terminated with `Z` from
-/// open subpaths (arcs, raw curves). Fill rasterization ignores it.
 pub const IndexSlice = vec2_mod.IndexSlice;
 
 pub const PathCommand = enum(u8) {
@@ -50,7 +45,6 @@ pub const CubicBez = struct {
     }
 
     fn flattenRecursive(self: CubicBez, tolerance: f32, allocator: std.mem.Allocator, output: *std.ArrayList(Vec2), depth: u32) !void {
-        // Recursion depth bound.
         if (depth > 16) {
             try output.append(allocator, Vec2.init(self.x1, self.y1));
             return;
@@ -187,7 +181,6 @@ pub fn flattenArc(
     const x1p = cos_phi * dx + sin_phi * dy;
     const y1p = -sin_phi * dx + cos_phi * dy;
 
-    // Correct radii if necessary (SVG spec F.6.6)
     const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
     if (lambda > 1.0) {
         const sqrt_lambda = @sqrt(lambda);
@@ -195,7 +188,6 @@ pub fn flattenArc(
         ry *= sqrt_lambda;
     }
 
-    // Compute center point (SVG spec F.6.5)
     const rx_sq = rx * rx;
     const ry_sq = ry * ry;
     const x1p_sq = x1p * x1p;
@@ -286,7 +278,6 @@ pub const PathParser = struct {
         try self.appendPath(path, src);
     }
 
-    /// Append to `path` without clearing it.
     pub fn appendPath(self: *PathParser, path: *SvgPath, src: []const u8) !void {
         self.src = src;
         self.pos = 0;
@@ -333,7 +324,6 @@ pub const PathParser = struct {
         try path.data.append(self.allocator, x);
         try path.data.append(self.allocator, y);
 
-        // Subsequent coordinates are implicit LineTo
         while (self.hasMoreNumbers()) {
             const lx = try self.parseFloat();
             const ly = try self.parseFloat();
@@ -419,7 +409,6 @@ pub const PathParser = struct {
             const x = try self.parseFloat();
             const y = try self.parseFloat();
             try path.commands.append(self.allocator, if (relative) .arc_to_rel else .arc_to);
-            // Pack flags as 0/1 floats for uniform data storage
             try path.data.appendSlice(self.allocator, &.{
                 rx,
                 ry,
@@ -461,7 +450,6 @@ pub const PathParser = struct {
                 has_dot = true;
                 self.advance();
             } else if ((c == '-' or c == '+') and has_digits) {
-                // Sign after digits starts a new number.
                 break;
             } else {
                 break;
@@ -498,8 +486,6 @@ pub const PathParser = struct {
     }
 };
 
-/// Parses circle, ellipse, rect, line, polyline, polygon, and path elements
-/// into path commands.
 pub const SvgElementParser = struct {
     allocator: std.mem.Allocator,
     src: []const u8,
@@ -515,7 +501,6 @@ pub const SvgElementParser = struct {
         };
     }
 
-    /// Parses raw path data or `<...>` element markup into `path`.
     pub fn parse(self: *Self, path: *SvgPath, src: []const u8) !void {
         self.src = src;
         self.pos = 0;
@@ -594,7 +579,6 @@ pub const SvgElementParser = struct {
 
         if (r <= 0) return;
 
-        // Circle as two arcs: M(cx+r, cy) A(r,r,0,1,1,cx-r,cy) A(r,r,0,1,1,cx+r,cy) Z
         try path.commands.append(self.allocator, .move_to);
         try path.data.appendSlice(self.allocator, &.{ cx + r, cy });
 
@@ -633,7 +617,6 @@ pub const SvgElementParser = struct {
 
         if (rx <= 0 or ry <= 0) return;
 
-        // Ellipse as two arcs
         try path.commands.append(self.allocator, .move_to);
         try path.data.appendSlice(self.allocator, &.{ cx + rx, cy });
 
@@ -678,11 +661,9 @@ pub const SvgElementParser = struct {
 
         if (width <= 0 or height <= 0) return;
 
-        // If only one radius specified, use it for both
         if (rx > 0 and ry == 0) ry = rx;
         if (ry > 0 and rx == 0) rx = ry;
 
-        // Clamp radii to half dimensions
         rx = @min(rx, width / 2);
         ry = @min(ry, height / 2);
 
@@ -817,13 +798,9 @@ pub const SvgElementParser = struct {
 
         const cmd_count_before = path.commands.items.len;
 
-        // Append, not parse: the element's data joins an existing path.
         var path_parser = PathParser.init(self.allocator);
         path_parser.appendPath(path, d_attr) catch {};
 
-        // Each <path> element starts a new subpath, so the first command
-        // should always be absolute. If it's a relative moveTo, convert to absolute.
-        // In SVG, a standalone <path d="m5 12..."> treats 'm' as relative to origin (0,0).
         if (path.commands.items.len > cmd_count_before) {
             if (path.commands.items[cmd_count_before] == .move_to_rel) {
                 path.commands.items[cmd_count_before] = .move_to;
@@ -905,7 +882,6 @@ pub const SvgElementParser = struct {
     }
 };
 
-/// Helper to parse SVG points attribute format: "x1,y1 x2,y2 x3,y3 ..."
 const PointsParser = struct {
     src: []const u8,
     pos: usize,
@@ -1254,10 +1230,6 @@ pub fn flattenPath(
                 cur_pt = Vec2.init(x, y);
             },
             .close_path => {
-                // Emit the current subpath as explicitly closed.
-                // For fill, the scanline algorithm implicitly wraps around,
-                // but for stroke we need to know this was closed so we draw
-                // the final segment back to the start.
                 current_subpath_closed = true;
                 cur_pt = subpath_start_pt;
                 if (points.items.len > poly_start + 1) {
@@ -1275,51 +1247,32 @@ pub fn flattenPath(
     }
 }
 
-/// Per-icon bounds a rasterizer works within, from `ResourceLimits.atlas`.
 pub const RasterBudget = struct {
-    /// `AtlasLimits.svg_path_bytes_max`: bytes of one icon's path data.
     path_bytes_max: u32,
-    /// `AtlasLimits.svg_path_vertex_count_max`: flattened vertices per icon.
     vertex_count_max: u32,
 
-    /// Commands and numbers reserved per byte of path data. Every command
-    /// letter and number takes at least one byte of source, and the shape
-    /// elements expand to fewer than these: a rounded `<rect>` of 35 bytes
-    /// is 13 commands and 38 numbers.
     pub const commands_per_byte: u32 = 1;
     pub const numbers_per_byte: u32 = 2;
 
-    /// For callers of the convenience `rasterize`, which allocate from their
-    /// own allocator rather than an atlas's scratch.
     pub const ceiling: RasterBudget = .{
         .path_bytes_max = limits.MAX_SVG_PATH_BYTES,
         .vertex_count_max = limits.MAX_SVG_PATH_VERTEX_COUNT,
     };
 
-    /// Scratch bytes `parseBounded` reserves for `path_bytes` of path data.
     pub fn parseBytes(path_bytes: u32) u32 {
         assert(path_bytes <= limits.MAX_SVG_PATH_BYTES);
         const command_bytes = path_bytes * commands_per_byte * @sizeOf(PathCommand);
         return command_bytes + path_bytes * numbers_per_byte * @sizeOf(f32);
     }
 
-    /// Most bytes `pathDataBounded` writes for one number: an `f32` in
-    /// shortest round-trip scientific form has at most a sign, nine
-    /// significant digits and their point, and a signed two-digit exponent,
-    /// as in "-1.17549435e-38".
     pub const path_data_number_bytes_max: u32 = 15;
 
-    /// Bytes `pathDataBounded` writes at most for `path_bytes` of source:
-    /// one letter per reserved command, and a space and a number per
-    /// reserved number.
     pub fn pathDataBytes(path_bytes: u32) u32 {
         assert(path_bytes <= limits.MAX_SVG_PATH_BYTES);
         const letter_bytes = path_bytes * commands_per_byte;
         return letter_bytes + path_bytes * numbers_per_byte * (1 + path_data_number_bytes_max);
     }
 
-    /// Scratch bytes `flattenBounded` reserves: the points, and at most one
-    /// polygon per two points (a polygon needs two).
     pub fn flattenBytes(self: RasterBudget) u32 {
         assert(self.vertex_count_max > 0);
         assert(self.vertex_count_max <= limits.MAX_SVG_PATH_VERTEX_COUNT);
@@ -1328,11 +1281,6 @@ pub const RasterBudget = struct {
     }
 };
 
-/// Growth allocator for lists whose capacity was reserved from another
-/// allocator: every request to allocate, resize or remap fails, so a full list
-/// returns OutOfMemory instead of growing. `std.mem.Allocator.failing` cannot
-/// serve here because its remap is unreachable, and a full list remaps first.
-/// It never succeeds in allocating, so it never has anything to free.
 const reserved_only: std.mem.Allocator = .{
     .ptr = undefined,
     .vtable = &.{
@@ -1344,15 +1292,10 @@ const reserved_only: std.mem.Allocator = .{
 };
 
 pub const BoundedError = error{
-    /// The path parsed to no commands, or did not parse.
     EmptyPath,
-    /// The path needs more commands, numbers, or vertices than reserved.
     PathTooComplex,
 };
 
-/// Parse `source` into `path` without growing it past the capacity reserved
-/// here from `scratch`, so parsing allocates exactly `parseBytes` and a
-/// malformed or hostile path cannot exhaust the scratch. `path` must be empty.
 pub fn parseBounded(
     scratch: std.mem.Allocator,
     path: *SvgPath,
@@ -1369,8 +1312,6 @@ pub fn parseBounded(
     path.data.ensureTotalCapacityPrecise(scratch, number_count_max) catch
         return error.PathTooComplex;
 
-    // The parser appends through `reserved_only`, so a path past its
-    // reservation stops here instead of growing into the scratch.
     var parser = SvgElementParser.init(reserved_only);
     parser.parse(path, source) catch |err| {
         if (err == error.OutOfMemory) return error.PathTooComplex;
@@ -1381,10 +1322,6 @@ pub fn parseBounded(
     assert(path.data.items.len <= number_count_max);
 }
 
-/// Flatten `path` into `points` and `polygons`, both empty, reserving their
-/// capacity from `scratch` for `budget.vertex_count_max` vertices and never
-/// growing past it. Curves subdivide to `tolerance`, so a path's vertex count
-/// grows with the icon's device size.
 pub fn flattenBounded(
     scratch: std.mem.Allocator,
     path: *const SvgPath,
@@ -1408,13 +1345,6 @@ pub fn flattenBounded(
     assert(polygons.items.len <= polygon_count_max);
 }
 
-/// Parse `source`, element markup or path data, and write the commands it
-/// parsed to as SVG path data in `buffer`, which holds
-/// `RasterBudget.pathDataBytes(source.len)`. For rasterizers that read only
-/// path data: Canvas2D's `Path2D` draws nothing for `<path d=…/>` markup,
-/// and with this it draws the commands the native rasterizers draw. Every
-/// command keeps its letter, and numbers round-trip exactly. Parsing takes
-/// `RasterBudget.parseBytes(source.len)` from `scratch`.
 pub fn pathDataBounded(
     scratch: std.mem.Allocator,
     source: []const u8,
@@ -1448,9 +1378,6 @@ pub fn pathDataBounded(
     return buffer[0..length];
 }
 
-/// Write " number" at the start of `buffer` and return the bytes written.
-/// An arc flag is the single digit SVG requires; any other number is its
-/// shortest round-trip scientific form, so the parsed `f32` is preserved.
 fn pathDataWriteNumber(buffer: []u8, number: f32, is_flag: bool) usize {
     assert(buffer.len >= 2);
     buffer[0] = ' ';
@@ -1460,7 +1387,7 @@ fn pathDataWriteNumber(buffer: []u8, number: f32, is_flag: bool) usize {
         return 2;
     }
     var digits: [std.fmt.float.min_buffer_size]u8 = undefined;
-    // Scientific mode without a precision never fails (`formatScientific`).
+    assert(std.math.isFinite(number));
     const text = std.fmt.float.render(&digits, number, .{
         .mode = .scientific,
         .precision = null,
@@ -1471,14 +1398,12 @@ fn pathDataWriteNumber(buffer: []u8, number: f32, is_flag: bool) usize {
     return 1 + text.len;
 }
 
-/// Whether number `position` of `command` is an arc's large-arc or sweep flag.
 fn pathDataIsFlag(command: PathCommand, position: usize) bool {
     assert(position < pathDataNumberCount(command));
     if (command == .arc_to or command == .arc_to_rel) return position == 3 or position == 4;
     return false;
 }
 
-/// The SVG path letter of `command`; lower case is relative.
 fn pathDataLetter(command: PathCommand) u8 {
     return switch (command) {
         .move_to => 'M',
@@ -1503,8 +1428,6 @@ fn pathDataLetter(command: PathCommand) u8 {
     };
 }
 
-/// Numbers `PathParser` stores for one `command`: the SVG arguments of its
-/// letter, with an arc's two flags stored as 0 or 1.
 fn pathDataNumberCount(command: PathCommand) u8 {
     return switch (command) {
         .move_to, .move_to_rel, .line_to, .line_to_rel => 2,
@@ -1518,9 +1441,6 @@ fn pathDataNumberCount(command: PathCommand) u8 {
 }
 
 test "flattenBounded fills its vertex budget exactly and refuses one more" {
-    // Methodology: count the vertices a curved path flattens to with the
-    // ceiling budget, then flatten it again with exactly that many (accepted)
-    // and one fewer (refused with PathTooComplex, never growing the lists).
     const gpa = std.testing.allocator;
     const source = "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M2 2q10 20 20 0\"/>";
     var path = SvgPath.init(gpa);
@@ -1528,14 +1448,11 @@ test "flattenBounded fills its vertex budget exactly and refuses one more" {
     try parseBounded(gpa, &path, source);
 
     const vertex_count = try testFlattenCount(&path, limits.MAX_SVG_PATH_VERTEX_COUNT);
-    // Enough vertices that the boundary is not a degenerate case.
     try std.testing.expect(vertex_count > 100);
     try std.testing.expectEqual(vertex_count, try testFlattenCount(&path, vertex_count));
     try std.testing.expectError(error.PathTooComplex, testFlattenCount(&path, vertex_count - 1));
 }
 
-/// Flatten `path` within `vertex_count_max` and return the vertex count,
-/// checking the lists never grew past their reservation.
 fn testFlattenCount(path: *const SvgPath, vertex_count_max: u32) BoundedError!u32 {
     const gpa = std.testing.allocator;
     const budget = RasterBudget{
@@ -1563,9 +1480,6 @@ test "parseBounded rejects empty and unparsable paths without growing" {
 }
 
 test "pathDataBounded writes element markup as the path data Path2D draws" {
-    // Expected string written by hand from the SVG grammar: a `<path>`'s
-    // leading `m` is absolute, its further pairs are relative line-tos, a
-    // `<line>` is a move and a line, and arc flags are single digits.
     const gpa = std.testing.allocator;
     const source = "<path d=\"m14 12 4 4\"/><path d=\"M2 2a5 5 0 0 1 6.5 6z\"/>" ++
         "<line x1=\"1\" y1=\"2\" x2=\"3\" y2=\"4\"/>";
@@ -1577,10 +1491,6 @@ test "pathDataBounded writes element markup as the path data Path2D draws" {
 }
 
 test "pathDataBounded keeps every command and number of a Lucide icon" {
-    // Methodology: Lucide's `alarm-clock-check` and `album` (circle, rounded
-    // rect, polyline, relative paths) go through `pathDataBounded`; a scanner
-    // independent of the writer reads the result back, and every number must
-    // equal the parsed `f32` bit for bit, in order, with one letter per command.
     const gpa = std.testing.allocator;
     const source = "<circle cx=\"12\" cy=\"13\" r=\"8\"/><path d=\"M5 3 2 6\"/>" ++
         "<path d=\"m22 6-3-3\"/><path d=\"M6.38 18.7 4 21\"/><path d=\"M17.64 18.67 20 21\"/>" ++
@@ -1616,13 +1526,10 @@ test "pathDataBounded keeps every command and number of a Lucide icon" {
     }
     try std.testing.expectEqual(path.commands.items.len, letter_count);
     try std.testing.expectEqual(path.data.items.len, number_count);
-    // Enough commands that circle, rect, and polyline all contributed.
     try std.testing.expect(letter_count > 20);
 }
 
 test "pathDataBounded writes the longest f32 in path_data_number_bytes_max bytes" {
-    // An exhaustive pass over every finite f32 found -1.00000075e-36 the
-    // longest in shortest round-trip scientific form, so the bound is tight.
     const gpa = std.testing.allocator;
     const source = "M-0.00000000000000000000000000000000000100000075 0";
     var buffer: [RasterBudget.pathDataBytes(source.len)]u8 = undefined;

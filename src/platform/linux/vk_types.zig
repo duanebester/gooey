@@ -5,25 +5,14 @@ const limits_mod = @import("../../core/limits.zig");
 
 const PaintLimits = limits_mod.PaintLimits;
 
-/// Framework ceiling; a renderer rotates through only the window budget's
-/// `ResourceLimits.frame.in_flight_count` of them.
 pub const frame_count_max: u32 = limits_mod.MAX_FRAMES_IN_FLIGHT;
 pub const MAX_SURFACE_FORMATS: u32 = 128;
 pub const MAX_PRESENT_MODES: u32 = 16;
 
-/// Bytes reserved per host-pool sub-allocation for `VkMemoryRequirements.alignment`
-/// padding. Drivers report 16 to 256 B for buffers; 4 KiB also covers a page-aligned
-/// implementation, and `MemoryPool.allocate` fails fast if a driver asks for more.
 pub const host_pool_alignment_slack_bytes: u64 = 4096;
 
-/// The smallest `maxStorageBufferRange` the Vulkan spec guarantees (2^27 bytes).
-/// The profiles up to `.large` stay below it; a larger budget, such as the
-/// ceiling's mesh points, needs a device that reports a larger range, which
-/// `initInPlace` checks (`FrameCapacity.bufferPastRange`).
 pub const storage_buffer_range_guaranteed_bytes: u64 = 1 << 27;
 
-/// The per-frame storage buffers, one per packed-frame array, in binding order
-/// (`shaders/packed.glsl` bindings 0 to 4).
 pub const FrameBuffer = enum(u8) { quads, sprites, meshes, mesh_points, edge_modes };
 
 pub const frame_buffer_count: u32 = @typeInfo(FrameBuffer).@"enum".field_names.len;
@@ -34,9 +23,6 @@ pub fn hostPoolAllocationCount(frame_count: u32) u32 {
     return frame_count * (1 + frame_buffer_count);
 }
 
-/// Element counts of one frame's storage buffers: exactly what a packed frame
-/// at the same paint limits can hold, so a frame within the budget always fits
-/// and the renderer never truncates one.
 pub const FrameCapacity = struct {
     counts: [frame_buffer_count]u32,
 
@@ -47,7 +33,6 @@ pub const FrameCapacity = struct {
         capacity.counts[@backingInt(FrameBuffer.sprites)] =
             packed_mod.spriteCapacity(paint_limits);
         capacity.counts[@backingInt(FrameBuffer.meshes)] = packed_mod.meshCapacity(paint_limits);
-        // A zero-sized storage buffer is invalid; one unused point costs 8 bytes.
         capacity.counts[@backingInt(FrameBuffer.mesh_points)] =
             @max(packed_mod.meshPointCapacity(paint_limits), 1);
         capacity.counts[@backingInt(FrameBuffer.edge_modes)] =
@@ -60,7 +45,6 @@ pub const FrameCapacity = struct {
         return self.counts[@backingInt(buffer)];
     }
 
-    /// The shader structs match these sizes.
     pub fn elementBytes(buffer: FrameBuffer) u64 {
         return switch (buffer) {
             .quads => @sizeOf(packed_mod.Quad),
@@ -100,8 +84,6 @@ pub const FrameCapacity = struct {
         return bytes;
     }
 
-    /// A frame is packed at the limits this capacity was made from, so each
-    /// count fits.
     pub fn usedCounts(frame: *const packed_mod.PackedFrame) [frame_buffer_count]u32 {
         assert(frame.mesh_points.len <= std.math.maxInt(u32));
         return .{
@@ -114,8 +96,6 @@ pub const FrameCapacity = struct {
     }
 };
 
-/// Framebuffer size in logical pixels, written once per frame (binding 5,
-/// std140: a single vec4).
 pub const Uniforms = extern struct {
     viewport_width: f32,
     viewport_height: f32,
@@ -127,7 +107,6 @@ pub const Uniforms = extern struct {
     }
 };
 
-/// Index into `meshes`, pushed before each mesh draw.
 pub const PushConstants = extern struct {
     mesh: u32,
 
@@ -137,8 +116,6 @@ pub const PushConstants = extern struct {
 };
 
 comptime {
-    // `shaders/packed.glsl` reads the packed structs with std430 rules: every
-    // vec4 at a 16-byte boundary, scalars after it, arrays at the struct size.
     const Quad = packed_mod.Quad;
     assert(@offsetOf(Quad, "fill") == 16);
     assert(@offsetOf(Quad, "border_color") == 32);
@@ -161,7 +138,6 @@ comptime {
     assert(@offsetOf(Mesh, "width") == 24);
     assert(@offsetOf(Mesh, "edge_first") == 28);
     assert(@sizeOf(Mesh) == 32);
-    // `vec2 mesh_points[]` has an 8-byte stride; `uint triangle_edge_modes[]` 4.
     assert(@sizeOf(packed_mod.MeshPoint) == 8);
     assert(@sizeOf(packed_mod.EdgeModes) == 4);
 }

@@ -1,14 +1,3 @@
-//! Accessibility tree, rebuilt each frame and synced to the platform.
-//!
-//! Every capacity derives from the app's budget (`Capacity.fromLimits`), so
-//! nothing is dropped: the frame that feeds the tree holds at most
-//! `a11y.element_count_max` nodes nested at most `build.box_depth_max` deep,
-//! and its announcements are bounded by the live-region rules of
-//! `records.Announcements` before they reach the tree. Storage is reserved at
-//! init from fresh pages (`core/reservation.zig`), so it stays non-resident
-//! until a screen reader turns the tree on: at `standard` (2,048 elements)
-//! about 0.48 MiB of virtual memory per window.
-
 const std = @import("std");
 const element_mod = @import("element.zig");
 const fingerprint_mod = @import("fingerprint.zig");
@@ -21,21 +10,14 @@ const assert = std.debug.assert;
 pub const Element = element_mod.Element;
 pub const Fingerprint = fingerprint_mod.Fingerprint;
 
-/// Odd (golden-ratio) multiplier that spreads a duplicate fingerprint's
-/// retry count across its name hash; see `Tree.uniqueFingerprint`.
 const fingerprint_salt_multiplier: u32 = 0x9E3779B1;
 comptime {
     assert(fingerprint_salt_multiplier % 2 == 1);
 }
 
 pub const Capacity = struct {
-    /// `a11y.element_count_max`: the frame's accessibility nodes.
     element_count_max: u16,
-    /// `build.box_depth_max`: a node's depth is its box nesting at most.
     depth_max: u8,
-    /// The frame's pending announcements (`a11y.announcement_polite_pending_max`
-    /// polite and one assertive) plus one per element: a live region whose
-    /// content changed announces itself once per frame.
     announcement_count_max: u16,
 
     pub fn fromLimits(limits: *const limits_mod.ResourceLimits) Capacity {
@@ -52,11 +34,8 @@ pub const Capacity = struct {
         return capacity;
     }
 
-    /// The tests' capacity, an app's at `standard`.
     pub const standard = fromLimits(&limits_mod.ResourceLimits.standard);
 
-    /// Twice the elements, a power of two, so linear probing stays short and
-    /// the modulo is a mask.
     pub fn bucketCount(self: *const Capacity) u32 {
         const count = std.math.ceilPowerOfTwoAssert(u32, 2 * @as(u32, self.element_count_max));
         assert(count >= 2 * @as(u32, self.element_count_max));
@@ -72,21 +51,14 @@ pub const Capacity = struct {
     }
 };
 
-/// Open addressing with linear probing; the bucket count is a power of two
-/// for a mask modulo. A bucket holds its element's index plus one, so zero is
-/// empty and fresh pages are an empty map.
-/// Public for the Windows bridge, whose snapshot indexes the same fingerprints.
 pub const FingerprintMap = struct {
-    /// Element index + 1, or `empty`.
     buckets: []u16,
-    /// The fingerprint at each occupied bucket, for collision resolution.
     fingerprints: []Fingerprint,
 
     const empty: u16 = 0;
 
     const Self = @This();
 
-    /// Reserve `bucket_count` empty buckets from fresh pages.
     pub fn init(bucket_count: u32) error{OutOfMemory}!Self {
         assert(std.math.isPowerOfTwo(bucket_count));
         assert(bucket_count <= 2 * limits_mod.a11y_element_count_ceiling);
@@ -98,16 +70,12 @@ pub const FingerprintMap = struct {
         return .{ .buckets = buckets, .fingerprints = fingerprints };
     }
 
-    /// Zero what any frame wrote before the pages go back: a map that was
-    /// used was cleared and filled over its whole range.
     pub fn deinit(self: *Self, used: bool) void {
         const written = if (used) self.buckets.len else 0;
         reservation.release(Fingerprint, self.fingerprints, written);
         reservation.release(u16, self.buckets, written);
     }
 
-    /// Insert fingerprint → index. Half the buckets at most are occupied, so
-    /// a free one is always found within the bucket count.
     pub fn insert(self: *const Self, fp: Fingerprint, index: u16) void {
         assert(fp.isValid());
         assert(index < self.buckets.len / 2);
@@ -125,7 +93,7 @@ pub const FingerprintMap = struct {
             }
             bucket = (bucket + 1) & mask;
         }
-        unreachable; // At most half the buckets are occupied.
+        unreachable;
     }
 
     pub fn find(self: *const Self, fp: Fingerprint) ?u16 {
@@ -143,14 +111,10 @@ pub const FingerprintMap = struct {
         return null;
     }
 
-    /// Fingerprints need no clearing: they are read only where a bucket is
-    /// occupied.
     pub fn clear(self: *Self) void {
         @memset(self.buckets, empty);
     }
 
-    /// Hash fingerprint to bucket index. The fingerprint's bits are already
-    /// well distributed; folding the halves mixes in the name hash.
     fn hash(self: *const Self, fp: Fingerprint) usize {
         assert(std.math.isPowerOfTwo(self.buckets.len));
         const fp_u64 = fp.toU64();
@@ -164,18 +128,12 @@ pub const Tree = struct {
 
     elements: []Element,
     element_count: u16 = 0,
-    /// Most elements any frame held; `deinit` zeroes this prefix.
     element_count_high_water: u16 = 0,
 
     parent_stack: []u16,
     stack_depth: u8 = 0,
 
-    /// One per open parent. A position never exceeds the element count, so it
-    /// is always below `fingerprint.position_count_max` and never saturates.
     child_positions: []u16,
-    /// Position counter for top-level elements, which have no parent on the
-    /// stack. Without it every top-level element took position 0, so two
-    /// top-level siblings with the same role and name shared a fingerprint.
     root_child_position: u16 = 0,
 
     prev_fingerprints: []Fingerprint,
@@ -202,7 +160,6 @@ pub const Tree = struct {
 
     current_fingerprint_map: FingerprintMap,
 
-    /// Whether any frame was built, so `deinit` zeroes the maps it wrote.
     built: bool = false,
 
     const Self = @This();
@@ -212,9 +169,6 @@ pub const Tree = struct {
         live: types.Live,
     };
 
-    /// Reserve every table from `capacity`. Nothing is written: fresh pages
-    /// are zero, which is an empty map, and every other table is read only
-    /// below a count this sets to zero.
     pub fn initInPlace(self: *Self, capacity: *const Capacity) error{OutOfMemory}!void {
         capacity.assertValid();
         const element_count: u32 = capacity.element_count_max;
@@ -273,9 +227,6 @@ pub const Tree = struct {
         self.built = false;
     }
 
-    /// Zero every prefix any frame wrote before the pages go back. The
-    /// per-element tables are written at most to the element high-water
-    /// mark; the stacks and announcements are small and zeroed whole.
     pub fn deinit(self: *Self) void {
         const used: usize = self.element_count_high_water;
         const announcements = if (self.built) self.announcements.len else 0;
@@ -298,12 +249,9 @@ pub const Tree = struct {
         reservation.release(Fingerprint, self.prev_fingerprints, used);
     }
 
-    /// Reset for new frame. Preserves cross-frame state.
     pub fn beginFrame(self: *Self) void {
         assert(self.element_count <= self.elements.len);
-        // Stack balanced from the previous frame.
         assert(self.stack_depth == 0);
-        // The maps are written from here on; `deinit` zeroes them.
         self.built = true;
 
         self.prev_count = self.element_count;
@@ -329,9 +277,6 @@ pub const Tree = struct {
         self.current_fingerprint_map.clear();
     }
 
-    /// Copy each element's fingerprint and content hash into the previous
-    /// frame's tables and index it. A hot loop over slices loaded once:
-    /// writes through `self` would make the compiler reload them.
     fn snapshotFrame(
         elements: []const Element,
         prev_fingerprints: []Fingerprint,
@@ -403,7 +348,6 @@ pub const Tree = struct {
 
             const found = current_map.find(prev_fp) != null;
             if (!found) {
-                // At most one removal per previous element.
                 assert(self.removed_count < self.removed_fingerprints.len);
                 self.removed_fingerprints[self.removed_count] = prev_fp;
                 self.removed_count += 1;
@@ -423,15 +367,11 @@ pub const Tree = struct {
 
     fn markDirty(self: *Self, index: u16) void {
         assert(index < self.element_count);
-        // Each element is marked at most once a frame.
         assert(self.dirty_count < self.dirty_indices.len);
         self.dirty_indices[self.dirty_count] = index;
         self.dirty_count += 1;
     }
 
-    /// Begin an accessible element. Call at component open. The caller holds
-    /// the frame's nodes to the tree's capacity (`a11y.element_count_max`,
-    /// `build.box_depth_max`), so the tree always has room.
     pub fn pushElement(self: *Self, config: ElementConfig) u16 {
         assert(self.element_count < self.elements.len);
         assert(self.stack_depth < self.parent_stack.len);
@@ -485,8 +425,6 @@ pub const Tree = struct {
         return index;
     }
 
-    /// Claim the next position under the current parent, or at the top level
-    /// when no parent is open, so siblings never share a position.
     fn claimChildPosition(self: *Self) u16 {
         assert(self.element_count < self.elements.len);
         assert(self.stack_depth <= self.parent_stack.len);
@@ -496,29 +434,16 @@ pub const Tree = struct {
         else
             &self.root_child_position;
         const position = counter.*;
-        // Every position claimed this frame belongs to a distinct element.
         assert(position <= self.element_count);
         assert(position < fingerprint_mod.position_count_max);
         counter.* = position + 1;
         return position;
     }
 
-    /// Return `computed`, or a deterministic variant of it when an element of
-    /// this frame already holds it. Siblings never collide, because their
-    /// positions differ, but two subtrees whose 16-bit parent contributions
-    /// coincide can still yield the same role, name, and position. Bridges
-    /// key element identity on the fingerprint, so a duplicate would alias two
-    /// elements: UI Automation sibling navigation would loop between them.
-    /// The variant depends only on pre-order, so it is as stable across
-    /// frames as the tree itself.
     fn uniqueFingerprint(self: *const Self, computed: Fingerprint) Fingerprint {
         assert(computed.isValid());
         assert(self.element_count < self.elements.len);
 
-        // Each attempt flips the name hash by a distinct value (an odd
-        // multiplier is a bijection modulo 2^32). At most `element_count`
-        // fingerprints are taken and one candidate may be INVALID, so
-        // `element_count + 2` attempts always find a free one.
         const attempt_count_max: u32 = @as(u32, self.element_count) + 2;
         var attempt: u32 = 0;
         while (attempt < attempt_count_max) : (attempt += 1) {
@@ -569,7 +494,6 @@ pub const Tree = struct {
         self.element_count += 1;
     }
 
-    /// End current accessible element. Call at component close.
     pub fn popElement(self: *Self) void {
         assert(self.stack_depth > 0);
         assert(self.element_count > 0);
@@ -584,10 +508,6 @@ pub const Tree = struct {
         return self.parent_stack[self.stack_depth - 1];
     }
 
-    /// Queue a message for screen reader announcement. A frame carries at
-    /// most `a11y.announcement_polite_pending_max + 1` announcements (one
-    /// assertive), and live regions add at most one per element, so there is
-    /// always room.
     pub fn announce(self: *Self, message: []const u8, live: types.Live) void {
         assert(@backingInt(live) <= @backingInt(types.Live.assertive));
         assert(self.announcement_count < self.announcements.len);
@@ -683,13 +603,10 @@ pub const ElementConfig = struct {
 };
 
 comptime {
-    // ElementConfig is passed by value on every push.
     assert(@sizeOf(ElementConfig) <= 160);
-    // The largest tree's maps index buckets with `u16` element indexes + 1.
     assert(2 * limits_mod.a11y_element_count_ceiling <= std.math.maxInt(u16));
 }
 
-/// A tree at the tests' capacity, on the heap like a window's.
 fn createTestTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
     errdefer std.testing.allocator.destroy(tree);
@@ -784,7 +701,6 @@ test "tree dirty tracking" {
     tree.popElement();
     tree.endFrame();
 
-    // A name change is a new fingerprint, so it counts as new and dirty.
     try std.testing.expectEqual(@as(u16, 1), tree.dirty_count);
 }
 
@@ -881,7 +797,6 @@ test "tree fingerprint stability across frames" {
     const tree = try createTestTree();
     defer destroyTestTree(tree);
 
-    // Capture the fingerprint in frame 1.
     tree.beginFrame();
     const idx1 = tree.pushElement(.{ .role = .button, .name = "Stable" });
     const fp1 = tree.getElement(idx1).?.fingerprint;
@@ -898,10 +813,6 @@ test "tree fingerprint stability across frames" {
 }
 
 test "top-level siblings with the same role and name keep distinct, stable fingerprints" {
-    // Regression: every top-level element used to take position 0, so two
-    // "Delete" buttons shared one identity and bridges aliased them. Build
-    // the same two-button frame twice: the fingerprints must differ within a
-    // frame, each must map back to its own index, and both must be stable.
     const tree = try createTestTree();
     defer destroyTestTree(tree);
 
@@ -926,9 +837,6 @@ test "top-level siblings with the same role and name keep distinct, stable finge
 }
 
 test "a fingerprint already held this frame is replaced by a free, stable variant" {
-    // Siblings cannot collide, but subtrees whose parent contributions
-    // coincide can. Force that case by asking for a fingerprint the frame
-    // already holds: the result must be valid, free, and deterministic.
     const tree = try createTestTree();
     defer destroyTestTree(tree);
 
@@ -1034,7 +942,6 @@ test "live region auto-announcement on content change" {
     tree.popElement();
     tree.endFrame();
 
-    // New elements don't auto-announce; only content changes do.
     try std.testing.expectEqual(@as(u16, 0), tree.announcement_count);
 
     tree.beginFrame();

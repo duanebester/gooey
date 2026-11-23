@@ -129,9 +129,10 @@ const CounterDisplay = struct {
             .easing = animation.Easing.easeOutBack,
         });
         assert(pulse >= 0);
-        assert(pulse <= 1.5); // easeOutBack overshoots.
+        assert(pulse <= 1.5);
         const scale = 1.0 + (1.0 - pulse) * 0.15;
         var digits: [16]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.minInt(i32)}) <= digits.len);
         const label = std.fmt.bufPrint(&digits, "{d}", .{self.count}) catch unreachable;
         const color = if (self.count >= 0) Color.rgb(0.2, 0.5, 0.8) else Color.rgb(0.8, 0.3, 0.3);
         cx.render(ui.box(.{ .style = .{
@@ -144,7 +145,6 @@ const CounterDisplay = struct {
     }
 };
 
-/// Built only while the pulse is on, so turning it off stops its frames.
 const PulseDot = struct {
     pub fn render(_: PulseDot, cx: *Cx) void {
         const phase = animation.loop(cx, .{ .name = "pulse-dot" }, pulse_period_ms);
@@ -152,7 +152,6 @@ const PulseDot = struct {
         assert(phase < 1);
         const wave = 0.5 - 0.5 * @cos(phase * 2 * std.math.pi);
         const size = pulse_dot_size_max * (0.5 + 0.5 * wave);
-        // A fixed frame, so the breathing dot does not move its neighbours.
         cx.render(ui.box(.{ .style = .{
             .width = .{ .fixed = pulse_dot_size_max },
             .height = .{ .fixed = pulse_dot_size_max },
@@ -196,8 +195,6 @@ const ListSection = struct {
         assert(m.progress >= 0);
         assert(m.progress <= 1);
         if (!m.visible) return;
-        // Keyed, so the rows' tweens keep their ids when the panel above
-        // comes and goes.
         cx.render(ui.box(.{ .key = .{ .name = "list" }, .style = .{ .gap = 8 } }, .{
             ui.text("Staggered List", .{
                 .size = 18,

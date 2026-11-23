@@ -1,6 +1,3 @@
-//! WAI-ARIA-based types; roles are exhaustive, with no "custom" role to
-//! prevent misuse.
-
 const std = @import("std");
 
 pub const Role = enum(u8) {
@@ -10,8 +7,8 @@ pub const Role = enum(u8) {
     switch_ = 3,
     link = 4,
 
-    textbox = 5, // single-line
-    textarea = 6, // multi-line
+    textbox = 5,
+    textarea = 6,
     searchbox = 7,
     spinbutton = 8,
 
@@ -33,7 +30,7 @@ pub const Role = enum(u8) {
     scrollbar = 31,
 
     group = 40,
-    region = 41, // landmark
+    region = 41,
     dialog = 42,
     alertdialog = 43,
     toolbar = 44,
@@ -50,8 +47,8 @@ pub const Role = enum(u8) {
     img = 64,
     separator = 65,
 
-    presentation = 254, // explicitly NOT accessible
-    none = 255, // inherit from context
+    presentation = 254,
+    none = 255,
 
     pub fn toNSRole(self: Role) []const u8 {
         return switch (self) {
@@ -66,9 +63,6 @@ pub const Role = enum(u8) {
             .spinbutton => "AXIncrementor",
             .combobox => "AXComboBox",
             .listbox => "AXList",
-            // VoiceOver reads `AXSelected` on static text only inside a web
-            // area, so an option is a radio button: one of a set, whose value
-            // VoiceOver reads as "selected". `mac_bridge` names it "option".
             .option => "AXRadioButton",
             .menu => "AXMenu",
             .menuitem => "AXMenuItem",
@@ -101,90 +95,87 @@ pub const Role = enum(u8) {
 
     pub fn toAtspiRole(self: Role) u32 {
         return switch (self) {
-            .button => 25, // ATSPI_ROLE_PUSH_BUTTON
-            .checkbox => 8, // ATSPI_ROLE_CHECK_BOX
-            .radio => 49, // ATSPI_ROLE_RADIO_BUTTON
-            .switch_ => 8, // ATSPI_ROLE_CHECK_BOX
-            .link => 36, // ATSPI_ROLE_LINK
-            .textbox => 60, // ATSPI_ROLE_TEXT
-            .textarea => 60, // ATSPI_ROLE_TEXT
-            .searchbox => 60, // ATSPI_ROLE_TEXT
-            .spinbutton => 55, // ATSPI_ROLE_SPIN_BUTTON
-            .combobox => 9, // ATSPI_ROLE_COMBO_BOX
-            .listbox => 35, // ATSPI_ROLE_LIST
-            .option => 36, // ATSPI_ROLE_LIST_ITEM
-            .menu => 38, // ATSPI_ROLE_MENU
-            .menuitem => 40, // ATSPI_ROLE_MENU_ITEM
-            .menubar => 39, // ATSPI_ROLE_MENU_BAR
-            .tab => 47, // ATSPI_ROLE_PAGE_TAB
-            .tablist => 48, // ATSPI_ROLE_PAGE_TAB_LIST
-            .tabpanel => 68, // ATSPI_ROLE_PANEL
-            .tree => 64, // ATSPI_ROLE_TREE
-            .treeitem => 65, // ATSPI_ROLE_TREE_ITEM
-            .slider => 52, // ATSPI_ROLE_SLIDER
-            .scrollbar => 51, // ATSPI_ROLE_SCROLL_BAR
-            .group => 68, // ATSPI_ROLE_PANEL
-            .region => 68, // ATSPI_ROLE_PANEL
-            .dialog => 14, // ATSPI_ROLE_DIALOG
-            .alertdialog => 14, // ATSPI_ROLE_DIALOG
-            .toolbar => 62, // ATSPI_ROLE_TOOL_BAR
-            .tooltip => 63, // ATSPI_ROLE_TOOL_TIP
-            .alert => 2, // ATSPI_ROLE_ALERT
-            .status => 56, // ATSPI_ROLE_STATUS_BAR
-            .progressbar => 46, // ATSPI_ROLE_PROGRESS_BAR
-            .heading => 23, // ATSPI_ROLE_HEADING
-            .paragraph => 45, // ATSPI_ROLE_PARAGRAPH
-            .list => 35, // ATSPI_ROLE_LIST
-            .listitem => 36, // ATSPI_ROLE_LIST_ITEM
-            .img => 26, // ATSPI_ROLE_IMAGE
-            .separator => 53, // ATSPI_ROLE_SEPARATOR
-            .presentation, .none => 68, // ATSPI_ROLE_PANEL
+            .button => 25,
+            .checkbox => 8,
+            .radio => 49,
+            .switch_ => 8,
+            .link => 36,
+            .textbox => 60,
+            .textarea => 60,
+            .searchbox => 60,
+            .spinbutton => 55,
+            .combobox => 9,
+            .listbox => 35,
+            .option => 36,
+            .menu => 38,
+            .menuitem => 40,
+            .menubar => 39,
+            .tab => 47,
+            .tablist => 48,
+            .tabpanel => 68,
+            .tree => 64,
+            .treeitem => 65,
+            .slider => 52,
+            .scrollbar => 51,
+            .group => 68,
+            .region => 68,
+            .dialog => 14,
+            .alertdialog => 14,
+            .toolbar => 62,
+            .tooltip => 63,
+            .alert => 2,
+            .status => 56,
+            .progressbar => 46,
+            .heading => 23,
+            .paragraph => 45,
+            .list => 35,
+            .listitem => 36,
+            .img => 26,
+            .separator => 53,
+            .presentation, .none => 68,
         };
     }
 
-    /// Follows the ARIA mapping browsers use: a switch is a toggle button, a
-    /// dialog is a pane that reports `IsDialog`, and a heading is text with a
-    /// heading level.
     pub fn toUiaControlType(self: Role) i32 {
         return switch (self) {
-            .button => 50000, // UIA_ButtonControlTypeId
-            .checkbox => 50002, // UIA_CheckBoxControlTypeId
-            .radio => 50013, // UIA_RadioButtonControlTypeId
-            .switch_ => 50000, // UIA_ButtonControlTypeId
-            .link => 50005, // UIA_HyperlinkControlTypeId
-            .textbox => 50004, // UIA_EditControlTypeId
-            .textarea => 50004, // UIA_EditControlTypeId
-            .searchbox => 50004, // UIA_EditControlTypeId
-            .spinbutton => 50016, // UIA_SpinnerControlTypeId
-            .combobox => 50003, // UIA_ComboBoxControlTypeId
-            .listbox => 50008, // UIA_ListControlTypeId
-            .option => 50007, // UIA_ListItemControlTypeId
-            .menu => 50009, // UIA_MenuControlTypeId
-            .menuitem => 50011, // UIA_MenuItemControlTypeId
-            .menubar => 50010, // UIA_MenuBarControlTypeId
-            .tab => 50019, // UIA_TabItemControlTypeId
-            .tablist => 50018, // UIA_TabControlTypeId
-            .tabpanel => 50033, // UIA_PaneControlTypeId
-            .tree => 50023, // UIA_TreeControlTypeId
-            .treeitem => 50024, // UIA_TreeItemControlTypeId
-            .slider => 50015, // UIA_SliderControlTypeId
-            .scrollbar => 50014, // UIA_ScrollBarControlTypeId
-            .group => 50026, // UIA_GroupControlTypeId
-            .region => 50026, // UIA_GroupControlTypeId
-            .dialog => 50033, // UIA_PaneControlTypeId
-            .alertdialog => 50033, // UIA_PaneControlTypeId
-            .toolbar => 50021, // UIA_ToolBarControlTypeId
-            .tooltip => 50022, // UIA_ToolTipControlTypeId
-            .alert => 50020, // UIA_TextControlTypeId
-            .status => 50017, // UIA_StatusBarControlTypeId
-            .progressbar => 50012, // UIA_ProgressBarControlTypeId
-            .heading => 50020, // UIA_TextControlTypeId
-            .paragraph => 50026, // UIA_GroupControlTypeId
-            .list => 50008, // UIA_ListControlTypeId
-            .listitem => 50007, // UIA_ListItemControlTypeId
-            .img => 50006, // UIA_ImageControlTypeId
-            .separator => 50038, // UIA_SeparatorControlTypeId
-            .presentation, .none => 50026, // UIA_GroupControlTypeId
+            .button => 50000,
+            .checkbox => 50002,
+            .radio => 50013,
+            .switch_ => 50000,
+            .link => 50005,
+            .textbox => 50004,
+            .textarea => 50004,
+            .searchbox => 50004,
+            .spinbutton => 50016,
+            .combobox => 50003,
+            .listbox => 50008,
+            .option => 50007,
+            .menu => 50009,
+            .menuitem => 50011,
+            .menubar => 50010,
+            .tab => 50019,
+            .tablist => 50018,
+            .tabpanel => 50033,
+            .tree => 50023,
+            .treeitem => 50024,
+            .slider => 50015,
+            .scrollbar => 50014,
+            .group => 50026,
+            .region => 50026,
+            .dialog => 50033,
+            .alertdialog => 50033,
+            .toolbar => 50021,
+            .tooltip => 50022,
+            .alert => 50020,
+            .status => 50017,
+            .progressbar => 50012,
+            .heading => 50020,
+            .paragraph => 50026,
+            .list => 50008,
+            .listitem => 50007,
+            .img => 50006,
+            .separator => 50038,
+            .presentation, .none => 50026,
         };
     }
 
@@ -299,15 +290,11 @@ pub const Live = enum(u2) {
     }
 };
 
-/// The axis a separator divides along, or a slider or scrollbar moves
-/// along. A `vertical` separator stands between left and right panes, as
-/// ARIA's `aria-orientation` and AppKit's `AXOrientation` say.
 pub const Orientation = enum(u1) {
     horizontal = 0,
     vertical = 1,
 };
 
-/// Heading level, stored as an enum rather than u3 to prevent invalid level 7.
 pub const HeadingLevel = enum(u3) {
     none = 0,
     h1 = 1,

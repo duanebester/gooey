@@ -9,30 +9,15 @@ const TextArea = components.TextArea;
 
 const assert = std.debug.assert;
 
-/// The field's bytes, and the clipboard's: enough for two lines near the
-/// per-line bound with room to spare.
 pub const notes_bytes_max = 4 * 1024;
 pub const rows = 5;
-/// The preview's text size, which the VOPR measures its lines at.
 pub const preview_size = 14;
 pub const preview_placeholder = "Nothing to preview";
 pub const card_padding: f32 = 12;
 pub const card_gap: f32 = 6;
 pub const label_size = 12;
-/// The preview text's indent inside its row. The text is the row's only
-/// child, so it wraps to the row's content width: a sibling would take
-/// width the text's container width does not subtract.
 pub const rule_inset: f32 = 8;
 
-/// The `small` profile with one area of `notes_bytes_max`. A full field
-/// wraps to about 4,000 glyphs in the preview on top of the field's own
-/// lines, so the glyph budget (which also bounds wrapped lines) is raised;
-/// each wrapped line is a shaped run, so the run cache is too. Each glyph
-/// drawn is also a paint record: at most `notes_bytes_max` in the field and
-/// as many in the preview, plus a selection rect per line in view (fewer
-/// than 1,024 at the framebuffer's height), the composition, the caret,
-/// and under 100 for the buttons, label, and boxes, so paint records get
-/// 12K where `small` has 8K.
 pub const limits = blk: {
     var value = gooey.ResourceLimits.small;
     value.text.area = .{ .count_max = 1, .bytes_max = notes_bytes_max, .undo_depth_max = 64 };
@@ -42,16 +27,10 @@ pub const limits = blk: {
     break :blk value;
 };
 
-/// 1,020 codepoints, just under the engine's 1,024 per line, so typing on
-/// it soon reaches the bound.
 const long_line = repeatedLine("Long ", 1020);
 
-/// 1,030 codepoints, past the bound, as an app may assign: edits may
-/// shorten or split it but never grow it, and joins it takes part in are
-/// judged against it (`text_engine.longestLineSpanned`).
 const over_line = repeatedLine("Over ", 1030);
 
-/// `prefix`, then "ab " repeated, then "x" padding to `count` codepoints.
 fn repeatedLine(comptime prefix: []const u8, comptime count: u32) []const u8 {
     assert(prefix.len < count);
     const repeats = (count - prefix.len) / 3;
@@ -131,8 +110,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// Inside a scroll box that keeps a long preview from
-/// compressing the field.
 const Preview = struct {
     pub fn render(_: Preview, cx: *Cx) void {
         const s = cx.state(State);

@@ -1,16 +1,3 @@
-//! Atlas textures for the Metal renderer: created once at their `AtlasLimits`
-//! sizes and never recreated; the renderer keeps no CPU copy of atlas pixels.
-//!
-//! An upload reaches a texture only on the GPU timeline, never as a CPU
-//! write: the textures are private, so the CPU writes only the frame slot's
-//! staging buffer, after the command buffer that last read that slot
-//! completed. The blit is encoded into the frame's command buffer, committed
-//! after every earlier frame's, and the textures track hazards
-//! (`createTexture` sets and asserts it), so Metal runs the blit after every
-//! earlier submitted draw that samples the texture and before this frame's.
-//! The atlas may therefore evict a region an in-flight frame still samples:
-//! that frame reads the old pixels before the new ones land.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -46,7 +33,6 @@ pub const AtlasTextures = struct {
         self.* = undefined;
     }
 
-    /// Bytes per pixel of `kind`'s texture: R8 glyph coverage, RGBA8 otherwise.
     pub fn bytesPerPixel(kind: backend.AtlasKind) u32 {
         return switch (kind) {
             .glyph => 1,
@@ -55,8 +41,6 @@ pub const AtlasTextures = struct {
         };
     }
 
-    /// Encode the copy of `dirty`, staged at `offset` in `staging`, into the
-    /// texture of `kind`.
     pub fn encodeCopy(
         self: *const Self,
         blit: objc.Object,
@@ -93,13 +77,10 @@ pub const AtlasTextures = struct {
     }
 };
 
-/// No atlas writes colour glyphs yet; `pack` rejects them too.
 fn unsupported(kind: backend.AtlasKind) noreturn {
     std.debug.panic("Metal has no {t} atlas texture; nothing uploads it yet.", .{kind});
 }
 
-/// A private, shader-read atlas texture. Its contents start undefined: every
-/// uploaded item carries its own zero border and nothing else is sampled.
 fn createTexture(device: objc.Object, size: u32, format: mtl.MTLPixelFormat) !objc.Object {
     assert(size > 0);
     assert(format == .r8unorm or format == .rgba8unorm);
@@ -120,7 +101,6 @@ fn createTexture(device: objc.Object, size: u32, format: mtl.MTLPixelFormat) !ob
     }) orelse return error.TextureCreationFailed;
     const texture = objc.Object.fromId(texture_ptr);
     assert(texture.msgSend(c_ulong, "width", .{}) == size);
-    // The upload ordering above relies on Metal tracking this texture.
     assert(texture.msgSend(c_ulong, "hazardTrackingMode", .{}) == @backingInt(tracked));
     return texture;
 }

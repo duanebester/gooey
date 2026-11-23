@@ -1,7 +1,3 @@
-//! The platform events one VOPR action delivers, in order, for the models
-//! that route events themselves (splitter, actions); it mirrors
-//! `Vopr.deliverPointer`, `deliverGesture`, and `cancelEvent`.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const vopr = @import("vopr.zig");
@@ -11,8 +7,6 @@ const assert = std.debug.assert;
 const input = gooey.input;
 const Action = vopr.Action;
 
-/// Most events one action delivers: a click that releases a held button
-/// (a held move, the release) and then clicks (a move, a press, a release).
 pub const event_count_action_max: u32 = 5;
 
 pub const Point = struct { x: f32, y: f32 };
@@ -20,16 +14,12 @@ pub const Point = struct { x: f32, y: f32 };
 pub const Press = struct { point: Point, button: input.MouseButton };
 
 pub const Event = union(enum) {
-    /// `mouse_moved` or `mouse_dragged`: the models treat them alike.
     moved: Point,
     down: Press,
     up: Press,
     key_down: Action.Chord,
     key_up,
-    /// `pointer_cancelled`, or a `focus_lost` that cancelled the gesture.
     pointer_cancelled,
-    /// Text, a composition, a wheel step, a resize, or a focus loss with no
-    /// gesture: nothing the models route.
     other,
 };
 
@@ -84,14 +74,9 @@ pub fn lower(action: *const Action) Events {
         },
         .cancel => |cancel| events.push(switch (cancel.kind) {
             .pointer_cancelled, .focus_lost_with_pointer => .pointer_cancelled,
-            // A held key released by the focus loss is a `key_up`, which
-            // no model here routes.
             .focus_lost => .other,
         }),
-        // A decode and a dialog answer reach the app as completions, not
-        // as input events.
         .text, .compose, .scroll, .resize, .image, .dialog => events.push(.other),
-        // A worker's turn reaches the app as deliveries, never as input.
         .job => unreachable,
         .wait_ns, .tick_main, .present => unreachable,
     }

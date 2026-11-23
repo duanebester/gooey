@@ -1,5 +1,3 @@
-//! The packed frame: what `pack` writes and every `Renderer.draw` reads.
-
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
 const limits_mod = @import("limits.zig");
@@ -8,63 +6,42 @@ const mesh_edges = @import("../platform/mesh_edges.zig");
 
 const assert = std.debug.assert;
 
-/// Straight RGBA, each channel in 0..1.
 pub const Rgba = [4]f32;
 
-/// A rectangle: x, y, width, height in logical pixels.
 pub const Rect = [4]f32;
 
-/// A quad, or a shadow when `blur > 0`.
 pub const Quad = extern struct {
     bounds: Rect,
     fill: Rgba,
     border_color: Rgba,
-    /// Radii: top left, top right, bottom right, bottom left.
     corners: [4]f32,
-    /// Widths: top, right, bottom, left. Ignored by shadows.
     border_widths: [4]f32,
-    /// A shadow's offset from `bounds`. At byte 80, so a `vec2`/`float2`
-    /// (8-byte aligned in std430, MSL, and WGSL) declares it in place.
     offset: [2]f32,
-    /// Shadow blur radius; 0 draws a plain quad.
     blur: f32,
     _pad: f32 = 0,
 };
 
 pub const Sprite = extern struct {
     bounds: Rect,
-    /// Atlas coordinates in 0..1: left, top, right, bottom.
     uv: [4]f32,
-    /// Glyph colour, SVG fill, or image tint.
     tint: Rgba,
-    /// SVG stroke colour; transparent for other atlases.
     secondary: Rgba,
-    /// Image corner radii: top left, top right, bottom right, bottom left.
     corners: [4]f32,
-    /// 0 keeps an image's colours, 1 draws it in grey.
     grayscale: f32,
     opacity: f32,
     _pad: [2]f32 = .{ 0, 0 },
 };
 
-/// One mesh: `mesh_points[first..][0..count]` drawn with its draw's topology.
 pub const Mesh = extern struct {
     fill: Rgba,
     first: u32,
     count: u32,
-    /// `strip_expanded`: the line's full width. `point_instanced`: the radius.
-    /// `triangles`: 0.
     width: f32,
-    /// `triangles`: the edge modes of this mesh's first triangle are
-    /// `edge_modes[edge_first]`, one entry per triangle. Otherwise 0.
     edge_first: u32,
 };
 
-/// A mesh point in logical pixels.
 pub const MeshPoint = geometry.GpuPoint;
 
-// Two bits per edge, in order v0→v1, v1→v2, v2→v0 (`mesh_edges.EdgeMode`:
-// 0 interior, 1 fade, 2 underlap).
 pub const EdgeModes = u32;
 
 pub const Pipeline = enum(u8) {
@@ -87,8 +64,6 @@ pub const Pipeline = enum(u8) {
 
 pub const Kind = enum { quad, sprite, mesh };
 
-/// Instances `first..first + count` of the pipeline's kind (`quads`,
-/// `sprites`, or `meshes`), clipped to `clips[clip]`.
 pub const Draw = extern struct {
     pipeline: Pipeline,
     _pad: [3]u8 = .{ 0, 0, 0 },
@@ -97,12 +72,9 @@ pub const Draw = extern struct {
     count: u32,
 };
 
-/// `clips[clip_none]`: the unbounded clip, in force outside every clip push.
 pub const clip_none: u32 = 0;
 pub const clip_unbounded: Rect = .{ -1e9, -1e9, 2e9, 2e9 };
 
-// Pools share storage by kind (`quads` holds quads and shadows) but each
-// keeps the limit the app declared for it.
 pub const Pool = enum {
     quads,
     shadows,
@@ -141,8 +113,6 @@ pub const Pool = enum {
 
 pub const pool_count = @typeInfo(Pool).@"enum".field_names.len;
 
-// The paint record bound also bounds draws and clips: each record starts at
-// most one of each.
 pub const Capacity = struct {
     paint: limits_mod.PaintLimits,
     paint_record_count_max: u32,
@@ -157,7 +127,6 @@ pub const PackedFrame = struct {
     mesh_count: u32,
     edge_modes: []EdgeModes,
     triangle_count: u32,
-    /// The records frame's mesh points, borrowed until the frame is drawn.
     mesh_points: []const MeshPoint,
     clips: []Rect,
     clip_count: u32,
@@ -166,7 +135,6 @@ pub const PackedFrame = struct {
     counts: [pool_count]u32,
     limits: limits_mod.PaintLimits,
     frame_number: u64,
-    /// Pack's scratch for classifying triangle edges; not renderer input.
     edge_table: mesh_edges.EdgeTable,
     high_water: HighWater,
 
@@ -226,8 +194,6 @@ pub const PackedFrame = struct {
         self.* = undefined;
     }
 
-    // Earlier contents stay in place but are unreachable: every reader
-    // bounds by the counts.
     pub fn reset(self: *PackedFrame, frame_number: u64, mesh_points: []const MeshPoint) void {
         assert(frame_number >= self.frame_number);
         assert(self.clips.len > 0);
@@ -327,7 +293,6 @@ fn KindSlice(comptime kind: Kind) type {
     };
 }
 
-/// Quads and shadows share the quad pipeline and its storage.
 pub fn quadCapacity(paint: *const limits_mod.PaintLimits) u32 {
     const count = @as(u64, paint.quad_count_frame_max) + paint.shadow_count_frame_max;
     assert(count > 0);
@@ -351,8 +316,6 @@ pub fn meshCapacity(paint: *const limits_mod.PaintLimits) u32 {
     return @intCast(count);
 }
 
-/// Triangle points are bounded by the path vertex budget, three per triangle.
-/// At least one entry, so a budget below one triangle still reserves storage.
 pub fn triangleCapacity(paint: *const limits_mod.PaintLimits) u32 {
     const vertex_count = paint.path_vertex_count_frame_max;
     assert(vertex_count > 0);
@@ -361,8 +324,6 @@ pub fn triangleCapacity(paint: *const limits_mod.PaintLimits) u32 {
     return count;
 }
 
-/// Edges the triangle edge table holds: the path vertex budget, at least one
-/// triangle's worth.
 pub fn edgeCapacity(paint: *const limits_mod.PaintLimits) u32 {
     const count = @max(paint.path_vertex_count_frame_max, 3);
     assert(count >= 3);
@@ -381,8 +342,6 @@ pub fn paintBytes(paint: *const limits_mod.PaintLimits) u64 {
     return bytes;
 }
 
-// The records frame reserves the same sum, and renderers size their point
-// buffers from it.
 pub fn meshPointCapacity(paint: *const limits_mod.PaintLimits) u32 {
     const count = @as(u64, paint.path_vertex_count_frame_max) +
         paint.polyline_point_count_frame_max + paint.point_count_frame_max;
@@ -392,7 +351,6 @@ pub fn meshPointCapacity(paint: *const limits_mod.PaintLimits) u32 {
 }
 
 comptime {
-    // GPU layouts: every field a 4-byte scalar, structs 16-byte multiples.
     assert(@sizeOf(Quad) == 96);
     assert(@sizeOf(Sprite) == 96);
     assert(@sizeOf(Mesh) == 32);

@@ -93,8 +93,6 @@ pub const State = struct {
 
 const pick_up_message = "Picked up. Tab or arrows choose a list, Space drops, Escape cancels.";
 
-/// "Apple moved to Basket" and the rest, one per list and item, built at
-/// compile time so a drop formats nothing.
 const drop_messages = blk: {
     var messages: [2][items.len][]const u8 = undefined;
     for (titles, 0..) |title, side| {
@@ -144,9 +142,6 @@ const ItemList = struct {
         cx.render(ui.box(.{
             .key = key,
             .drop_target = .of(ItemId, cx.on(State.dropOn, .{ .arg = self.side })),
-            // A keyboard drag focuses the list, so the screen reader reads
-            // it, and a drop keeps focus here, so its announcement is heard.
-            // Tab skips it.
             .focusable = true,
             .tab_stop = false,
             .a11y = .{ .role = .list, .label = title },
@@ -167,9 +162,6 @@ const ItemList = struct {
             },
         }, .{
             ui.text(title, .{ .size = 18, .color = .{ .rgba = .rgb(0.8, 0.8, 0.8) } }),
-            // Both spacers grow, so a list taller than its cards
-            // shares the slack above and below.
-            // Its minimum added nothing in a column, so neither has one.
             ui.box(.{ .style = .{ .height = .{ .grow = 1 } } }, .{}),
             Cards{ .ids = ids },
             ui.when(ids.len == 0, emptyState),
@@ -241,8 +233,6 @@ fn emptyState(cx: *Cx) void {
     }));
 }
 
-/// The dragged card at the pointer, above everything. A `.drag` layer never
-/// takes the pointer, so the list underneath stays the drop target.
 const DragPreview = struct {
     pub fn render(_: DragPreview, cx: *Cx) void {
         const drag = cx.drag(ItemId) orelse return;

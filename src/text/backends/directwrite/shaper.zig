@@ -1,18 +1,3 @@
-//! Shapes with `IDWriteTextAnalyzer`: `AnalyzeScript` splits the text into
-//! script runs, then `GetGlyphs` and `GetGlyphPlacements` shape each run with
-//! the face's OpenType features (ligatures, kerning, complex scripts).
-//!
-//! The analysis source and sink are COM objects implemented over the shaper's
-//! fixed buffers and live inside it, so DirectWrite's reference counting never
-//! owns their lifetime. All scratch storage is inline and fixed: longer text
-//! fails with `TextTooLong` or `TooManyScriptRuns` instead of growing, and the
-//! only heap use is the returned glyph slice, which the `shape` contract
-//! shared with the other backends requires.
-//!
-//! Not yet implemented: font fallback (characters the face lacks shape to
-//! .notdef, as on the FreeType backend), bidi reordering (runs shape left to
-//! right), and color glyphs.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const dw = @import("bindings.zig");
@@ -23,27 +8,16 @@ const limits = @import("../../../core/limits.zig");
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
 
-/// Capacity failures log warnings with the limit; DirectWrite failures no
-/// input should cause log errors.
 const log = std.log.scoped(.directwrite);
 
-/// Longest text one call shapes, in UTF-16 code units: the CoreText
-/// shaper's bound.
 pub const text_utf16_count_max: u32 = 2048;
-/// DirectWrite's recommended glyph buffer for `text_utf16_count_max` units.
 pub const glyph_count_max: u32 = text_utf16_count_max * 3 / 2 + 16;
-/// Script changes per call. Spaces and punctuation join the surrounding run,
-/// so this is the number of script switches, not of words.
 pub const script_run_count_max: u32 = 256;
 
-// The core stops a run past `text.run_codepoint_count_max` before it is
-// shaped; a codepoint is at most two UTF-16 units, so every run it lets
-// through fits.
 comptime {
     std.debug.assert(text_utf16_count_max >= 2 * limits.run_codepoint_count_max);
 }
 
-/// "" selects no particular locale.
 const locale_name_empty = [_:0]u16{};
 
 const ScriptRun = struct {
@@ -54,7 +28,6 @@ const ScriptRun = struct {
 
 pub const DirectWriteShaper = struct {
     text_utf16: [text_utf16_count_max]u16,
-    /// UTF-8 byte offset of the codepoint each UTF-16 unit belongs to.
     byte_offsets: [text_utf16_count_max]u32,
     text_utf16_count: u32,
     cluster_map: [text_utf16_count_max]u16,
@@ -64,25 +37,18 @@ pub const DirectWriteShaper = struct {
     glyph_properties: [glyph_count_max]dw.DWRITE_SHAPING_GLYPH_PROPERTIES,
     glyph_advances: [glyph_count_max]f32,
     glyph_offsets: [glyph_count_max]dw.DWRITE_GLYPH_OFFSET,
-    /// UTF-8 byte offset of the cluster each glyph belongs to.
     glyph_clusters: [glyph_count_max]u32,
 
     script_runs: [script_run_count_max]ScriptRun,
     script_run_count: u32,
-    /// Set by the sink when DirectWrite reports more runs than fit.
     script_run_overflow: bool,
 
     source: dw.IDWriteTextAnalysisSource,
     sink: dw.IDWriteTextAnalysisSink,
-    /// References to `source` and `sink` combined. The shaper holds one;
-    /// DirectWrite must return every reference it takes before
-    /// `AnalyzeScript` returns.
     reference_count: u32,
 
     const Self = @This();
 
-    /// The allocator parameter matches the other backends' shapers; scratch
-    /// storage is inline, so nothing is allocated here.
     pub fn init(allocator: std.mem.Allocator) Self {
         _ = allocator;
         return .{
@@ -110,9 +76,6 @@ pub const DirectWriteShaper = struct {
         self.* = undefined;
     }
 
-    /// Shape `text` (UTF-8) with `face` at its loaded size. Advances and
-    /// offsets are logical pixels; `y_offset` points down, as `render.zig`
-    /// adds it to a y-down baseline. The caller frees the glyphs.
     pub fn shape(
         self: *Self,
         face: *const DirectWriteFace,
@@ -148,7 +111,6 @@ pub const DirectWriteShaper = struct {
         return .{ .glyphs = glyphs, .width = width };
     }
 
-    /// UTF-8 to UTF-16, recording each unit's source byte offset.
     fn convertText(self: *Self, text: []const u8) !void {
         assert(text.len > 0);
         const view = std.unicode.Utf8View.init(text) catch return error.InvalidUtf8;
@@ -156,7 +118,6 @@ pub const DirectWriteShaper = struct {
 
         var count: u32 = 0;
         var byte_offset: u32 = 0;
-        // One codepoint per iteration, so at most `text.len` iterations.
         while (iterator.nextCodepoint()) |codepoint| {
             assert(iterator.i <= text.len);
             assert(count < text.len);
@@ -186,7 +147,6 @@ pub const DirectWriteShaper = struct {
         self.text_utf16_count = count;
     }
 
-    /// Split the converted text into script runs that tile it in order.
     fn analyzeScripts(self: *Self, analyzer: *dw.IDWriteTextAnalyzer) !void {
         assert(self.text_utf16_count > 0);
         self.script_run_count = 0;
@@ -221,8 +181,6 @@ pub const DirectWriteShaper = struct {
         assert(covered == self.text_utf16_count);
     }
 
-    /// Shape one run into the glyph buffers at `glyph_base`: select glyphs,
-    /// place them, and map them to clusters. Returns the run's glyph count.
     fn shapeScriptRun(
         self: *Self,
         face: *const DirectWriteFace,
@@ -247,7 +205,6 @@ pub const DirectWriteShaper = struct {
         return glyph_count;
     }
 
-    /// `GetGlyphs`: map the run's text to glyph ids and the cluster map.
     fn selectGlyphs(
         self: *Self,
         face: *const DirectWriteFace,
@@ -295,8 +252,6 @@ pub const DirectWriteShaper = struct {
         return glyph_count;
     }
 
-    /// `GetGlyphPlacements`: advances and offsets for the selected glyphs,
-    /// at the face's loaded size.
     fn placeGlyphs(
         self: *Self,
         face: *const DirectWriteFace,
@@ -338,11 +293,6 @@ pub const DirectWriteShaper = struct {
     }
 };
 
-/// Assign each glyph of a left-to-right run the UTF-8 offset of its cluster.
-///
-/// `cluster_map[i]` is the first glyph of the cluster holding text unit `i`.
-/// Left to right, clusters are contiguous and their first glyphs increase, so
-/// each cluster owns the glyphs from its first glyph up to the next cluster's.
 fn computeGlyphClusters(
     cluster_map: []const u16,
     byte_offsets: []const u32,
@@ -390,7 +340,6 @@ fn writeShapedGlyphs(
         glyph.* = .{
             .glyph_id = glyph_id,
             .x_offset = offset.advanceOffset,
-            // DirectWrite's ascender offset points up; Gooey's y points down.
             .y_offset = -offset.ascenderOffset,
             .x_advance = advance,
             .y_advance = 0,
@@ -444,8 +393,6 @@ fn shaperFromSink(sink: *dw.IDWriteTextAnalysisSink) *DirectWriteShaper {
     return shaper;
 }
 
-/// The source and sink live inside the shaper, so each reference DirectWrite
-/// takes is one of a handful held only for the duration of one analysis.
 const reference_count_max: u32 = 64;
 
 fn addReference(shaper: *DirectWriteShaper) u32 {
@@ -456,15 +403,12 @@ fn addReference(shaper: *DirectWriteShaper) u32 {
 }
 
 fn releaseReference(shaper: *DirectWriteShaper) u32 {
-    // The shaper's own reference is never released through COM.
     assert(shaper.reference_count > 1);
     shaper.reference_count -= 1;
     assert(shaper.reference_count >= 1);
     return shaper.reference_count;
 }
 
-/// Units from `position` to the end of the text. DirectWrite asks only about
-/// positions within the range `AnalyzeScript` was given, up to its end.
 fn remainingLength(shaper: *const DirectWriteShaper, position: u32) u32 {
     assert(shaper.text_utf16_count <= text_utf16_count_max);
     assert(position <= shaper.text_utf16_count);
@@ -529,7 +473,6 @@ fn sourceGetTextBeforePosition(
 fn sourceGetParagraphReadingDirection(
     source: *dw.IDWriteTextAnalysisSource,
 ) callconv(.winapi) u32 {
-    // Asked only while analyzing converted text; bidi is not resolved yet.
     assert(shaperFromSource(source).text_utf16_count > 0);
     return dw.DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
 }
@@ -542,7 +485,6 @@ fn sourceGetLocaleName(
 ) callconv(.winapi) dw.HRESULT {
     const shaper = shaperFromSource(source);
     assert(shaper.text_utf16_count > 0);
-    // One locale covers the rest of the text.
     text_length.* = remainingLength(shaper, position);
     locale_name.* = &locale_name_empty;
     assert(position + text_length.* == shaper.text_utf16_count);
@@ -610,8 +552,6 @@ fn sinkSetScriptAnalysis(
     }
 }
 
-/// `AnalyzeScript` reports only script runs; the other sink methods are
-/// never called, and accept anything.
 fn sinkSetLineBreakpoints(
     sink: *dw.IDWriteTextAnalysisSink,
     position: u32,
@@ -655,17 +595,14 @@ fn sinkSetNumberSubstitution(
 test "computeGlyphClusters maps ligatures, multi-glyph clusters, and surrogates" {
     const testing = std.testing;
 
-    // "ffi" as one ligature glyph, then "x": units 0..2 share glyph 0.
     var ligature: [2]u32 = undefined;
     computeGlyphClusters(&.{ 0, 0, 0, 1 }, &.{ 0, 1, 2, 3 }, &ligature);
     try testing.expectEqualSlices(u32, &.{ 0, 3 }, &ligature);
 
-    // One unit that decomposes to two glyphs (base and mark), then one more.
     var decomposed: [3]u32 = undefined;
     computeGlyphClusters(&.{ 0, 2 }, &.{ 0, 2 }, &decomposed);
     try testing.expectEqualSlices(u32, &.{ 0, 0, 2 }, &decomposed);
 
-    // "a😀b": the emoji is two UTF-16 units at byte 1, four UTF-8 bytes long.
     var surrogate: [3]u32 = undefined;
     computeGlyphClusters(&.{ 0, 1, 1, 2 }, &.{ 0, 1, 1, 5 }, &surrogate);
     try testing.expectEqualSlices(u32, &.{ 0, 1, 5 }, &surrogate);

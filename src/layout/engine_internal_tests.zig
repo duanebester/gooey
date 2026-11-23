@@ -14,8 +14,6 @@ const TextMeasurement = engine_mod.TextMeasurement;
 const LayoutCapacity = engine_mod.LayoutCapacity;
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 
-/// Every engine here holds the `standard` profile's capacities, as an app on
-/// that profile would; there is no unbudgeted engine.
 const test_capacity = LayoutCapacity.fromLimits(&ResourceLimits.standard);
 
 const Sizing = types.Sizing;
@@ -28,8 +26,6 @@ const CornerRadius = types.CornerRadius;
 const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
 
-/// The computed bounds of the element at `index`, in creation order: the
-/// engine appends elements as `openElement` and `text` create them.
 fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
     assert(index < engine.elements.len());
     const bounds = engine.elements.getConst(index).computed.bounding_box;
@@ -57,8 +53,6 @@ test "BoundedList fills its storage exactly and reports one more" {
 }
 
 test "LayoutCapacity follows each profile's budget" {
-    // Values are written out rather than recomputed with the same
-    // expressions as `fromLimits`, so a budget change moves the test.
     const nano = LayoutCapacity.fromLimits(&ResourceLimits.nano);
     try std.testing.expectEqual(@as(u32, 513), nano.element_count_max);
     try std.testing.expectEqual(@as(u32, 64), nano.box_depth_max);
@@ -76,10 +70,6 @@ test "LayoutCapacity follows each profile's budget" {
 }
 
 test "nano engine holds exactly its elements, depth and floating roots" {
-    // Fills each `nano` pool exactly. One more of any of them panics naming
-    // its budget field, which a test cannot catch; the core fails first at
-    // the same budgets (`core-box-depth`, `core-layer-count`,
-    // `core-layout-elements` in `testing/fail_fast_check.zig`).
     const nano = LayoutCapacity.fromLimits(&ResourceLimits.nano);
     var engine = try LayoutEngine.init(&nano);
     defer engine.deinit();
@@ -87,7 +77,7 @@ test "nano engine holds exactly its elements, depth and floating roots" {
         engine.beginFrame(800, 600);
         for (0..nano.box_depth_max) |_| try engine.openElement(.{});
         try std.testing.expectEqual(nano.box_depth_max, engine.open_element_stack.len);
-        engine.closeElement(); // Room for one floating container at a time.
+        engine.closeElement();
         for (0..nano.floating_count_max) |_| {
             try engine.openElement(.{ .floating = .{} });
             engine.closeElement();
@@ -328,9 +318,6 @@ test "word-level measurement handles newlines" {
     try std.testing.expect(!words.buffer[1].has_newline);
 }
 
-/// The y of a 100 px wide, `float_height` tall element floating below a
-/// 40 px parent at `parent_y` in a 600 px viewport, attached as a dropdown
-/// menu is: at the parent's top left, offset by the parent's height.
 fn dropdownY(parent_y: u16, float_height: f32) !f32 {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
@@ -359,9 +346,6 @@ fn dropdownY(parent_y: u16, float_height: f32) !f32 {
 }
 
 test "a parent-attached float opens above its parent when only that side fits" {
-    // Expected values sit one pixel either side of each flip boundary: a
-    // 150 px menu flips once it no longer fits below, a 450 px menu once it
-    // no longer fits above, and on neither side the clamp keeps it on screen.
     try std.testing.expectEqual(@as(f32, 440), try dropdownY(400, 150));
     try std.testing.expectEqual(@as(f32, 450), try dropdownY(410, 150));
     try std.testing.expectEqual(@as(f32, 261), try dropdownY(411, 150));
@@ -731,7 +715,6 @@ test "fast path: grow with min constraint falls back to slow path" {
     const constrained = boundingBox(&engine, 1);
     const normal = boundingBox(&engine, 2);
 
-    // The slow path shares equally, which satisfies the min constraint of 80.
     try std.testing.expectEqual(@as(f32, 150), constrained.width);
     try std.testing.expectEqual(@as(f32, 150), normal.width);
 }

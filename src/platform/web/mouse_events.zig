@@ -1,7 +1,6 @@
 const input = @import("../../input/events.zig");
 const event_ring = @import("event_ring.zig");
 
-/// Layout matches the JavaScript writer.
 pub const RawMouseEvent = extern struct {
     position_x: f64,
     position_y: f64,
@@ -18,8 +17,6 @@ pub const RawMouseEvent = extern struct {
         mouse_dragged = 3,
         mouse_entered = 4,
         mouse_exited = 5,
-        /// The page took the gesture away (`pointercancel`, a lost pointer
-        /// capture with a button held, or the window losing focus).
         pointer_cancelled = 6,
     };
 
@@ -59,7 +56,6 @@ comptime {
     if (@sizeOf(RawMouseEvent) != 24) @compileError("RawMouseEvent must be exactly 24 bytes");
 }
 
-/// Events reserved by the core host from `events.queue_count_max`.
 pub var g_mouse_ring: event_ring.EventRing(RawMouseEvent) = .{};
 
 fn getMouseRingPtr() callconv(.c) [*]u8 {

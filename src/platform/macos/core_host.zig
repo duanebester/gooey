@@ -1,25 +1,3 @@
-//! Runs a core app in a macOS window.
-//!
-//! Two threads, one owner each: the main thread runs AppKit — the window
-//! pushes input into the core's queue and schedules a tick, which runs as a
-//! main-queue work item so it never nests inside an AppKit callback and a
-//! handler's file dialog opens on the main thread between handlers. The
-//! render thread runs a `CADisplayLink` on its own run loop: at each refresh
-//! with a frame in flight it packs and draws that frame, then schedules a
-//! main tick, which makes the frame `rendered` and builds the next one if a
-//! render is pending.
-//!
-//! They meet only at `frame_in_flight` (see `core/tick.zig`), so no render
-//! mutex is taken. The link is created from the window's view on the main
-//! thread and added to the render thread's run loop by the render thread
-//! itself, because `NSRunLoop` is not thread-safe. The render thread
-//! invalidates it before it exits, and `stop` joins the thread before the
-//! window is freed.
-//!
-//! Every allocation happens before `finishInit`; the core's lifecycle guard
-//! panics on any later one, including any from the Metal renderer, which
-//! shares the guard.
-
 const std = @import("std");
 const objc = @import("objc");
 const platform_mod = @import("platform.zig");
@@ -54,27 +32,18 @@ extern "c" fn dispatch_async_f(
     context: ?*anyopaque,
     work: *const fn (context: ?*anyopaque) callconv(.c) void,
 ) void;
-/// `dispatch_get_main_queue()` is a macro over this symbol; only its address
-/// is used.
 extern "c" var _dispatch_main_q: u8;
 extern "c" var NSRunLoopCommonModes: objc.c.id;
 extern "c" fn CACurrentMediaTime() f64;
 
 const CAFrameRateRange = extern struct { minimum: f32, maximum: f32, preferred: f32 };
 
-/// Frames whose drawables the frame trace keeps before it reads their
-/// `presentedTime`: a present lands within the frames in flight, at most 3.
 const presented_ring_count: u32 = 4;
 
-/// `QOS_CLASS_USER_INTERACTIVE`, the main thread's class.
 const qos_class_user_interactive: c_uint = 0x21;
 
-/// The process's one host. The display link's target class has no instance
-/// storage, so its callback finds the host here.
 var active_host: std.atomic.Value(?*Host) = .init(null);
 
-/// Run `App` until the process quits. Everything is reserved before
-/// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
     app.beginInit(backing);
     const gpa = app.guard.allocator();
@@ -112,8 +81,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     defer host.deinit();
 
     app.finishInit();
-    // Deferred last, so it runs first: the guard leaves `running` before the
-    // deferred teardown above frees the host, the window, and the platform.
     defer app.stop();
     assert(app.guard.lifecycle == .running);
     host.scheduleTick();
@@ -131,27 +98,17 @@ pub const Host = struct {
     query: core_router.Query,
     link: objc.Object,
     thread: ?std.Thread,
-    /// Published by the render thread once the link is on its run loop.
     render_loop: std.atomic.Value(?CFRunLoopRef),
     tick_scheduled: std.atomic.Value(bool),
-    /// The core's render deadline after the last main tick, for the render
-    /// thread.
     render_deadline_ns: std.atomic.Value(u64),
     stopping: std.atomic.Value(bool),
-    /// A window past the budget's framebuffer is reported once (`draw`).
     viewport_clamp_logged: bool,
-    /// Main thread only.
     cursor: core_element.CursorShape,
-    /// The theme the window's appearance was last set from, main thread only.
     theme: ?*const core_element.Theme,
-    /// The IME caret rect of the last rendered frame `syncIme` saw, and the
-    /// marked text length the last built frame drained. Main thread only.
     ime_rect: ?records.Rect,
     ime_owner: ?core_window.ElementId,
     built_frame_number: u64,
     built_marked_length_utf16: c_ulong,
-    /// Render thread only, `-Dframe-trace` builds: drawables awaiting their
-    /// `presentedTime` (`notePresented`).
     presented: if (frame_trace.enabled) PresentedRing else void,
 
     pub const Options = struct {
@@ -163,9 +120,6 @@ pub const Host = struct {
         io: std.Io,
     };
 
-    /// Bind the window, the presenter, and the dialog service, then start
-    /// the render thread. The host must stay at this address: the display
-    /// link's target and the AppKit ivars capture it.
     pub fn initInPlace(self: *Host, options: Options) !void {
         assert(active_host.load(.acquire) == null);
         assert(options.core.presenter == null);
@@ -198,7 +152,6 @@ pub const Host = struct {
         active_host.store(self, .release);
         errdefer active_host.store(null, .release);
         self.thread = try std.Thread.spawn(.{}, renderThreadMain, .{self});
-        // The first tick must not race the link onto its run loop.
         while (self.render_loop.load(.acquire) == null) std.atomic.spinLoopHint();
         assert(self.thread != null);
     }
@@ -225,7 +178,6 @@ pub const Host = struct {
             .write = clipboardWrite,
         };
         self.core.bindScreenReader(self.window.ns_window, self.window.ns_view);
-        // A resize before `bindCore` only recorded the window's geometry.
         self.core.bindViewport(.{
             .width = @floatCast(self.window.size.width),
             .height = @floatCast(self.window.size.height),
@@ -234,16 +186,12 @@ pub const Host = struct {
         assert(self.window.core != null);
     }
 
-    /// Stop the render thread, then undo `bindWindow`. Runs once, from
-    /// `run`'s teardown; a titlebar close only stops the thread.
     pub fn deinit(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         self.stop();
         self.unbindWindow();
     }
 
-    /// Undo `bindWindow` once the render thread, the atlas consumer, has
-    /// stopped: the shared upload journal requires every consumer to leave
-    /// before it is freed.
     fn unbindWindow(self: *Host) void {
         assert(self.thread == null);
         assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
@@ -255,8 +203,6 @@ pub const Host = struct {
         self.core.unbindScreenReader();
     }
 
-    /// Stop the render thread and wait for it: the link is invalidated on
-    /// its own thread and no draw can start afterwards. Idempotent.
     pub fn stop(self: *Host) void {
         if (self.stopping.swap(true, .acq_rel)) return;
         const thread = self.thread orelse return;
@@ -269,7 +215,6 @@ pub const Host = struct {
         assert(self.thread == null);
     }
 
-    /// Queue one main-thread tick unless one is already queued. Any thread.
     pub fn scheduleTick(self: *Host) void {
         if (self.tick_scheduled.swap(true, .acq_rel)) return;
         dispatch_async_f(@ptrCast(&_dispatch_main_q), self, mainTick);
@@ -292,9 +237,6 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
     host.tick_scheduled.store(false, .release);
     if (host.stopping.load(.acquire)) return;
-    // AppKit services the main queue inside a modal panel's run loop, so a
-    // dialog opened by the drain can bring this item back while that tick is
-    // still running. The outer tick reschedules below once it returns.
     if (host.core.phase != .idle) return;
     host.tick_main(host.app, host.nowNs());
     applyCursor(host);
@@ -306,22 +248,13 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
         host.platform.quit();
         return;
     }
-    // A render requested while a frame was in flight waits for the render
-    // thread, which schedules a tick after it presents. Otherwise pending
-    // work (a dialog's completion) needs a tick of its own.
     const in_flight = host.core.frame_in_flight.load(.acquire);
     const pending = host.core.render_requested or host.core.queue.count > 0;
     if (pending and !in_flight) host.scheduleTick();
 }
 
-/// AppKit pulls the IME caret through `firstRectForCharacterRange:` right
-/// after `setMarkedText:`, before the frame with that composition renders,
-/// so it reads the previous caret. When the rendered caret changes, tell
-/// AppKit to ask again, as the other hosts push the new rect.
 fn syncIme(host: *Host) void {
     assert(host.core.phase == .idle);
-    // A frame shows the marked text its build drained, which is all of it:
-    // `setMarkedText:` runs on this thread, never inside a tick.
     if (host.core.rendered().frame_number == host.built_frame_number) {
         host.window.rendered_marked_length_utf16 = host.built_marked_length_utf16;
     }
@@ -338,14 +271,6 @@ fn syncIme(host: *Host) void {
     objc.Object.fromId(context).msgSend(void, "invalidateCharacterCoordinates", .{});
 }
 
-/// The view is one first responder for every text field, so AppKit never
-/// sees Gooey's focus move. When the focused field changes with marked text
-/// left, the input method would go on composing into the next field, which
-/// would show the whole composition as its own. The core has already
-/// committed it into the old field (`Engine.commitPreedit`), so the input
-/// method only forgets it here: an `insertText:` now would land in the field
-/// that has focus, a second time. A click reaches the input method first
-/// (`mouseDown:`); one that commits there does so into the old field.
 fn endStaleComposition(host: *Host) void {
     const owner = host.query.imeOwner();
     if (std.meta.eql(owner, host.ime_owner)) return;
@@ -358,8 +283,6 @@ fn endStaleComposition(host: *Host) void {
     objc.Object.fromId(context).msgSend(void, "discardMarkedText", .{});
 }
 
-/// Only when the cursor changed, so an idle pointer makes no `NSCursor`
-/// calls.
 fn applyCursor(host: *Host) void {
     assert(host.core.phase == .idle);
     if (host.core.cursor == host.cursor) return;
@@ -368,8 +291,6 @@ fn applyCursor(host: *Host) void {
     assert(host.cursor == host.core.cursor);
 }
 
-/// Match the title bar to the core's theme, only when the theme changed, so
-/// an idle tick makes no `NSAppearance` calls.
 fn applyAppearance(host: *Host) void {
     assert(host.core.phase == .idle);
     if (host.theme == host.core.theme) return;
@@ -386,15 +307,12 @@ fn onClose(window: *PlatformWindow) bool {
     return true;
 }
 
-/// After AppKit has unwound a titlebar close, quit: the app has one window.
 fn onLoopTurn(platform: *MacPlatform) void {
     const host = active_host.load(.acquire);
     if (host != null) return;
     if (platform.isRunning()) platform.quit();
 }
 
-/// The display link, created from the view on the main thread; the render
-/// thread adds it to its own run loop.
 fn createLink(window: *PlatformWindow) !objc.Object {
     assert(window.ns_view.value != null);
     const NSObject = objc.getClass("NSObject") orelse return error.ClassNotFound;
@@ -405,24 +323,18 @@ fn createLink(window: *PlatformWindow) !objc.Object {
         objc.registerClassPair(class);
         break :blk class;
     };
-    // The link retains its target, so the +1 from `new` is the link's.
     const target = target_class.msgSend(objc.Object, "new", .{});
-    // NSView's `displayLinkWithTarget:selector:` needs macOS 14, hence the
-    // view's method rather than the class convenience.
     const link = window.ns_view.msgSend(objc.Object, "displayLinkWithTarget:selector:", .{
         target.value,
         objc.sel("tick:").value,
     });
     target.release();
     if (link.value == null) return error.DisplayLinkCreationFailed;
-    // Up to 120 Hz on ProMotion panels; the link follows a 60 Hz display
-    // at 60.
     link.msgSend(void, "setPreferredFrameRateRange:", .{CAFrameRateRange{
         .minimum = 60,
         .maximum = 120,
         .preferred = 120,
     }});
-    // Autoreleased: keep it until `stop`.
     _ = link.msgSend(objc.Object, "retain", .{});
     return link;
 }
@@ -435,16 +347,11 @@ fn renderThreadMain(host: *Host) void {
     const loop = NSRunLoop.msgSend(objc.Object, "currentRunLoop", .{});
     host.link.msgSend(void, "addToRunLoop:forMode:", .{ loop.value, NSRunLoopCommonModes });
     host.render_loop.store(CFRunLoopGetCurrent(), .release);
-    // Returns when `stop` calls `CFRunLoopStop`; the link keeps it alive.
     CFRunLoopRun();
     host.link.msgSend(void, "invalidate", .{});
     assert(host.stopping.load(.acquire));
 }
 
-/// The link's callback, on the render thread: present the frame in flight,
-/// then let the main thread make it `rendered` and build the next. With no
-/// frame in flight, a passed render deadline (`cx.requestRenderAfter`, caret
-/// blink) wakes the main thread instead, so it is late by at most a refresh.
 fn displayLinkTick(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
     const host = active_host.load(.acquire) orelse return;
     if (host.stopping.load(.acquire)) return;
@@ -460,15 +367,11 @@ fn displayLinkTick(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void 
     host.scheduleTick();
 }
 
-/// Drawables of the last frames, retained until their `presentedTime` is
-/// read, so the frame trace records when each frame reached the glass.
 const PresentedRing = struct {
     frame_numbers: [presented_ring_count]u64 = @splat(0),
     drawables: [presented_ring_count]?objc.Object = @splat(null),
     next: u32 = 0,
 
-    /// Keep `frame_number`'s drawable and report the frame it displaces from
-    /// the ring.
     fn push(
         self: *PresentedRing,
         trace: *frame_trace.State,
@@ -485,8 +388,6 @@ const PresentedRing = struct {
         self.next = (slot + 1) % presented_ring_count;
     }
 
-    /// Record when the frame in `slot` was shown, mapping Core Animation's
-    /// clock onto the trace clock through a pair of reads taken together.
     fn report(self: *PresentedRing, trace: *frame_trace.State, slot: u32) void {
         const frame_number = self.frame_numbers[slot];
         if (frame_number == 0) return;
@@ -516,9 +417,6 @@ const PresentedRing = struct {
     }
 };
 
-/// The core's presenter, on the render thread. The frame carries the
-/// viewport it was built for; the drawable follows it before the draw, and
-/// the atlas regions the frame samples are uploaded first.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,
@@ -557,8 +455,6 @@ fn draw(
     }
 }
 
-/// AppKit's panels report cancel and error alike as no selection, so both
-/// arrive as `cancelled` until the panel code reports failures separately.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
@@ -566,11 +462,8 @@ fn openDialog(
     request: core_handler.FileDialogRequest,
 ) ?Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
-    // The modal loop returns the outcome; the core queues it under this id.
     _ = request_id;
     assert(host.core.phase == .drain);
-    // When a panel's modal session ends, AppKit leaves no window key, so the
-    // next click would only make the window key and never reach the view.
     defer host.window.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{
         @as(?*anyopaque, null),
     });
@@ -592,7 +485,6 @@ fn openDialog(
     return .{ .file_selected = joined };
 }
 
-/// The text engines' clipboard, main thread.
 fn clipboardRead(_: *anyopaque, out: []u8) u32 {
     return clipboard.readText(out);
 }

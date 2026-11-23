@@ -1,30 +1,3 @@
-//! The VOPR's jobs app and its model. The app's buttons spawn background
-//! jobs (`Effects.spawn`), plain or chained (`on_done` spawns a successor
-//! when the job finishes), and cancel the job a row shows; each row keeps
-//! its job's id after the job ends, so its Cancel is then a stale cancel,
-//! often against a slot another job reuses. A result may ask `on_result` to
-//! cancel a row, so cancels also land inside a drain's deliveries.
-//!
-//! No thread runs a job. In `jobs` (`jobs.Mode.stepped`) the harness plays
-//! each slot's runner and interrupter (`Action.job`): it takes a spawn, posts
-//! results it makes up while a result slot is free, and ends the run as it
-//! chooses, at seed-chosen points between input, `tickMain`, and
-//! `presentBuilt`; a job left running across frames can be cancelled, and
-//! then its posts are refused and the interrupter ends it. In
-//! `jobs_main_thread` (`.main_thread`) the drain runs `Work.run` itself.
-//!
-//! The model is written from the jobs contract, not from `jobs.zig`: it
-//! keeps its own job table (slots, generations, phases, cancel flags, held
-//! results) and the deliveries pushed since the last drain, and routes each
-//! drain as the core must: input in queue order, then the deliveries in push
-//! order, then, on the main thread, the queued jobs in spawn order while
-//! their `posts_max` result slots are free. It predicts `on_result` calls in post order,
-//! exactly one `on_done` per job with its outcome (`.cancelled` whenever a
-//! cancel lands before the end is delivered), the results a cancel drops,
-//! which spawns `error.JobBusy` refuses, and every row the app shows. It
-//! checks the app's state after every step, and the core's job table and
-//! completion ring, byte for byte, around every drain.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -49,9 +22,6 @@ const Event = vopr_events.Event;
 const Point = vopr_events.Point;
 const Phase = jobs.Phase;
 
-/// `nano` with three job slots and four result slots: a few clicks fill
-/// both, and three main-thread jobs of up to three posts each outrun the
-/// results one drain frees.
 pub const limits = blk: {
     var budget = gooey.ResourceLimits.nano;
     budget.events.job_count_max = 3;
@@ -61,21 +31,11 @@ pub const limits = blk: {
 
 const slot_count: u32 = limits.events.job_count_max;
 const result_count_max: u32 = limits.events.job_result_count_max;
-/// Rows the app shows: one more than the slots, so a granted spawn always
-/// finds a row whose job ended, and an ended job's id stays on screen until
-/// a later spawn needs its row.
 pub const row_count: u32 = slot_count + 1;
-/// Results one job posts on the main thread at most (`Work.run`).
 const post_count_max: u32 = 3;
-/// Deliveries waiting for a drain at most: every held result and one end
-/// per slot, as `ResourceLimits.check` reserves on the completion ring.
 const entry_count_max: u32 = result_count_max + slot_count;
-/// Input actions one drain can hold, as the queue's capacity.
 const pending_count_max: u32 = limits.events.queue_count_max;
-/// Ids one press lands in: one per box on the path to the root.
 const press_path_len_max: u32 = internals.window.box_depth_ceiling;
-/// The app's buttons, in tree order: Spawn, Spawn chain, then each row's
-/// Cancel.
 const button_count: u32 = 2 + row_count;
 
 comptime {
@@ -84,8 +44,6 @@ comptime {
     assert(row_count > slot_count);
 }
 
-/// The app's one job type. On the main thread `run` posts what its input
-/// says; in `.stepped` the harness plays every run and `run` is never called.
 pub const Work = struct {
     pub const Input = struct {
         number: u32,
@@ -95,7 +53,6 @@ pub const Work = struct {
     };
     pub const Result = struct {
         value: u32,
-        /// The row `on_result` cancels, plus one; 0 for none.
         cancel_row: u32,
     };
     pub const posts_max: u32 = post_count_max;
@@ -111,8 +68,6 @@ pub const Work = struct {
     }
 };
 
-/// What spawn number `number` asks of its job; a pure function, so the
-/// model predicts it.
 pub fn inputOf(number: u32, chain: bool) Work.Input {
     assert(number > 0);
     return .{
@@ -123,8 +78,6 @@ pub fn inputOf(number: u32, chain: bool) Work.Input {
     };
 }
 
-/// The main-thread run's `index`-th result: the first result of every
-/// third job asks `on_result` to cancel a row.
 pub fn resultOf(number: u32, index: u32) Work.Result {
     assert(number > 0);
     assert(index < post_count_max);
@@ -139,7 +92,6 @@ pub const RowStatus = enum { empty, running, finished, cancelled, failed };
 
 pub const Row = struct {
     id: gooey.JobId,
-    /// The spawn's number, from 1; 0 for an empty row.
     number: u32,
     chain: bool,
     status: RowStatus,
@@ -156,17 +108,14 @@ pub const Row = struct {
     };
 };
 
-/// The last thing the app did, which its status line shows.
 pub const Status = enum { idle, spawned, refused, cancel_sent, result, ended };
 
 pub const State = struct {
     rows: [row_count]Row = @splat(.empty),
-    /// Spawns granted, which number them from 1.
     spawned: u32 = 0,
     refused: u32 = 0,
     results: u32 = 0,
     ended: u32 = 0,
-    /// Deliveries for a job no row shows running; the contract keeps it 0.
     stray: u32 = 0,
     status: Status = .idle,
 
@@ -200,9 +149,6 @@ pub const State = struct {
         if (result.cancel_row > 0) self.cancelRow(result.cancel_row - 1, effects);
     }
 
-    /// A chained job that finished spawns its successor here. Its own slot
-    /// is already free, so the spawn is granted even with the other slots
-    /// busy, and `done.id` is stale: the row keeps it for a stale Cancel.
     pub fn onDone(self: *State, effects: *Effects) void {
         const done = effects.jobDone().?;
         assert(std.meta.eql(done.id, effects.jobId().?));
@@ -246,7 +192,6 @@ pub const State = struct {
         self.status = .spawned;
     }
 
-    /// Cancel the row's job, whatever its state: an ended job's id is stale.
     fn cancelRow(self: *State, row: u32, effects: *Effects) void {
         assert(row < row_count);
         if (self.rows[row].status == .empty) return;
@@ -262,8 +207,6 @@ pub const App = gooey.App(State, render, .{
     .jobs = &.{Work},
 });
 
-/// Bytes of one row's text at most: "#" and 10 digits, " cancelled: ", 10
-/// digits, " results, last ", and 10 digits.
 const row_text_bytes_max: u32 = 1 + 10 + 12 + 10 + 15 + 10;
 
 comptime {
@@ -294,8 +237,12 @@ const Rows = struct {
         const s = cx.state(State);
         for (s.rows, 0..) |row, index| {
             var bytes: [row_text_bytes_max]u8 = undefined;
-            // The longest text, three u32s of 10 digits and "cancelled", is
-            // 58 bytes (`row_text_bytes_max`), so the buffer always holds it.
+            assert(std.fmt.count("#{d} {t}: {d} results, last {d}", .{
+                row.number,
+                row.status,
+                row.result_count,
+                row.value_last,
+            }) <= bytes.len);
             const text = std.fmt.bufPrint(&bytes, "#{d} {t}: {d} results, last {d}", .{
                 row.number,
                 row.status,
@@ -316,15 +263,12 @@ const Rows = struct {
     }
 };
 
-/// One job slot as the contract describes it.
 const Slot = struct {
     busy: bool,
     generation: u32,
     phase: Phase,
     cancel: bool,
-    /// `.main_thread`: spawned and not yet run by a drain.
     queued: bool,
-    /// The spawn's place among all spawns, for the main thread's order.
     order: u64,
     input: Work.Input,
 
@@ -339,13 +283,11 @@ const Slot = struct {
     };
 };
 
-/// One delivery waiting for a drain: a result, or a job's end.
 const Entry = struct {
     slot: u32,
     generation: u32,
     kind: enum { result, done },
     result: Work.Result,
-    /// For `.done`: how the run ended, before a later cancel overrides it.
     outcome: EndOutcome,
 };
 
@@ -357,42 +299,30 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
     comptime assert(runs != .workers);
     return struct {
         slots: [slot_count]Slot,
-        /// Deliveries pushed since the last drain, in push order.
         entries: [entry_count_max]Entry,
         entry_count: u32,
-        /// Result slots claimed and not yet delivered or dropped.
         results_held: u32,
-        /// Spawns granted since init, as the core counts them.
         spawn_count: u64,
-        /// What the app must show.
         expected: State,
-        /// Input the next drain routes, in queue order.
         pending: [pending_count_max]Action,
         pending_count: u32,
-        /// Focus within the drain being routed; read from the window first.
         focus: ElementId,
-        /// The ids the last left press landed in, innermost first.
         press_path: [press_path_len_max]ElementId,
         press_len: u32,
         counts: Stats,
 
         const Self = @This();
 
-        /// Who runs the app's jobs (`Vopr.job_runs`).
         pub const job_runs = runs;
-        /// What the harness posts for the app's job (`Action.job`).
         pub const JobResult = Work.Result;
         pub const job_row_count = row_count;
 
-        /// The kinds jobs' swarm draws weights for, in this order: on the
-        /// main thread there are no workers to step.
         pub const action_kinds: []const vopr.ActionKind = switch (runs) {
             .stepped => &.{ .pointer, .key, .wait_ns, .tick_main, .present, .resize, .job },
             .main_thread => &.{ .pointer, .key, .wait_ns, .tick_main, .present, .resize },
             .workers => unreachable,
         };
 
-        /// Keys that move focus along the buttons and press them.
         pub const key_choices: []const gooey.input.KeyCode = &.{
             .tab, .space, .@"return", .escape,
         };
@@ -401,30 +331,20 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             spawned: u32,
             chained: u32,
             refused: u32,
-            /// Chained successors granted with every other slot busy: they
-            /// took the finished job's own slot, freed before its `on_done`.
             chained_full: u32,
             results_delivered: u32,
             results_dropped: u32,
-            /// Posts of a cancelled running job, which return false.
             posts_refused: u32,
             finished: u32,
             cancelled: u32,
             failed: u32,
-            /// Cancels of a job no runner had taken: `run` never ran.
             cancels_skipped: u32,
-            /// Cancels of a running job, which its interrupter ended.
             cancels_interrupting: u32,
-            /// Cancels after the job's end was pushed, before it arrived.
             cancels_late: u32,
-            /// Cancels of an id whose slot was free, or held by a later job.
             cancels_stale_free: u32,
             cancels_stale_reused: u32,
-            /// Cancels from `on_result`, inside a drain's deliveries.
             cancels_in_delivery: u32,
-            /// Main-thread drains that left a job queued behind held results.
             runs_deferred: u32,
-            /// Main-thread runs that started beside another run's results.
             runs_batched: u32,
             results_held_max: u32,
 
@@ -468,14 +388,11 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             return self.counts;
         }
 
-        /// Room for one more input action in the queue.
         pub fn pendingRoom(self: *const Self) u32 {
             assert(self.pending_count <= pending_count_max);
             return pending_count_max - self.pending_count;
         }
 
-        /// Record input for the next drain; apply a worker's step now, as
-        /// the harness does.
         pub fn queue(self: *Self, action: Action) void {
             assert(action != .tick_main);
             switch (action) {
@@ -491,7 +408,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             }
         }
 
-        /// The ring holds exactly the deliveries the model expects.
         pub fn beginDrain(self: *Self, window: *Window) void {
             assert(window.phase == .idle);
             self.focus = window.focus;
@@ -499,8 +415,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             checkPool(self, &window.jobs);
         }
 
-        /// Route the drain as the core must, then run the main thread's
-        /// queued jobs, and compare the core's job table.
         pub fn endDrain(self: *Self, window: *Window, published: bool) void {
             _ = published;
             assert(window.queue.count == 0);
@@ -533,7 +447,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             });
         }
 
-        /// Where the generator aims: every button.
         pub fn biasTarget(window: *Window) ?vopr.Bias {
             const frame = window.rendered();
             var buttons: ?Rect = null;
@@ -544,9 +457,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             return .{ .area = buttons orelse return null, .alternate = null };
         }
 
-        /// A worker's step the harness took: a runner taking a spawn, a
-        /// post, or a run's end, which for a cancelled job is the
-        /// interrupter's.
         fn takeTurn(self: *Self, job: *const Action.JobStep) void {
             assert(job.slot < slot_count);
             const slot = &self.slots[job.slot];
@@ -606,8 +516,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             });
         }
 
-        /// Pushed here and checked against the ring at the next drain
-        /// (`checkRing`).
         fn push(self: *Self, entry: Entry) void {
             assert(entry.slot < slot_count);
             assert(self.slots[entry.slot].busy);
@@ -617,9 +525,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             self.entry_count += 1;
         }
 
-        /// One delivery: `on_result` unless the job was cancelled first,
-        /// which drops it; or the slot freed under its next generation, then
-        /// `on_done`, with `.cancelled` if any cancel landed first.
         fn deliver(self: *Self, entry: *const Entry) void {
             const slot = &self.slots[entry.slot];
             assert(slot.busy);
@@ -645,8 +550,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
                         .cancelled => self.counts.cancelled += 1,
                         .failed => self.counts.failed += 1,
                     }
-                    // Before `on_done` runs, so a spawn inside it can take
-                    // this slot; the id `on_done` receives is then stale.
                     slot.busy = false;
                     slot.generation +%= 1;
                     self.appDone(id, outcome);
@@ -654,10 +557,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             }
         }
 
-        /// The main thread runs its queued jobs in spawn order, each only
-        /// while `Work.posts_max` result slots are free, so no post finds
-        /// the pool full; the first that does not fit, and every later
-        /// spawn, waits for the next drain.
         fn runQueued(self: *Self) void {
             var turn: u32 = 0;
             while (turn < slot_count) : (turn += 1) {
@@ -697,7 +596,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             return oldest;
         }
 
-        /// Slots holding a job whose end is not yet delivered.
         fn busyCount(self: *const Self) u32 {
             var count: u32 = 0;
             for (&self.slots) |*slot| count += @intFromBool(slot.busy);
@@ -706,7 +604,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             return count;
         }
 
-        /// `Effects.spawn`: the lowest free slot, or `error.JobBusy`.
         fn spawnJob(self: *Self, input: Work.Input) ?gooey.JobId {
             assert(input.number > 0);
             assert(input.post_count <= post_count_max);
@@ -725,8 +622,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             return null;
         }
 
-        /// `Effects.cancelJob`: a live id marks its job and moves it out of
-        /// `pending` or `running`; a stale one does nothing.
         fn cancelJob(self: *Self, id: gooey.JobId) void {
             assert(id.slot < slot_count);
             const slot = &self.slots[id.slot];
@@ -791,7 +686,7 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             const app = &self.expected;
             app.results += 1;
             app.status = .result;
-            const row = runningRow(app, id) orelse unreachable; // Delivered only while busy.
+            const row = runningRow(app, id) orelse unreachable;
             app.rows[row].result_count += 1;
             app.rows[row].value_last = result.value;
             if (result.cancel_row > 0) {
@@ -804,7 +699,7 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             const app = &self.expected;
             app.ended += 1;
             app.status = .ended;
-            const row = runningRow(app, id) orelse unreachable; // One end per job.
+            const row = runningRow(app, id) orelse unreachable;
             app.rows[row].status = switch (outcome) {
                 .finished => .finished,
                 .cancelled => .cancelled,
@@ -813,8 +708,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             if (!app.rows[row].chain) return;
             if (outcome != .finished) return;
             self.counts.chained += 1;
-            // The finished job's slot is free, so the successor always fits;
-            // with every other slot busy it takes that very slot.
             assert(!self.slots[id.slot].busy);
             const full = self.busyCount() == slot_count - 1;
             const refused_before = app.refused;
@@ -852,8 +745,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             }
         }
 
-        /// Tab moves focus; Enter or Space without Cmd, Ctrl, or Alt
-        /// presses the focused button (`router.activates`).
         fn key(self: *Self, frame: *const records.Frame, chord: Action.Chord) void {
             assert(frame.modal_hit_start <= frame.hit_count);
             if (chord.key == .tab) {
@@ -867,7 +758,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             if (buttonOf(frame, index)) |button| self.activate(button);
         }
 
-        /// A press of any button focuses; a left press records its path.
         fn press(self: *Self, frame: *const records.Frame, down: vopr_events.Press) void {
             const left = down.button == .left;
             if (left) self.press_len = 0;
@@ -886,8 +776,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             self.focus = focus_id;
         }
 
-        /// A left release clicks the innermost `on_click` under it that the
-        /// left press also landed in.
         fn release(self: *Self, frame: *const records.Frame, point: Point) void {
             const pressed = self.press_path[0..self.press_len];
             self.press_len = 0;
@@ -908,8 +796,6 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
     };
 }
 
-/// The core's job table matches the model's, slot by slot, and so does the
-/// count of held result slots.
 fn checkPool(model: anytype, pool: *const jobs.Pool) void {
     assert(pool.slots.len == slot_count);
     assert(pool.mode == @TypeOf(model.*).job_runs);
@@ -937,8 +823,6 @@ fn checkPool(model: anytype, pool: *const jobs.Pool) void {
     }
 }
 
-/// The completion ring holds exactly the model's deliveries, in order, and
-/// each held result slot the bytes posted to it.
 fn checkRing(model: anytype, window: *Window) void {
     const ring = &window.completions;
     const tail = ring.tail.load(.monotonic);
@@ -987,8 +871,6 @@ fn checkEntry(
     });
 }
 
-/// Which button record `index` is: its rank among the click records, in
-/// tree order, which is the app's button order.
 fn buttonOf(frame: *const records.Frame, index: u32) ?ButtonKind {
     assert(index < frame.hit_count);
     if (frame.hits[index].on_click == records.index_none) return null;
@@ -1017,9 +899,6 @@ fn runningRow(app: *const State, id: gooey.JobId) ?u32 {
     return null;
 }
 
-/// The row a spawn takes, as the app chooses it: the oldest that is not
-/// running, empty first, lowest index on a tie. More rows than slots, so one
-/// is never running.
 fn rowFree(app: *const State) u32 {
     assert(app.rows.len == row_count);
     var best: ?u32 = null;
@@ -1031,7 +910,7 @@ fn rowFree(app: *const State) u32 {
             best = @intCast(index);
         }
     }
-    return best orelse unreachable; // More rows than slots: one is not running.
+    return best orelse unreachable;
 }
 
 fn unite(a: Rect, b: Rect) Rect {

@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Check Gooey on GNOME Wayland: every example on each Linux Wayland backend, then todo
-# editing and Japanese IME input. Needs a session from `gnome-session start`.
-#
-# Usage: gnome-check [vulkan|cpu|all]   (default: all)
-#
-# Each example runs as a child of this script, not as an orb service, so its real exit
-# status is visible: an orb service restarts on exit and hides it. Screenshots go to
-# .amp/in/artifacts/gnome/; inspect them, because a frame that draws wrong still passes.
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +12,6 @@ if [[ ! -S /tmp/gnome-rt/wayland-gnome ]]; then
     echo "No GNOME session; run ${script_dir}/gnome-session start first." >&2
     exit 1
 fi
-# shellcheck source=/dev/null
 source /tmp/gnome-rt/env
 mkdir -p "$artifact_dir"
 cd "$repo_root"
@@ -37,8 +28,6 @@ build_backend() {
     zig build "${flags[@]}"
 }
 
-# Launch one example, capture it, close it with Alt+F4, and report its exit status and
-# any failure lines on stderr. The frame wait covers llvmpipe's first presentation.
 check_example() {
     local executable="$1"
     local label="$2"
@@ -96,8 +85,6 @@ check_backend() {
     fi
 }
 
-# Both Adds made a row: each row is white on the grey page, 62 px below the last, so a
-# lost Add leaves the second row's middle grey.
 check_todo_rows() {
     local screenshot="$1"
     local rows=0
@@ -112,8 +99,6 @@ check_todo_rows() {
     fi
 }
 
-# todo on Vulkan, maximized so the field and button sit at fixed coordinates:
-# typing with Shift and symbols, Backspace, Home and End, Add, then Anthy conversion.
 check_todo_input() {
     local executable=/tmp/gnome-check-vulkan/bin/gooey-todo
     [[ -x "$executable" ]] || build_backend wayland_vulkan /tmp/gnome-check-vulkan || return 1

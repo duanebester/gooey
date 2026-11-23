@@ -8,8 +8,6 @@ layout(location = 4) in vec4 edge_distance;
 layout(location = 5) flat in uint edge_modes;
 layout(location = 0) out vec4 output_color;
 
-// Coverage of the fragment's pixel from the analytic edges (mesh.glsl).
-// `pixel` is one device pixel measured in edge-distance units per component.
 float edge_coverage(vec4 pixel) {
     vec4 distance_px = edge_distance / max(pixel, vec4(1e-6));
     float coverage = 1.0;
@@ -24,18 +22,11 @@ float edge_coverage(vec4 pixel) {
 }
 
 void main() {
-    // Derivatives first: they are undefined after a non-uniform discard.
     vec4 edge_pixel = sqrt(dFdx(edge_distance) * dFdx(edge_distance) +
         dFdy(edge_distance) * dFdy(edge_distance));
     float uv_pixel = length(vec2(dFdx(uv.x), dFdy(uv.x)));
-    // Fills are solid; clipping is the draw's scissor.
     vec4 result = color;
     if (circle != 0u) {
-        // Shared point falloff (cpu/mesh.zig `pointFalloff`, Metal's point
-        // shaders). From a 6.7 device pixel radius up it is the historical
-        // falloff over the outer 15% of the radius, computed the same way.
-        // Smaller points get a one-pixel band that moves outward to straddle
-        // the edge, so a sub-pixel dot keeps about its area instead of vanishing.
         float radius_px = 1.0 / max(uv_pixel, 1e-6);
         float uv_distance = length(uv);
         if (radius_px >= 1.0 / 0.15) {

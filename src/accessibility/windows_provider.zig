@@ -1,26 +1,3 @@
-//! UI Automation providers for the Windows accessibility bridge. A `Provider`
-//! is the COM object UI Automation holds for one element; it names its element
-//! by fingerprint, never by snapshot index, so a reference a client kept
-//! across frames keeps meaning the same element, and reports
-//! `UIA_E_ELEMENTNOTAVAILABLE` once that element is gone. Every query reads
-//! the bridge's `Snapshot` under the server's lock.
-//!
-//! Providers report `ProviderOptions_UseComThreading`, and the bridge enters a
-//! single-threaded apartment on the window's thread, so UI Automation calls
-//! arrive through that thread's message loop; if the thread was already a
-//! multithreaded apartment, calls arrive on COM threads instead. The lock
-//! makes both cases correct. Nothing calls into UI Automation while holding
-//! it, because an event raise may call straight back into a provider on the
-//! same thread and the lock is not reentrant.
-//!
-//! `providerCountMax` is twice `a11y.element_count_max`: room for a client to
-//! cache every element of a full tree while it navigates to fresh ones. UI
-//! Automation identifies elements by runtime id, not by object, so one element
-//! may have several live providers. Actions are not exposed: the accessibility
-//! tree has no path back to the widgets, so `Invoke`, `SetValue`, `Toggle`,
-//! `SetFocus`, and similar return `UIA_E_NOTSUPPORTED`; screen readers fall
-//! back to keyboard and pointer input, which the widgets handle.
-
 const std = @import("std");
 const types = @import("types.zig");
 const tree_mod = @import("tree.zig");
@@ -48,23 +25,14 @@ pub fn providerCountMax(element_count_max: u16) u16 {
     return 2 * element_count_max;
 }
 
-/// The longest UTF-8 string turned into a `BSTR`: the snapshot's largest text
-/// cap, and the bridge's announcement cap.
 pub const bstr_bytes_max: u16 = 1024;
 
 const framework_id = "Gooey";
 
-/// Everything a provider method may touch: the lock, the snapshot, and the
-/// pool. Reserved by the bridge at init; providers point here.
 pub const Server = struct {
     lock: uia.SRWLOCK,
-    /// True while a thread holds `lock`. Written only by the holder, so it
-    /// lets methods that need the lock assert it, and lets acquisition
-    /// assert it is not re-entered: `SRWLOCK` is not reentrant.
     locked: bool,
     hwnd: win32.HWND,
-    /// False once the bridge has shut down. Later calls report the element
-    /// gone instead of reading the snapshot.
     alive: bool,
     exhaustion_logged: bool,
     snapshot: Snapshot,
@@ -76,7 +44,6 @@ pub const Server = struct {
 
     const Self = @This();
 
-    /// `element_count_max` is the tree's (`a11y.element_count_max`).
     pub fn initInPlace(
         self: *Self,
         hwnd: win32.HWND,
@@ -96,13 +63,11 @@ pub const Server = struct {
         self.provider_high_water = 0;
         self.free_head = index_none;
         self.live_count = 0;
-        // The root's first reference belongs to the bridge.
         self.root.initIn(self, .root, Fingerprint.INVALID);
         assert(self.root.reference_count.load(.monotonic) == 1);
         assert(self.providers.len == providerCountMax(element_count_max));
     }
 
-    /// Free the storage. Only after `shutdown` reported every provider released.
     pub fn deinit(self: *Self) void {
         assert(!self.alive);
         assert(!self.locked);
@@ -114,7 +79,6 @@ pub const Server = struct {
 
     pub fn lockExclusive(self: *Self) void {
         uia.AcquireSRWLockExclusive(&self.lock);
-        // Set only under the lock, so a holder on this thread would show.
         assert(!self.locked);
         self.locked = true;
     }
@@ -126,9 +90,6 @@ pub const Server = struct {
         uia.ReleaseSRWLockExclusive(&self.lock);
     }
 
-    /// Stop serving, ask UI Automation to drop its references, and release the
-    /// bridge's own reference to the root. Returns whether every provider is
-    /// now released, which is what makes freeing the storage safe.
     pub fn shutdown(self: *Self) bool {
         assert(self.alive);
         self.lockExclusive();
@@ -137,17 +98,11 @@ pub const Server = struct {
         self.unlockExclusive();
         assert(high_water <= self.providers.len);
 
-        // Outside the lock: a disconnect releases references, and the last
-        // release takes the lock to reclaim its slot. The root has no
-        // runtime id of its own (the host window supplies it), so its
-        // disconnect may fail; `UiaReturnRawElementProvider(hwnd, 0, 0,
-        // null)` in the bridge already withdrew it, so the result is moot.
         _ = uia.UiaDisconnectProvider(self.root.simpleInterface());
         var slot: u16 = 0;
         while (slot < high_water) : (slot += 1) {
             const provider = &self.providers[slot];
             if (provider.reference_count.load(.acquire) == 0) continue;
-            // Fails harmlessly for a provider no client holds.
             _ = uia.UiaDisconnectProvider(provider.simpleInterface());
         }
         _ = self.root.release();
@@ -157,8 +112,6 @@ pub const Server = struct {
         return self.live_count == 0 and self.root.reference_count.load(.acquire) == 0;
     }
 
-    /// Claim a provider for the element with `fingerprint`, holding one
-    /// reference for the caller. The lock must be held.
     pub fn claim(self: *Self, fingerprint: Fingerprint) ?*Provider {
         assert(self.locked);
         assert(fingerprint.isValid());
@@ -185,7 +138,6 @@ pub const Server = struct {
             self.free_head = self.providers[slot].next_free;
             return slot;
         }
-        // Every claimed slot below the high-water mark is live.
         assert(self.live_count == self.provider_high_water);
         if (self.provider_high_water < self.providers.len) {
             const slot = self.provider_high_water;
@@ -195,7 +147,6 @@ pub const Server = struct {
         return null;
     }
 
-    /// Return a provider whose last reference was released. Lock held.
     fn reclaim(self: *Self, provider: *Provider) void {
         assert(self.locked);
         assert(self.live_count > 0);
@@ -210,11 +161,6 @@ pub const Server = struct {
         self.live_count -= 1;
     }
 
-    /// Exhaustion is the one capacity error here that does not stop the
-    /// process: demand comes from another process, a screen reader decides
-    /// how many element references it holds, and it must not be able to crash
-    /// the application. The call that needed a provider returns
-    /// `E_OUTOFMEMORY` to that client instead. Logged once per window.
     fn reportExhaustion(self: *Self) void {
         assert(self.locked);
         assert(self.free_head == index_none);
@@ -229,8 +175,6 @@ pub const Server = struct {
 };
 
 pub const Provider = struct {
-    // One vtable pointer per interface. An interface pointer is the address
-    // of its field, and `providerFrom` recovers the object from it.
     simple: *const Simple.VTable,
     fragment: *const Fragment.VTable,
     fragment_root: *const FragmentRoot.VTable,
@@ -288,7 +232,7 @@ pub const Provider = struct {
     pub fn addRef(self: *Provider) u32 {
         assert(self.kind != .free);
         const previous = self.reference_count.fetchAdd(1, .monotonic);
-        assert(previous > 0); // No reference can exist to add to.
+        assert(previous > 0);
         return previous + 1;
     }
 
@@ -296,7 +240,6 @@ pub const Provider = struct {
         assert(self.kind != .free);
         const previous = self.reference_count.fetchSub(1, .acq_rel);
         assert(previous > 0);
-        // The root's storage belongs to the server and is never reclaimed.
         if (previous == 1 and self.kind == .element) {
             const server = self.server;
             server.lockExclusive();
@@ -306,8 +249,6 @@ pub const Provider = struct {
         return previous - 1;
     }
 
-    /// The element's snapshot index with the lock held, or null with the lock
-    /// released when the element is gone or the bridge has shut down.
     fn lockIndex(self: *Provider) ?u16 {
         assert(self.kind == .element);
         assert(self.fingerprint.isValid());
@@ -324,7 +265,6 @@ pub const Provider = struct {
         return null;
     }
 
-    /// The root's counterpart of `lockIndex`: true with the lock held.
     fn lockRoot(self: *Provider) bool {
         assert(self.kind == .root);
         assert(self == &self.server.root);
@@ -362,8 +302,6 @@ pub const Provider = struct {
         return self.patternInterface(patternIdFromIid(iid) orelse return null);
     }
 
-    /// The pattern interface for `pattern_id`, or null when the element's role
-    /// does not support it. Fixed per role, as COM identity requires.
     fn patternInterface(self: *Provider, pattern_id: i32) ?*anyopaque {
         assert(self.kind != .free);
         if (self.kind != .element) return null;
@@ -400,19 +338,15 @@ fn patternIdFromIid(iid: *const uia.GUID) ?i32 {
     return null;
 }
 
-/// Recover the provider from one of its interface pointers.
 fn providerFrom(comptime field: []const u8, interface: anytype) *Provider {
     const field_pointer: *@FieldType(Provider, field) = @ptrCast(@alignCast(interface));
     const provider: *Provider = @fieldParentPtr(field, field_pointer);
     assert(provider.kind != .free);
-    // A caller holds the interface pointer, and with it a reference.
     assert(provider.reference_count.load(.monotonic) > 0);
     if (provider.kind == .element) assert(provider.fingerprint.isValid());
     return provider;
 }
 
-/// Hand out a provider for the element at `index`, or nothing for
-/// `index_none`. The lock must be held.
 fn claimInto(server: *Server, index: u16, target: *?*Fragment) HRESULT {
     assert(server.locked);
     assert(target.* == null);
@@ -471,7 +405,6 @@ fn simplePatternProvider(
     const provider = providerFrom("simple", this);
     target.* = provider.patternInterface(pattern_id);
     if (target.* != null) {
-        // Only elements carry patterns; the host window serves the root's.
         assert(provider.kind == .element);
         _ = provider.addRef();
     }
@@ -486,7 +419,6 @@ fn simplePropertyValue(
     const target = out orelse return uia.E_POINTER;
     target.* = uia.VARIANT.empty;
     const provider = providerFrom("simple", this);
-    // The host window supplies the root's properties.
     if (provider.kind == .root) return uia.S_OK;
     const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
     defer provider.server.unlockExclusive();
@@ -503,7 +435,6 @@ fn simpleHostProvider(this: *Simple, out: ?*?*Simple) callconv(.winapi) HRESULT 
     const provider = providerFrom("simple", this);
     if (provider.kind != .root) return uia.S_OK;
     assert(provider == &provider.server.root);
-    // `hwnd` never changes after init, so this needs no lock.
     return uia.UiaHostProviderFromHwnd(provider.server.hwnd, target);
 }
 
@@ -526,7 +457,7 @@ fn fragmentNavigate(this: *Fragment, direction: i32, out: ?*?*Fragment) callconv
     return switch (provider.kind) {
         .root => navigateRoot(provider, direction, target),
         .element => navigateElement(provider, direction, target),
-        .free => unreachable, // `providerFrom` asserts a live provider.
+        .free => unreachable,
     };
 }
 
@@ -540,7 +471,6 @@ fn navigateRoot(root: *Provider, direction: i32, target: *?*Fragment) HRESULT {
     const index = switch (direction) {
         uia.NavigateDirection_FirstChild => server.snapshot.root_first_child,
         uia.NavigateDirection_LastChild => server.snapshot.root_last_child,
-        // The host window owns the root's parent and siblings.
         else => return uia.S_OK,
     };
     return claimInto(server, index, target);
@@ -553,7 +483,6 @@ fn navigateElement(provider: *Provider, direction: i32, target: *?*Fragment) HRE
     const server = provider.server;
     defer server.unlockExclusive();
     const entry = server.snapshot.entry(index);
-    // Siblings are distinct elements, so navigation never returns to itself.
     assert(entry.next_sibling != index);
     assert(entry.previous_sibling != index);
     const target_index = switch (direction) {
@@ -562,7 +491,7 @@ fn navigateElement(provider: *Provider, direction: i32, target: *?*Fragment) HRE
         uia.NavigateDirection_PreviousSibling => entry.previous_sibling,
         uia.NavigateDirection_FirstChild => entry.first_child,
         uia.NavigateDirection_LastChild => entry.last_child,
-        else => unreachable, // Range-checked by `fragmentNavigate`.
+        else => unreachable,
     };
     if (direction == uia.NavigateDirection_Parent and target_index == index_none) {
         _ = server.root.addRef();
@@ -576,7 +505,6 @@ fn fragmentRuntimeId(this: *Fragment, out: ?*?*uia.SAFEARRAY) callconv(.winapi) 
     const target = out orelse return uia.E_POINTER;
     target.* = null;
     const provider = providerFrom("fragment", this);
-    // The host window supplies the root's runtime id.
     if (provider.kind == .root) return uia.S_OK;
     assert(provider.kind == .element);
     const ids = runtimeId(provider.fingerprint);
@@ -589,7 +517,6 @@ fn fragmentBoundingRectangle(this: *Fragment, out: ?*uia.UiaRect) callconv(.wina
     const target = out orelse return uia.E_POINTER;
     target.* = uia.UiaRect.empty;
     const provider = providerFrom("fragment", this);
-    // The host window supplies the root's rectangle.
     if (provider.kind == .root) return uia.S_OK;
     const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
     const server = provider.server;
@@ -604,15 +531,10 @@ fn fragmentBoundingRectangle(this: *Fragment, out: ?*uia.UiaRect) callconv(.wina
 fn fragmentEmbeddedRoots(this: *Fragment, out: ?*?*uia.SAFEARRAY) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
     target.* = null;
-    // No element hosts another window's provider tree.
     assert(providerFrom("fragment", this).kind != .free);
     return uia.S_OK;
 }
 
-/// The root's reference count is nonzero only while the bridge holds its own
-/// reference, which `shutdown` drops after clearing `alive` under the lock. A
-/// client may still hold an element provider then, so the root is handed out
-/// only with the lock held and the server alive.
 fn fragmentRoot(this: *Fragment, out: ?*?*FragmentRoot) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
     target.* = null;
@@ -621,7 +543,7 @@ fn fragmentRoot(this: *Fragment, out: ?*?*FragmentRoot) callconv(.winapi) HRESUL
     switch (provider.kind) {
         .root => if (!provider.lockRoot()) return uia.UIA_E_ELEMENTNOTAVAILABLE,
         .element => _ = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE,
-        .free => unreachable, // A client reference keeps its slot claimed.
+        .free => unreachable,
     }
     defer server.unlockExclusive();
     assert(server.alive);
@@ -656,7 +578,6 @@ fn rootElementFromPoint(
     const point = clientPoint(root.server.hwnd, x, y) orelse return uia.S_OK;
     if (!root.lockRoot()) return uia.UIA_E_ELEMENTNOTAVAILABLE;
     defer root.server.unlockExclusive();
-    // No element under the point means the point is on the root itself.
     const index = root.server.snapshot.hitTest(point[0], point[1]) orelse return uia.S_OK;
     assert(index < root.server.snapshot.entry_count);
     return claimInto(root.server, index, target);
@@ -682,7 +603,6 @@ const fragment_root_vtable: FragmentRoot.VTable = .{
     .GetFocus = rootFocus,
 };
 
-/// A pattern property getter: reads one value from the element's entry.
 fn Getter(
     comptime field: []const u8,
     comptime Interface: type,
@@ -693,7 +613,6 @@ fn Getter(
         fn get(this: *Interface, out: ?*T) callconv(.winapi) HRESULT {
             const target = out orelse return uia.E_POINTER;
             const provider = providerFrom(field, this);
-            // Pattern interfaces exist only on elements, never on the root.
             assert(provider.kind == .element);
             const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
             defer provider.server.unlockExclusive();
@@ -762,7 +681,6 @@ fn readRangeMinimum(_: *const Snapshot, entry: *const Entry) f64 {
     return entry.value_min;
 }
 
-/// UI Automation accepts NaN for a step size the control does not define.
 fn readRangeStep(_: *const Snapshot, entry: *const Entry) f64 {
     assert(snapshot_mod.supportsRangeValue(entry.role));
     return std.math.nan(f64);
@@ -824,7 +742,7 @@ fn selectionContainer(
     out: ?*?*Simple,
 ) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
-    target.* = null; // The tree has no selection containers to point to.
+    target.* = null;
     assert(providerFrom("selection_item", this).kind == .element);
     return uia.S_OK;
 }
@@ -841,8 +759,6 @@ const selection_item_vtable: SelectionItem.VTable = .{
     .get_SelectionContainer = selectionContainer,
 };
 
-/// The value of `property_id` for an element, or `VT_EMPTY` to let UI
-/// Automation apply its default. A `BSTR` result is owned by the caller.
 pub fn elementProperty(
     snapshot: *const Snapshot,
     entry: *const Entry,
@@ -873,14 +789,12 @@ pub fn elementProperty(
     };
 }
 
-/// Pattern properties, which change events carry as their new value.
 fn patternProperty(
     snapshot: *const Snapshot,
     entry: *const Entry,
     property_id: i32,
 ) error{OutOfMemory}!uia.VARIANT {
     assert(entry.fingerprint.isValid());
-    // Core properties are answered by `elementProperty` before reaching here.
     assert(property_id != uia.UIA_NamePropertyId);
     const role = entry.role;
     switch (property_id) {
@@ -906,7 +820,6 @@ fn patternProperty(
     return uia.VARIANT.empty;
 }
 
-/// The property id a change event reports for `property`.
 pub fn propertyId(property: snapshot_mod.Property) i32 {
     return switch (property) {
         .name => uia.UIA_NamePropertyId,
@@ -925,8 +838,6 @@ fn toggleState(entry: *const Entry) i32 {
     return if (entry.state.checked) uia.ToggleState_On else uia.ToggleState_Off;
 }
 
-/// Expanded or collapsed when the element can open something; otherwise a
-/// leaf, such as a tree item with no children.
 fn expandCollapseState(entry: *const Entry) i32 {
     assert(snapshot_mod.supportsExpandCollapse(entry.role));
     if (entry.state.expanded) return uia.ExpandCollapseState_Expanded;
@@ -936,7 +847,6 @@ fn expandCollapseState(entry: *const Entry) i32 {
     return uia.ExpandCollapseState_LeafNode;
 }
 
-/// The element's live setting, with ARIA's defaults for alerts and status.
 fn liveSetting(entry: *const Entry) i32 {
     const live: types.Live = if (entry.live != .off) entry.live else switch (entry.role) {
         .alert => .assertive,
@@ -958,7 +868,6 @@ fn headingLevel(level: types.HeadingLevel) i32 {
     return uia.HeadingLevel1 + @as(i32, number) - 1;
 }
 
-/// UIA's `OrientationType`: None 0, Horizontal 1, Vertical 2.
 fn orientationType(orientation: ?types.Orientation) i32 {
     const axis = orientation orelse return 0;
     const value: i32 = switch (axis) {
@@ -970,8 +879,6 @@ fn orientationType(orientation: ?types.Orientation) i32 {
     return value;
 }
 
-/// `[UiaAppendRuntimeId, low, high]`: unique within the host window, which
-/// UI Automation prefixes.
 pub fn runtimeId(fingerprint: Fingerprint) [3]i32 {
     assert(fingerprint.isValid());
     const bits = fingerprint.toU64();
@@ -1020,7 +927,6 @@ fn variantBool(value: bool) uia.VARIANT {
     return variant;
 }
 
-/// A set position or size; zero means the element is not in a set.
 fn variantCount(count: u16) uia.VARIANT {
     if (count == 0) return uia.VARIANT.empty;
     return variantInt(count);
@@ -1034,15 +940,12 @@ fn variantText(text: []const u8) error{OutOfMemory}!uia.VARIANT {
     return variant;
 }
 
-/// Free what a `VARIANT` from `elementProperty` owns.
 pub fn variantFree(variant: *uia.VARIANT) void {
     if (variant.vt == uia.VT_BSTR) uia.SysFreeString(variant.value.bstrVal);
     variant.* = uia.VARIANT.empty;
     assert(variant.vt == uia.VT_EMPTY);
 }
 
-/// A `BSTR` holding `text`, which the caller (or COM) frees. Invalid UTF-8 is
-/// a bug in the text's source; it is logged and exposed as empty.
 pub fn bstrFromUtf8(text: []const u8) error{OutOfMemory}!uia.BSTR {
     assert(text.len <= bstr_bytes_max);
     var units: [bstr_bytes_max]u16 = undefined;
@@ -1054,7 +957,6 @@ pub fn bstrFromUtf8(text: []const u8) error{OutOfMemory}!uia.BSTR {
     return uia.SysAllocStringLen(&units, @intCast(count)) orelse error.OutOfMemory;
 }
 
-/// Device pixels per logical pixel, or null for a window that no longer exists.
 fn windowScale(hwnd: win32.HWND) ?f64 {
     const dpi = win32.GetDpiForWindow(hwnd);
     if (dpi == 0) return null;
@@ -1065,15 +967,12 @@ fn windowScale(hwnd: win32.HWND) ?f64 {
     return scale;
 }
 
-/// The client area's top-left corner in screen pixels.
 fn clientOrigin(hwnd: win32.HWND) ?win32.POINT {
     var origin: win32.POINT = .{ .x = 0, .y = 0 };
     if (win32.ClientToScreen(hwnd, &origin) == win32.FALSE) return null;
     return origin;
 }
 
-/// Logical client bounds to a screen rectangle in physical pixels. Read at
-/// query time, so a window moved since the last frame reports correctly.
 fn screenRect(hwnd: win32.HWND, bounds: layout.BoundingBox) uia.UiaRect {
     assert(bounds.width >= 0);
     assert(bounds.height >= 0);
@@ -1088,7 +987,6 @@ fn screenRect(hwnd: win32.HWND, bounds: layout.BoundingBox) uia.UiaRect {
     };
 }
 
-/// A screen point in physical pixels to logical client coordinates.
 fn clientPoint(hwnd: win32.HWND, x: f64, y: f64) ?[2]f32 {
     if (std.math.isNan(x) or std.math.isNan(y)) return null;
     const scale = windowScale(hwnd) orelse return null;
@@ -1101,16 +999,11 @@ fn clientPoint(hwnd: win32.HWND, x: f64, y: f64) ?[2]f32 {
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`.
     assert(@sizeOf(usize) == 8);
     assert(@sizeOf(Provider) <= 96);
     assert(2 * limits.a11y_element_count_ceiling < index_none);
     assert(snapshot_mod.value_bytes_max <= bstr_bytes_max);
 }
-
-// Methodology: drive the providers through their vtables exactly as UI
-// Automation would, against a real hidden window (for DPI and screen
-// coordinates) and a real `Tree`, then check every reference came back.
 
 const testing = std.testing;
 const Tree = tree_mod.Tree;
@@ -1162,7 +1055,6 @@ const TestFixture = struct {
         _ = win32.DestroyWindow(self.hwnd);
     }
 
-    /// A form with a labelled checkbox (checked) and a text field.
     fn buildForm(self: *TestFixture) void {
         self.tree.beginFrame();
         _ = self.tree.pushElement(.{ .role = .group, .name = "Settings" });
@@ -1230,7 +1122,6 @@ test "providers navigate the tree and report names and patterns" {
     defer testing.allocator.free(name);
     try testing.expectEqualStrings("Dark mode", name);
 
-    // The checkbox is a toggle, and reports its state; it is not a value.
     var toggle: ?*anyopaque = null;
     const iid = &uia.IID_IToggleProvider;
     try testing.expectEqual(uia.S_OK, checkbox.vtable.QueryInterface(checkbox, iid, &toggle));
@@ -1246,7 +1137,6 @@ test "providers navigate the tree and report names and patterns" {
     try testing.expectEqual(uia.E_NOINTERFACE, value_result);
     try testing.expectEqual(@as(?*anyopaque, null), value);
 
-    // Up from a top-level element is the root.
     const parent = (try navigate(group, uia.NavigateDirection_Parent)).?;
     defer release(parent);
     try testing.expectEqual(fixture.rootFragment(), parent);
@@ -1265,8 +1155,6 @@ test "the root finds focus and hit-tests in screen coordinates" {
     defer testing.allocator.free(focused_name);
     try testing.expectEqualStrings("Dark mode", focused_name);
 
-    // The checkbox's rectangle round-trips through the window's screen
-    // position and DPI, and its centre hit-tests back to it.
     var rect = uia.UiaRect.empty;
     try testing.expectEqual(uia.S_OK, focused.?.vtable.get_BoundingRectangle(focused.?, &rect));
     try testing.expect(rect.width > 0);
@@ -1304,10 +1192,6 @@ test "a removed element reports itself unavailable, and its provider is reclaime
 }
 
 test "an element outliving shutdown reports its fragment root unavailable" {
-    // `shutdown` drops the bridge's root reference while a client may still
-    // hold an element, so `get_FragmentRoot` must not resurrect the root.
-    // The fixture's `destroy` would release the root a second time, so the
-    // storage is freed by hand here.
     var fixture = try TestFixture.create();
     fixture.buildForm();
     const group = (try navigate(fixture.rootFragment(), uia.NavigateDirection_FirstChild)).?;
@@ -1349,7 +1233,6 @@ test "the provider pool fills exactly, refuses one more, and reuses a released s
     fixture.server.unlockExclusive();
     try testing.expect(fixture.server.exhaustion_logged);
 
-    // Through the vtable, exhaustion is an error for the client, not a crash.
     const root = fixture.rootFragment();
     var refused: ?*Fragment = null;
     const first_child = uia.NavigateDirection_FirstChild;

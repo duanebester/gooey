@@ -385,8 +385,7 @@ exposes control type, name, help text (`description`), focus, enabled, live sett
 heading level, set position and size, ARIA role, bounds in screen pixels, and hit testing.
 Patterns by role: Value, Range Value, Toggle, Expand Collapse, and Selection Item.
 Announcements are notification events, which need Windows 10 1709. It runs once a client
-asks for the root or while `UiaClientsAreListening` is true. See `docs/windows-port.md` for
-the full design.
+asks for the root or while `UiaClientsAreListening` is true.
 
 **Web.** The bridge mirrors the tree into a visually hidden DOM under `#gooey-a11y-root`
 with ARIA roles. It sets `aria-label`, the state attributes (`aria-checked`,

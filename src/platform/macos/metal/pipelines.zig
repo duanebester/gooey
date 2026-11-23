@@ -8,20 +8,12 @@ const packed_frame = @import("../../../core/packed_frame.zig");
 
 const Pipeline = packed_frame.Pipeline;
 
-/// Per-frame Metal buffers are declared at this size and created for the
-/// budget's `ResourceLimits.frame.in_flight_count`.
 pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
 
-/// Samples per pixel of every render target and pipeline. Quads, sprites, and
-/// points fade their edges in the fragment shader, and triangles and
-/// polylines compute analytic edge coverage (`mesh_edges.zig`). Without an
-/// MSAA target nothing window-sized is allocated or recreated on resize.
 pub const sample_count: u32 = 1;
 
 pub const pipeline_count = @typeInfo(Pipeline).@"enum".field_names.len;
 
-/// How a pipeline's fragment output blends: `straight` colours are
-/// multiplied by their alpha here, `premultiplied` ones already are.
 const Blend = enum { straight, premultiplied };
 
 const Spec = struct {
@@ -55,8 +47,6 @@ const specs = std.EnumArray(Pipeline, Spec).init(.{
 pub const Pipelines = struct {
     states: [pipeline_count]objc.Object,
 
-    /// A failure is an init error: a missing pipeline would drop instances
-    /// the frame holds.
     pub fn init(device: objc.Object) !Pipelines {
         assert(device.value != null);
         const library = try compileLibrary(device);
@@ -152,9 +142,6 @@ fn createState(device: objc.Object, library: objc.Object, spec: Spec) !objc.Obje
     return objc.Object.fromId(state_ptr);
 }
 
-/// Source-over blending into BGRA8: colour scaled by the source alpha for
-/// straight output or taken as is for premultiplied output; alpha always
-/// `src + dst × (1 − src)`.
 fn configureBlending(attachment: objc.Object, blend: Blend) void {
     assert(attachment.value != null);
     const source_rgb: mtl.MTLBlendFactor = switch (blend) {
@@ -170,8 +157,6 @@ fn configureBlending(attachment: objc.Object, blend: Blend) void {
     attachment.msgSend(void, "setDestinationAlphaBlendFactor:", .{one_minus_source_alpha});
 }
 
-/// One shared buffer per frame in flight, created once at init. Entries past
-/// `count` are never created or read.
 pub const FrameBuffers = struct {
     buffers: [frame_count_max]objc.Object,
     count: u32,
@@ -188,10 +173,6 @@ pub const FrameBuffers = struct {
     }
 };
 
-/// Create one shared buffer of `size_bytes` per frame in flight. A budget
-/// the device cannot hold fails here, naming the buffer, rather than at draw
-/// time. The CPU only writes these sequentially and never reads them back,
-/// the access pattern write-combined memory is for.
 pub fn createFrameBuffers(
     device: objc.Object,
     size_bytes: u64,
@@ -221,8 +202,6 @@ pub fn createFrameBuffers(
     errdefer result.release();
 
     while (result.count < frame_count) : (result.count += 1) {
-        // Fresh shared buffers are zero-filled; draws read only the prefix
-        // written in the same frame, so no stale bytes are exposed.
         const buffer_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
             @as(c_ulong, size_bytes),
             @as(c_ulong, @bitCast(options)),

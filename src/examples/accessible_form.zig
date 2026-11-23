@@ -161,7 +161,6 @@ const error_color = ui.Color.rgb(0.9, 0.3, 0.3);
 const title_color = ui.Color.rgb(0.2, 0.2, 0.3);
 const label_color = ui.Color.rgb(0.3, 0.3, 0.4);
 
-/// `group` names the card for screen readers.
 fn card(group: ?[]const u8, has_error: bool) ui.Box {
     return .{
         .style = .{
@@ -180,7 +179,6 @@ fn card(group: ?[]const u8, has_error: bool) ui.Box {
     };
 }
 
-/// A heading box, so the screen reader reads it at its level and place.
 const Heading = struct {
     text: []const u8,
     level: @FieldType(ui.A11y, "heading_level"),
@@ -324,8 +322,6 @@ const ExperienceSection = struct {
                 .on_select = &on_select,
                 .selected = self.experience_level,
                 .placeholder = "Select your experience level",
-                // The default 200 is narrower than this placeholder (~202 pt
-                // of text) plus padding and the chevron.
                 .width = 260,
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
@@ -337,12 +333,12 @@ const ExperienceSection = struct {
 const NotificationsSection = struct {
     pub fn render(_: NotificationsSection, cx: *Cx) void {
         const s = cx.state(State);
-        // SMS alerts need a phone number to send to.
         const sms_available = s.phone.len > 0;
         var count_buffer: [32]u8 = undefined;
+        comptime assert(std.fmt.count("{d} per week", .{std.math.maxInt(u32)}) <= count_buffer.len);
         const count = std.fmt.bufPrint(&count_buffer, "{d} per week", .{
             @as(u32, @intFromFloat(s.emails_per_week)),
-        }) catch unreachable; // 32 bytes hold any u32 and the suffix.
+        }) catch unreachable;
         cx.render(ui.box(card("Notification settings", false), .{
             sectionHeading("Notifications"),
             Switch{
@@ -450,7 +446,6 @@ const FormField = struct {
     }
 };
 
-/// An assertive live region, so the error is read when it appears.
 const ErrorMessage = struct {
     message: []const u8,
 

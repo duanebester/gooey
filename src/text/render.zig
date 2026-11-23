@@ -1,10 +1,3 @@
-//! Text placement: shaped text to glyph quads in the glyph atlas.
-//!
-//! `placeText` computes device positions without the cache lock, then
-//! batch-resolves all glyphs under one lock per batch, eliminating the N-1
-//! lock/unlock pairs of per-glyph locking, and places each glyph into the
-//! caller's sink without the lock.
-
 const std = @import("std");
 const platform = @import("../platform/mod.zig");
 const text_system_mod = @import("text_system.zig");
@@ -21,18 +14,13 @@ const is_wasm = platform.is_wasm;
 const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 const SUBPIXEL_VARIANTS_F: f32 = @floatFromInt(SUBPIXEL_VARIANTS_X);
 
-/// Matches `ShapedRunCache.MAX_GLYPHS_PER_ENTRY`.
 const MAX_GLYPHS_PER_RUN: u32 = ShapedRunCache.MAX_GLYPHS_PER_ENTRY;
 
-// The run's shaped-glyph buffer and the four batch buffers in `placeBatches`
-// are sized at MAX_GLYPHS_PER_RUN; keep their combined footprint within the
-// WASM stack budget even in deep call chains (tick → emit → placeText).
 comptime {
     const frame_bytes = MAX_GLYPHS_PER_RUN * (@sizeOf(ShapedGlyph) + @sizeOf(f32) + @sizeOf(f32) + @sizeOf(u8) + @sizeOf(CachedGlyph));
     std.debug.assert(frame_bytes <= 16384);
 }
 
-/// Where a shaped run starts, and how its base-size advances scale.
 const RunOrigin = struct {
     x: f32,
     baseline_y: f32,
@@ -40,11 +28,6 @@ const RunOrigin = struct {
     scale_factor: f32,
 };
 
-/// Resolve `glyphs` and hand them to `sink.batch` in batches of at most
-/// `MAX_GLYPHS_PER_RUN`, the size of the stack buffers, carrying the pen
-/// across batches. A run of any length is placed exactly as one batch would
-/// place it, and the glyph cache lock is taken once per batch. Shaping is
-/// not split, so kerning and ligatures across a batch edge are kept.
 fn placeBatches(
     text_system: *TextSystem,
     family: FontFamily,
@@ -93,7 +76,6 @@ fn placeBatches(
     std.debug.assert(start == glyphs.len);
 }
 
-/// `placeText`'s batches go to its caller's sink one glyph at a time.
 fn GlyphSink(comptime Sink: type) type {
     return struct {
         sink: Sink,
@@ -116,8 +98,6 @@ fn GlyphSink(comptime Sink: type) type {
     };
 }
 
-/// Compute device-pixel coordinates and subpixel X offsets for each glyph,
-/// returning the pen after the last advance, where the next batch starts.
 fn computeGlyphDevicePositions(
     shaped_glyphs: []const ShapedGlyph,
     start_x: f32,
@@ -155,8 +135,6 @@ fn computeGlyphDevicePositions(
     return pen_x;
 }
 
-/// One glyph `placeText` placed: its quad in logical pixels and its glyph
-/// atlas rectangle, each UV edge in the normalized 0..1 range.
 pub const PlacedGlyph = struct {
     x: f32,
     y: f32,
@@ -168,10 +146,6 @@ pub const PlacedGlyph = struct {
     uv_bottom: f32,
 };
 
-/// The placement of one resolved glyph, or null for an empty region
-/// (spaces, zero-width characters). Snaps to the device pixel grid, adds the
-/// raster offset, and converts back to logical pixels, as GPUI does:
-/// floor(device_pos) + raster_offset.
 fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f32) ?PlacedGlyph {
     std.debug.assert(scale_factor > 0);
     if (cached.region.width == 0 or cached.region.height == 0) return null;
@@ -200,10 +174,6 @@ fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f
     return placed;
 }
 
-/// Shape `text` and hand each placed glyph to `sink.glyph(placed)`, in
-/// order, returning its width. A text past one shaping run is placed run by
-/// run (`text_system.runLength`), each starting where the last one's advance
-/// ended, so it lands as one run would; the bound is the shapers' detail.
 pub fn placeText(
     text_system: *TextSystem,
     text: []const u8,
@@ -219,7 +189,6 @@ pub fn placeText(
     std.debug.assert(scale_factor > 0);
     var width: f32 = 0;
     var rest = text;
-    // Each run takes at least one byte, so the bytes bound the runs.
     var run_count: usize = 0;
     while (rest.len > 0) : (run_count += 1) {
         std.debug.assert(run_count < text.len);
@@ -245,11 +214,6 @@ const RunStyle = struct {
     variant: FontVariant,
 };
 
-/// One shaping run of `placeText`, or its first `kept` bytes: the glyphs
-/// before the first whose cluster starts at or past `kept`, placed from the
-/// whole run's shaping so they keep its kerning. Returns the placed width.
-/// The glyph cache may rasterize on a miss; the shaped run is copied into a
-/// stack buffer, so only a shape-cache miss uses the text system's allocator.
 fn placeRun(
     text_system: *TextSystem,
     text: []const u8,
@@ -268,7 +232,6 @@ fn placeRun(
     std.debug.assert(kept <= text.len);
     std.debug.assert(text_system_mod.runLength(text) == text.len);
     if (text_system.getMetrics() == null) return error.NoFontLoaded;
-    // Each family scales by its own regular face (`loadMonoFont`).
     const metrics = text_system.getMetricsFor(family);
     const size_scale = font_size / metrics.point_size;
 
@@ -291,8 +254,6 @@ fn placeRun(
     return width;
 }
 
-/// The glyphs of a left-to-right run before the first whose cluster starts
-/// at or past byte `kept`.
 fn keptGlyphCount(glyphs: []const ShapedGlyph, kept: usize) usize {
     std.debug.assert(kept > 0);
     for (glyphs, 0..) |glyph, index| {
@@ -308,31 +269,17 @@ fn advanceSum(glyphs: []const ShapedGlyph) f32 {
     return sum;
 }
 
-/// Where a line cut for an ellipsis ends (`measureCut`): the bytes it keeps
-/// and their width, or `whole` when the line fits and is drawn uncut.
 pub const Cut = struct {
     length: u32,
     width: f32,
     whole: bool,
 };
 
-/// The widths a line is cut against: the kept bytes must fit `kept_max`
-/// (the cut width less the ellipsis); the whole line is drawn uncut when it
-/// fits `whole_max`, which is negative when the line must end in an
-/// ellipsis whatever its width.
 pub const CutWidths = struct {
     kept_max: f32,
     whole_max: f32,
 };
 
-/// Find where `text`, one left-to-right line, is cut: the longest start
-/// that fits `widths.kept_max`, ending before an advancing glyph that starts
-/// a cluster and after a byte that is not a space or tab, so the cut never
-/// splits a UTF-8 sequence or ligature, never strands an accent (a glyph
-/// with no advance) from its base, and drops trailing whitespace. Widths
-/// are the shaped advances, kerning included, that `placeTextPrefix` draws.
-/// Walks the line's shaping runs only until the pen passes both widths, so
-/// a long paragraph costs the runs its width covers plus one.
 pub fn measureCut(
     text_system: *TextSystem,
     text: []const u8,
@@ -348,7 +295,6 @@ pub fn measureCut(
     const stop = @max(widths.kept_max, widths.whole_max);
     var walk: CutWalk = .{ .text = text, .kept_max = widths.kept_max, .stop = stop };
     var offset: usize = 0;
-    // Each run takes at least one byte, so the bytes bound the runs.
     var run_count: usize = 0;
     while (offset < text.len and !walk.stopped) : (run_count += 1) {
         std.debug.assert(run_count < text.len);
@@ -365,8 +311,6 @@ pub fn measureCut(
         if (walk.pen <= widths.whole_max) {
             return .{ .length = @intCast(text.len), .width = walk.pen, .whole = true };
         }
-        // The whole line fits beside the ellipsis: a clamped line that ends
-        // short of its width keeps every byte up to its trailing whitespace.
         const last = if (text.len > 0) text[text.len - 1] else ' ';
         if (walk.pen <= widths.kept_max and last != ' ' and last != '\t') {
             walk.best = .{ .length = @intCast(text.len), .width = walk.pen, .whole = false };
@@ -376,15 +320,11 @@ pub fn measureCut(
     return walk.best;
 }
 
-/// `measureCut`'s pen across a line's runs, and the best cut so far.
 const CutWalk = struct {
     text: []const u8,
     kept_max: f32,
     stop: f32,
     pen: f32 = 0,
-    /// One past the furthest cluster start seen: a cut is only taken before
-    /// a glyph that starts past every earlier glyph's cluster, so the kept
-    /// glyphs are exactly those of the kept bytes.
     cluster_end: usize = 0,
     best: Cut = .{ .length = 0, .width = 0, .whole = false },
     stopped: bool = false,
@@ -412,10 +352,6 @@ const CutWalk = struct {
     }
 };
 
-/// Place the first `kept` bytes of `text` as `placeText` places the whole:
-/// runs before the cut whole, and the run the cut falls in up to the glyph
-/// `measureCut` stopped before, from that run's own shaping (a shape-cache
-/// hit after `measureCut`). Returns the placed width.
 pub fn placeTextPrefix(
     text_system: *TextSystem,
     text: []const u8,

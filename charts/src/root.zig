@@ -1,9 +1,3 @@
-//! Charts draw into a core `ui.paint` element through its `Painter`, with
-//! zero dynamic allocation during render. Chart data lives in app state, so
-//! it outlives the paint function. Every chart type takes its capacities at
-//! comptime, checked against the framework ceilings (`point_count_ceiling` and
-//! friends), and exposes the series type those capacities size.
-
 const std = @import("std");
 pub const gooey = @import("gooey");
 
@@ -75,7 +69,6 @@ pub const SliceCapacity = types.SliceCapacity;
 pub const Color = paint.Color;
 pub const Painter = paint.Painter;
 
-/// Framework ceilings: no app capacity may exceed these.
 pub const point_count_ceiling = constants.point_count_ceiling;
 pub const series_count_ceiling = constants.series_count_ceiling;
 pub const category_count_ceiling = constants.category_count_ceiling;

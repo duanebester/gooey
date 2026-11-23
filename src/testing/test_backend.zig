@@ -1,12 +1,3 @@
-//! The headless renderer the core draws with in tests: `NullRenderer`
-//! satisfies the core's `Renderer` contract without a GPU, so a headless app
-//! runs its pack and draw stages end to end and goldens compare the dump of
-//! what it was asked to draw.
-//!
-//! `src/testing/mod.zig` is reachable from the root module on every target,
-//! so this file imports only target-neutral modules: importing a concrete
-//! backend here would break the wasm build.
-
 const std = @import("std");
 
 const geometry = @import("../geometry/geometry.zig");
@@ -16,22 +7,13 @@ const record_dump = @import("record_dump.zig");
 
 const assert = std.debug.assert;
 
-/// Whether a renderer may still be called: `initInPlace` enters `running`
-/// and `deinit` leaves it.
 const Lifecycle = enum(u8) {
     running,
     deinitialized,
 };
 
-/// Bytes of packed-frame dump the null renderer keeps: the most recent frame
-/// only. A todo frame dumps to about 8 KiB, so 64 KiB leaves headroom for the
-/// kept examples without making the renderer large on the stack.
 pub const null_renderer_dump_bytes_max: u32 = 64 * 1024;
 
-/// A renderer that draws nothing and records what it was asked to draw: the
-/// core's pack and draw stages run end to end, and `draw` writes the packed
-/// frame as text, which goldens compare. Every buffer is inline:
-/// `initInPlace` takes no allocator, so the renderer cannot allocate at all.
 pub const NullRenderer = struct {
     lifecycle: Lifecycle,
     size_px: core_backend.SizePx,
@@ -43,10 +25,6 @@ pub const NullRenderer = struct {
     last_clear: geometry.Color,
     dump_bytes: [null_renderer_dump_bytes_max]u8,
     dump_len: u32,
-    /// The glyph atlas the dump samples to identify glyphs. A GPU renderer
-    /// receives atlas pixels through `uploadAtlas` into its own texture; the
-    /// null renderer has no texture, so a test driver lends it the text
-    /// system's CPU atlas instead (`observeGlyphAtlas`).
     glyph_atlas: ?record_dump.GlyphAtlasView,
 
     const Self = @This();

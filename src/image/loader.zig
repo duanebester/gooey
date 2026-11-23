@@ -1,6 +1,3 @@
-//! Platform image-decode dispatcher; `core/images.zig` reads files on its
-//! worker and decodes into staging reserved at init. WASM keeps `null.zig`.
-
 const builtin = @import("builtin");
 const interface_verify = @import("../core/interface_verify.zig");
 
@@ -22,5 +19,4 @@ comptime {
 pub const DecodedImage = backend.DecodedImage;
 pub const LoadError = backend.LoadError;
 
-/// Decode image bytes (PNG, JPEG, etc.) into RGBA pixels from `allocator`.
 pub const loadFromMemory = backend.loadFromMemory;

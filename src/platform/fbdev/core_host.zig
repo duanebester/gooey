@@ -1,20 +1,3 @@
-//! Runs a core app full-screen on the kernel framebuffer. One thread: with no
-//! compositor and no GPU, the render side runs on the main thread right after
-//! the main side — the CPU renderer draws into the window's back buffer and
-//! the window copies it to the panel. Each loop turn waits in `poll` on the
-//! evdev devices and a wake eventfd, dispatches what arrived into the core's
-//! queue, and ticks when work is pending; a tick that would build waits until
-//! the last present is `frame_period_ns_min` old, so frames stay at or under
-//! 60 Hz while input keeps queueing.
-//!
-//! A pointer move that renders nothing new re-presents the last packed frame
-//! under the moved cursor; the frame and the records frame whose mesh points
-//! it borrows stay untouched until the next build and pack, which only this
-//! thread runs. No display server also means no IME, file dialogs complete as
-//! `error.FileDialogUnsupported`, and an in-process clipboard. Every
-//! allocation happens before `finishInit`; the core's guard panics on any
-//! later one, the window's and the platform's included.
-
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
@@ -39,12 +22,9 @@ const Outcome = core_events.Completion.Outcome;
 
 const poll_fd_count_max: u32 = evdev.device_count_max + 1;
 
-/// Queue slots one raw event can produce; the host pushes nothing else into
-/// the queue.
 pub const input_room_count_min: u32 = evdev.Batch.capacity;
 
 comptime {
-    // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
     assert(input_room_count_min <= core_limits.input_burst_count_max);
 }
 
@@ -57,7 +37,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     try platform.initInPlace();
     defer platform.deinit();
 
-    // The window covers the panel; `width` and `height` are ignored.
     const window = try FbdevWindow.init(gpa, platform, &.{
         .title = App.title,
         .width = @floatFromInt(App.width),
@@ -76,8 +55,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     defer host.deinit();
 
     app.finishInit();
-    // Deferred last, so it runs first: the guard leaves `running` before the
-    // deferred teardown above frees the host, the window, and the platform.
     defer app.stop();
     assert(app.guard.lifecycle == .running);
     host.runLoop(App, app);
@@ -88,16 +65,12 @@ pub const Host = struct {
     window: *FbdevWindow,
     core: *core_window.Window,
     query: core_router.Query,
-    /// Wakes the loop from the image worker (`scheduleTick`).
     wake_fd: posix.fd_t,
-    /// A tick is scheduled and has not started. Written by the worker.
     tick_scheduled: std.atomic.Value(bool),
     presented_ns: ?u64,
-    /// A tick has packed a frame, so `core.packed_frame` holds a whole one.
     frame_packed: bool,
     cursor_moved: bool,
 
-    // The host must stay at this address: the bound callbacks capture it.
     pub fn initInPlace(
         self: *Host,
         platform: *FbdevPlatform,
@@ -122,8 +95,6 @@ pub const Host = struct {
     }
 
     fn bindWindow(self: *Host) void {
-        // The renderer consumes the upload journal as this window: `draw`
-        // feeds it this consumer's records before each frame.
         const key = @intFromPtr(self.window);
         self.core.resources.registerAtlasConsumer(key);
         self.core.atlas_consumer_key = key;
@@ -137,7 +108,6 @@ pub const Host = struct {
             .read = clipboardRead,
             .write = clipboardWrite,
         };
-        // The window covers the panel, whatever size the app asked for.
         self.core.bindViewport(.{
             .width = @floatCast(self.window.size.width),
             .height = @floatCast(self.window.size.height),
@@ -147,6 +117,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(self.core.phase == .idle);
         assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
@@ -167,10 +138,8 @@ pub const Host = struct {
         signal(self.wake_fd);
     }
 
-    // Each turn runs at most one tick and one cursor-only present, then
-    // waits for and dispatches one batch of input, so every turn is bounded;
-    // it ends when the window closes or the app quits.
     fn runLoop(self: *Host, comptime App: type, app: *App) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(&app.window == self.core);
         while (!self.window.isClosed()) {
             const now_ns = platform_mod.nowNanoseconds();
@@ -185,9 +154,6 @@ pub const Host = struct {
         assert(self.core.phase == .idle);
     }
 
-    // Work is pending: queued events, a scheduled tick, a render request,
-    // or a passed render deadline. A tick that would build also waits out
-    // the frame period.
     fn tickDue(self: *const Host, now_ns: u64) bool {
         const deadline_passed = if (self.core.renderDeadlineNs()) |deadline|
             now_ns >= deadline
@@ -203,9 +169,6 @@ pub const Host = struct {
         return now_ns -| presented_ns >= platform_mod.frame_period_ns_min;
     }
 
-    // The pointer moved the software cursor. A tick that presented has
-    // drawn it already; otherwise re-present the last frame under it, at
-    // most once per frame period.
     fn presentCursor(self: *Host, now_ns: u64) void {
         assert(self.cursor_moved);
         if (!self.window.cursor_visible or !self.frame_packed) {
@@ -218,15 +181,10 @@ pub const Host = struct {
         self.presented_ns = now_ns;
     }
 
-    // Wait for input, the wake fd, the frame period, or the render deadline,
-    // then dispatch what arrived. Returns false when polling failed.
     fn waitForInput(self: *Host) bool {
         var pollfds: [poll_fd_count_max]posix.pollfd = undefined;
         const devices = self.platform.devices.slice();
         assert(devices.len < poll_fd_count_max);
-        // A queue without room for one raw event's events waits for the tick
-        // that drains it rather than waking for input it cannot take; errors
-        // and hangups still wake it.
         const reading = self.core.queue.room() >= input_room_count_min;
         const device_events: i16 = if (reading) posix.POLL.IN else 0;
         for (devices, pollfds[0..devices.len]) |device, *pollfd| {
@@ -234,8 +192,6 @@ pub const Host = struct {
         }
         const wake_index = devices.len;
         pollfds[wake_index] = .{ .fd = self.wake_fd, .events = posix.POLL.IN, .revents = 0 };
-        // `poll` fails only on a bad descriptor array or a lack of kernel
-        // memory; neither leaves a way to wait for input, so stop.
         _ = posix.poll(pollfds[0 .. wake_index + 1], self.timeoutMs()) catch |err| {
             std.log.err("fbdev core host: poll failed: {t}", .{err});
             return false;
@@ -245,14 +201,11 @@ pub const Host = struct {
         return true;
     }
 
-    // 0 when a tick is due now; the time to the frame period or the render
-    // deadline when one waits; otherwise -1, until input or a wake arrives.
     fn timeoutMs(self: *const Host) i32 {
         const now_ns = platform_mod.nowNanoseconds();
         if (self.tickDue(now_ns)) return 0;
         var wake_ns: ?u64 = null;
         if (self.core.render_requested or self.cursor_moved) {
-            // Not due, so a frame was presented less than a period ago.
             const presented_ns = self.presented_ns orelse return 0;
             wake_ns = presented_ns + platform_mod.frame_period_ns_min;
         }
@@ -262,15 +215,12 @@ pub const Host = struct {
         const target_ns = wake_ns orelse return -1;
         if (now_ns >= target_ns) return 0;
         const remaining_ms = std.math.divCeil(u64, target_ns - now_ns, std.time.ns_per_ms) catch
-            unreachable; // The divisor is a nonzero constant.
+            unreachable;
         assert(remaining_ms > 0);
         return @intCast(@min(remaining_ms, std.math.maxInt(i32)));
     }
 };
 
-/// The window's input callback, during `dispatchInput`: queue the event for
-/// the next tick. Only a key the keymap claims counts as handled, so the
-/// platform's Ctrl+Q and Alt+F4 still close the window otherwise.
 fn onInput(window: *FbdevWindow, event: input.InputEvent) bool {
     const host = window.getUserData(Host).?;
     assert(host.window == window);
@@ -286,7 +236,6 @@ fn onInput(window: *FbdevWindow, event: input.InputEvent) bool {
     };
 }
 
-/// The core's presenter, inside the tick's draw phase on this thread.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,
@@ -302,14 +251,11 @@ fn draw(
     backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
     backend.checkCapabilities(renderer.capabilities(), packed_frame);
     host.window.presentFrame(packed_frame, clear);
-    // The frame drew the cursor where it is now.
     host.cursor_moved = false;
     host.frame_packed = true;
     host.presented_ns = platform_mod.nowNanoseconds();
 }
 
-/// No file dialog exists without a display server; the request completes
-/// as a failure the app's handler sees.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
@@ -339,8 +285,6 @@ fn eventFd() !posix.fd_t {
     return fd;
 }
 
-/// Add one to the eventfd's counter. The counter cannot overflow (it is
-/// drained every turn), so the write cannot fail.
 fn signal(fd: posix.fd_t) void {
     assert(fd >= 0);
     const one: u64 = 1;
@@ -348,7 +292,6 @@ fn signal(fd: posix.fd_t) void {
     assert(written == @sizeOf(u64));
 }
 
-/// Reset the eventfd's counter. A spurious wake reads nothing.
 fn drain(fd: posix.fd_t) void {
     assert(fd >= 0);
     var count: u64 = 0;

@@ -1,16 +1,3 @@
-//! The lifecycle allocation guard.
-//!
-//! Every allocation the core makes goes through `LifecycleGuard.allocator()`.
-//! While the lifecycle is `initializing` or `deinitializing`, calls pass
-//! through to the backing allocator. While it is `running`, any call panics
-//! with what was requested, so an allocation after the initialization
-//! boundary fails the first test or run that reaches it. Storage claimed
-//! from reservations (record frames, pools, the text scratch) is not an
-//! allocation and does not pass through the guard.
-//!
-//! The guard runs in every build mode. It costs one branch per allocation,
-//! and only initialization and teardown allocate.
-
 const std = @import("std");
 
 const assert = std.debug.assert;
@@ -20,7 +7,6 @@ pub const Lifecycle = enum { initializing, running, deinitializing };
 pub const LifecycleGuard = struct {
     backing: std.mem.Allocator,
     lifecycle: Lifecycle,
-    /// Bytes requested while initializing, for the memory report.
     init_bytes: u64,
     init_allocations: u32,
 
@@ -37,13 +23,11 @@ pub const LifecycleGuard = struct {
         return .{ .ptr = self, .vtable = &vtable };
     }
 
-    /// Cross the initialization boundary: no allocation from here on.
     pub fn enterRunning(self: *LifecycleGuard) void {
         assert(self.lifecycle == .initializing);
         self.lifecycle = .running;
     }
 
-    /// Begin teardown: frees, and only frees, are expected from here on.
     pub fn enterDeinitializing(self: *LifecycleGuard) void {
         assert(self.lifecycle != .deinitializing);
         self.lifecycle = .deinitializing;

@@ -5,30 +5,20 @@ const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 
 pub const WebPlatform = struct {
-    /// True once `run` armed the frame callback and `quit` has not stopped
-    /// it; the core host reads it through `isRunning` after every frame.
     running: bool = false,
 
-    /// Web supports a single window; kept for API consistency.
     window_registry: WindowRegistry,
 
     const Self = @This();
 
     pub fn initInPlace(self: *Self) !void {
         self.window_registry = .init();
-        // `run` is the only place this becomes true: the host consults
-        // `isRunning` after every frame to decide whether to schedule
-        // another, and reporting true here would invite a frame against an
-        // application that has not finished initializing.
         self.running = false;
 
         std.debug.assert(self.window_registry.count() == 0);
         std.debug.assert(self.window_registry.getActiveWindow() == null);
     }
 
-    /// An app has one window, and the browser owns tab and window
-    /// management. Enforce that here rather than letting a second
-    /// canvas-less window register and silently never render.
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         std.debug.assert(self.window_registry.count() == 0);
 
@@ -54,12 +44,7 @@ pub const WebPlatform = struct {
         std.debug.assert(self.window_registry.getActiveWindow() == id);
     }
 
-    /// No loop to block in: the browser owns the clock. `isRunning` is what
-    /// lets the core host keep rescheduling, and this is the moment it starts
-    /// reporting true.
     pub fn run(self: *Self) void {
-        // Arming twice would start a second `requestAnimationFrame` chain, and
-        // both chains would render every tick for the rest of the session.
         std.debug.assert(!self.running);
         std.debug.assert(self.window_registry.count() <= 1);
 
@@ -67,13 +52,7 @@ pub const WebPlatform = struct {
         imports.requestAnimationFrame();
     }
 
-    /// The browser tab itself stays open: a page cannot close a tab it did
-    /// not open.
     pub fn quit(self: *Self) void {
-        // Legal before `run`, during a frame, and during teardown; all three
-        // are states the browser host can reach. The single-window invariant
-        // still has to hold, because a `quit` from a stray second canvas would
-        // mean the registry guard in `registerWindow` had been bypassed.
         std.debug.assert(self.window_registry.count() <= 1);
 
         self.running = false;
@@ -83,11 +62,6 @@ pub const WebPlatform = struct {
         return self.running;
     }
 
-    // Kept only while 0.3.1 `context/window.zig` compiles; the core never
-    // calls these, and they go when phase 6 deletes that file.
-
-    /// The browser renders frames on the one WASM thread, so a caller already
-    /// excludes every frame; there is no lock.
     pub fn lockRenderThreads(self: *Self) void {
         std.debug.assert(self.window_registry.count() <= 1);
     }

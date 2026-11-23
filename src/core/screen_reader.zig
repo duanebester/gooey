@@ -1,12 +1,3 @@
-//! Screen-reader publishing: the rendered frame's accessibility nodes and
-//! announcements, handed to the platform bridge, which diffs frames and keeps
-//! identities stable. Runs on the main thread each time a frame becomes
-//! `rendered`, so the nodes' strings, which live in that frame, outlive the
-//! sync. Whether a screen reader runs is asked at most once per
-//! `poll_interval_ns` of the window's clock, and on the first frame: the core
-//! renders only on change, so a poll counted in frames could wait arbitrarily
-//! long.
-
 const std = @import("std");
 const records = @import("records.zig");
 const A11ySystem = @import("a11y_system.zig").A11ySystem;
@@ -14,16 +5,10 @@ const a11y = @import("../accessibility/accessibility.zig");
 
 const assert = std.debug.assert;
 
-// How often a rendered frame re-asks the bridge whether a screen reader runs.
 pub const poll_interval_ns: u64 = std.time.ns_per_s;
 
-// When the bridge was last polled, on the window's clock; null before the
-// first frame.
 pub const Poll = struct { last_ns: ?u64 = null };
 
-// Publish `frame` to `system`'s bridge. The frame's node pool and the tree
-// are both sized by `ResourceLimits.a11y.element_count_max`, and node depth
-// by `build.box_depth_max`, so every node fits; emit fails fast before.
 pub fn publish(system: *A11ySystem, poll: *Poll, frame: *const records.Frame, now_ns: u64) void {
     assert(frame.a11y_count <= frame.a11y.len);
     assert(frame.a11y.len <= system.tree.elements.len);
@@ -74,7 +59,6 @@ fn push(tree: *a11y.Tree, frame: *const records.Frame, node: *const records.A11y
         .width = node.bounds.width,
         .height = node.bounds.height,
     };
-    // The bridges read `selection` as the focused text field's caret.
     if (node.selection) |selection| {
         assert(selection.start <= selection.end);
         assert(selection.end <= node.value.len);
@@ -156,7 +140,6 @@ test "a full nano frame publishes every node and announcement into a nano tree" 
             .selection = null,
         });
     }
-    // A full pending set: every polite slot and the assertive one.
     for (0..nano.a11y.announcement_polite_pending_max) |_| {
         frame.announcements.push("Saved", .polite, 1);
     }

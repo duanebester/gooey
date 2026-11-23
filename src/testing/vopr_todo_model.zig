@@ -1,21 +1,3 @@
-//! A reference model of the todo example for the VOPR, after TigerBeetle's
-//! state checker: what todo should hold (items with text and done flags, the
-//! filter, and the draft), updated from every action the harness performs
-//! and compared with `app.state` after every step; a mismatch panics with
-//! the step and both states. Written from todo's intended behaviour, not
-//! from its code. It does not model the core: focus at the start of a drain,
-//! the caret, hit records, accessibility names, and scrollbar geometry are
-//! read from the window.
-//!
-//! Where an input's effect is unspecified for todo (a press placing the
-//! caret in a non-empty draft, word, line, and undo shortcuts, paste of the
-//! harness's empty clipboard, keys during an IME composition) the model
-//! marks the draft unknown for the rest of that drain. An unknown draft, and
-//! an item added from one, are adopted from the app at the next check only
-//! after they pass validation: valid UTF-8 from the generator's alphabet,
-//! and for an item, not done, non-empty, at most 128 bytes, and without a
-//! leading space. Everything else must match exactly.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const todo = @import("todo_example");
@@ -37,22 +19,13 @@ const nextTabStop = vopr_frame.nextTabStop;
 const findHit = vopr_frame.findHit;
 const findA11y = vopr_frame.findA11y;
 
-/// Items todo should keep at most.
 const item_count_max: u32 = 64;
-/// Bytes of one item's text at most.
 const item_bytes_max: u32 = 128;
-/// The draft's capacity: the input pool's bytes and a line's codepoints.
 const draft_bytes_max: u32 = todo.App.limits.text.input.bytes_max;
 const draft_codepoint_count_max: u32 = internals.limits.run_codepoint_count_max;
-/// Actions one drain can hold. Each queues at least one event, but the core
-/// queue folds a move or scroll into the one before it, so a drain can see
-/// more actions than events: the harness asks `pendingRoom` before it
-/// generates an input, as it asks the queue's room.
 const pending_count_max: u32 = todo.App.limits.events.queue_count_max;
 const pending_text_bytes_max: u32 = todo.App.limits.events.text_bytes_max;
-/// Frames whose rows a click can refer to: the rendered and the built one.
 const view_count_max: u32 = 2;
-/// Ids one press lands in: one per box on the path to the root.
 const press_path_len_max: u32 = internals.window.box_depth_ceiling;
 
 const Point = struct { x: f32, y: f32 };
@@ -65,43 +38,28 @@ comptime {
 pub const TodoModel = struct {
     items: [item_count_max]Item,
     item_count: u32,
-    /// Identities for items, so a stale row is never confused with another.
     item_id_next: u32,
     filter: todo.Filter,
     draft: Draft,
-    /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
     composing: bool,
-    /// The ids the last press landed in, innermost first, until a release.
     press_path: [press_path_len_max]ElementId,
     press_len: u32,
     pending: [pending_count_max]Action,
-    /// Whether each pending click lands on a scrollbar, decided before the
-    /// drain: the build after it can move or remove the bar.
     pending_on_scrollbar: [pending_count_max]bool,
     pending_count: u32,
     pending_text: [pending_text_bytes_max]u8,
     pending_text_len: u32,
-    /// Rows each recent frame showed, by item id, in order.
     views: [view_count_max]View,
-    /// The frame `tickMain` published, whose view `check` records once the
-    /// model is reconciled.
     view_frame_pending: ?u64,
-    /// The step since which the input's engine has held text other than the
-    /// draft, for the report of a mismatch it causes.
     stale_engine_step: ?u64,
-    /// The last step whose drain ran a row control from a frame whose row no
-    /// longer shows the same item at that position, for a mismatch report.
     stale_row_step: ?u64,
     step_last: u64,
 
-    /// The action kinds todo's swarm draws weights for, in this order; the
-    /// order is part of every seed, so it must not change.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present, .resize,
     };
 
-    /// Todo's runs report no counts beyond the harness summary.
     pub const Stats = struct {};
 
     const Item = struct {
@@ -109,8 +67,6 @@ pub const TodoModel = struct {
         text: [item_bytes_max]u8,
         len: u32,
         done: bool,
-        /// Added from an unknown draft: the app may or may not hold it, and
-        /// its text is adopted at the next check.
         maybe: bool,
     };
 
@@ -118,7 +74,6 @@ pub const TodoModel = struct {
         bytes: [draft_bytes_max]u8,
         len: u32,
         known: bool,
-        /// Caret and selection end, when known, in bytes.
         caret_known: bool,
         cursor: u32,
         anchor: u32,
@@ -132,7 +87,6 @@ pub const TodoModel = struct {
     const View = struct {
         frame_number: u64,
         ids: [item_count_max]u32,
-        /// Where each row's item sat in the list when the frame was built.
         indexes: [item_count_max]u32,
         count: u32,
     };
@@ -185,7 +139,6 @@ pub const TodoModel = struct {
         switch (copy) {
             .text, .compose => |*text| text.* = self.copyText(text.*),
             .pointer, .key, .scroll, .resize => {},
-            // Todo's swarm draws no `.drag` or `.cancel` (`action_kinds`).
             .wait_ns, .tick_main, .present, .drag, .cancel, .image, .dialog, .job => unreachable,
         }
         self.pending[self.pending_count] = copy;
@@ -201,8 +154,6 @@ pub const TodoModel = struct {
         return target;
     }
 
-    /// Before `tickMain`: the focus, caret, and composition the drain starts
-    /// from are the core's, read from the window.
     pub fn beginDrain(self: *TodoModel, window: *Window) void {
         assert(window.phase == .idle);
         self.focus = window.focus;
@@ -222,8 +173,6 @@ pub const TodoModel = struct {
         self.composing = engine.preedit_len > 0;
         assert(self.draft.known);
         if (self.composing and !self.inputFocused(window.rendered())) {
-            // Focus left mid-composition: the core commits the preedit into
-            // the draft at the input's next build, which this drain may run.
             self.forgetDraft();
             return;
         }
@@ -238,9 +187,6 @@ pub const TodoModel = struct {
             self.draft.cursor = engine.cursor;
             self.draft.anchor = engine.anchor;
         } else {
-            // The app replaced the bound value since the engine last synced,
-            // as Add does: editing continues from the end of the new value.
-            // A mismatch while this holds names it (`stale_engine_step`).
             if (self.stale_engine_step == null) self.stale_engine_step = self.step_last;
             self.draft.caret_known = true;
             self.draft.cursor = self.draft.len;
@@ -249,8 +195,6 @@ pub const TodoModel = struct {
         assert(self.draft.cursor <= self.draft.len);
     }
 
-    /// After `tickMain`: apply the drained actions in order against the
-    /// frame the drain routed against.
     pub fn endDrain(self: *TodoModel, window: *Window, published: bool) void {
         assert(window.phase == .idle);
         const frame = window.rendered();
@@ -271,8 +215,6 @@ pub const TodoModel = struct {
         switch (action.*) {
             .pointer => |pointer| {
                 const point: Point = .{ .x = pointer.x, .y = pointer.y };
-                // Only a left press takes a scrollbar. No thumb drag is on
-                // then: only the left button starts one, and it is up.
                 const takes_scrollbar = on_scrollbar and pointer.button == .left;
                 const left = pointer.button == .left;
                 if (pointer.releases_held and left) self.release(frame, point);
@@ -297,22 +239,14 @@ pub const TodoModel = struct {
             },
             .compose => |text| {
                 if (!self.inputFocused(frame)) return;
-                // A composition that starts over a selection may replace it.
                 if (!self.composing and self.hasSelection()) self.forgetDraft();
                 self.composing = text.len > 0;
             },
-            // A resize changes the layout, which the model reads from frames.
             .scroll, .resize => {},
-            // Todo's swarm draws no `.drag` or `.cancel` (`action_kinds`).
             .wait_ns, .tick_main, .present, .drag, .cancel, .image, .dialog, .job => unreachable,
         }
     }
 
-    /// A press of any button: focus moves to the innermost focusable record
-    /// under it, and the release that follows may click what it landed in.
-    /// A left press on a scrollbar is the scroll box's: it lands in nothing.
-    /// Only a left press records its path: other buttons click nothing and
-    /// leave a left press's path alone, but focus all the same.
     fn press(
         self: *TodoModel,
         frame: *const records.Frame,
@@ -339,7 +273,6 @@ pub const TodoModel = struct {
         if (options.left) self.press_len = depth;
         self.moveFocus(focus_id);
         if (self.inputFocused(frame)) {
-            // Where the press puts the caret depends on glyph layout.
             if (self.draft.known and self.draft.len == 0) {
                 self.draft.caret_known = true;
             } else {
@@ -348,8 +281,6 @@ pub const TodoModel = struct {
         }
     }
 
-    /// A release of any button fires the innermost `on_click` under it that
-    /// the last press also landed in, and forgets that press.
     fn release(self: *TodoModel, frame: *const records.Frame, point: Point) void {
         const pressed = self.press_path[0..self.press_len];
         self.press_len = 0;
@@ -368,8 +299,6 @@ pub const TodoModel = struct {
         }
     }
 
-    /// Focus moving off the input during a composition leaves the draft
-    /// unspecified, as does a press inside it.
     fn moveFocus(self: *TodoModel, focus_id: ElementId) void {
         if (self.composing) {
             self.composing = false;
@@ -404,8 +333,6 @@ pub const TodoModel = struct {
         }
     }
 
-    /// One key on the focused input. Keys whose effect todo does not
-    /// specify (word moves, undo, paste) leave the draft unknown.
     fn edit(self: *TodoModel, chord: Action.Chord) void {
         const modifiers = chord.modifiers;
         const plain = !modifiers.shift and !modifiers.ctrl and !modifiers.alt;
@@ -431,7 +358,6 @@ pub const TodoModel = struct {
                 if (ctrl_only) {
                     self.shortcut(chord.key);
                 } else {
-                    // Ctrl with Shift or Alt has no meaning todo specifies.
                     if (modifiers.ctrl) self.forgetDraft();
                 }
             },
@@ -441,8 +367,6 @@ pub const TodoModel = struct {
         }
     }
 
-    /// Ctrl+A selects all, Ctrl+X cuts the selection, and Ctrl+C copies;
-    /// paste (of the harness's empty clipboard) and undo are unspecified.
     fn shortcut(self: *TodoModel, key_code: input.KeyCode) void {
         assert(self.draft.known);
         switch (key_code) {
@@ -470,7 +394,6 @@ pub const TodoModel = struct {
         const target: u32 = switch (key_code) {
             .home => 0,
             .end => draft.len,
-            // Without Shift, an arrow collapses a selection to its side.
             .left => if (!extend and start < end) start else previousBoundary(text, draft.cursor),
             .right => if (!extend and start < end) end else nextBoundary(text, draft.cursor),
             else => unreachable,
@@ -499,8 +422,6 @@ pub const TodoModel = struct {
         self.replaceSelection(text);
     }
 
-    /// Replace the selection with what fits of `text`: whole codepoints,
-    /// within the input's bytes and a line's codepoints.
     fn replaceSelection(self: *TodoModel, text: []const u8) void {
         const draft = &self.draft;
         assert(draft.known);
@@ -516,7 +437,6 @@ pub const TodoModel = struct {
             .codepoint_room = draft_codepoint_count_max -| codepoints_kept,
         });
         const tail_len = draft.len - end;
-        // The tail moves left when the insert is shorter than the selection.
         const tail_target = draft.bytes[start + fits.len ..][0..tail_len];
         if (start + fits.len < end) {
             std.mem.copyForwards(u8, tail_target, draft.bytes[end..draft.len]);
@@ -544,8 +464,6 @@ pub const TodoModel = struct {
         return node.role == .textbox;
     }
 
-    /// Run the control `id` names in `frame`, by its accessibility role and
-    /// name; a row's control acts on the item that row showed.
     fn activate(self: *TodoModel, frame: *const records.Frame, id: ElementId) void {
         const control = controlOf(frame, id);
         switch (control) {
@@ -582,9 +500,6 @@ pub const TodoModel = struct {
     }
 
     fn add(self: *TodoModel) void {
-        // Add empties the draft. An unknown draft stays unknown: an IME
-        // composition the press ended may settle into it after Add runs.
-        // The input's engine adopts the emptied draft at its next edit.
         if (!self.draft.known or self.draft.len > 0) {
             if (self.stale_engine_step == null) self.stale_engine_step = self.step_last;
         }
@@ -611,7 +526,6 @@ pub const TodoModel = struct {
         self.item_count += 1;
     }
 
-    /// Add empties the draft, and the caret goes to its start.
     fn clearDraft(self: *TodoModel) void {
         assert(self.draft.known);
         self.draft.len = 0;
@@ -644,8 +558,6 @@ pub const TodoModel = struct {
         std.debug.panic("vopr model: no rows recorded for frame {d}", .{frame_number});
     }
 
-    /// After every step: reconcile what the model left unknown, then require
-    /// the app's state to match. `step` names the step in a mismatch.
     pub fn check(self: *TodoModel, state: *const todo.State, step: u64) void {
         self.step_last = step;
         self.reconcile(state, step);
@@ -660,8 +572,6 @@ pub const TodoModel = struct {
         }
     }
 
-    /// Adopt an unknown draft and decide each maybe-item, after validating
-    /// what the app holds.
     fn reconcile(self: *TodoModel, state: *const todo.State, step: u64) void {
         if (!self.draft.known) {
             if (!validText(state.draft) or state.draft.len > draft_bytes_max) {
@@ -695,8 +605,11 @@ pub const TodoModel = struct {
         }
     }
 
-    /// The first way `state` differs from the model, or null.
     fn difference(self: *const TodoModel, state: *const todo.State, buffer: []u8) ?[]const u8 {
+        assert(std.fmt.count("{d} items, expected {d}", .{
+            state.count,
+            self.item_count,
+        }) <= buffer.len);
         if (state.count != self.item_count) {
             return std.fmt.bufPrint(buffer, "{d} items, expected {d}", .{
                 state.count,
@@ -706,10 +619,12 @@ pub const TodoModel = struct {
         for (self.items[0..self.item_count], state.todos[0..state.count], 0..) |*a, *b, i| {
             assert(!a.maybe);
             if (!std.unicode.utf8ValidateSlice(b.bytes[0..b.len])) {
+                assert(std.fmt.count("item {d} is not valid UTF-8", .{i}) <= buffer.len);
                 return std.fmt.bufPrint(buffer, "item {d} is not valid UTF-8", .{i}) catch
                     unreachable;
             }
             if (!std.mem.eql(u8, a.text[0..a.len], b.bytes[0..b.len]) or a.done != b.done) {
+                assert(std.fmt.count("item {d} differs", .{i}) <= buffer.len);
                 return std.fmt.bufPrint(buffer, "item {d} differs", .{i}) catch unreachable;
             }
         }
@@ -719,7 +634,6 @@ pub const TodoModel = struct {
     }
 
     fn recordView(self: *TodoModel, frame_number: u64) void {
-        // Replace the oldest view; frames are recorded in increasing order.
         var oldest = &self.views[0];
         for (&self.views) |*view| {
             if (view.frame_number < oldest.frame_number) oldest = view;
@@ -736,7 +650,6 @@ pub const TodoModel = struct {
     }
 
     fn fail(self: *const TodoModel, state: *const todo.State, step: u64, reason: []const u8) void {
-        // A cut codepoint is its own finding, whatever else is stale.
         const utf8 = std.mem.endsWith(u8, reason, "valid UTF-8");
         std.debug.print("vopr model: expected\n", .{});
         self.dump();
@@ -795,21 +708,15 @@ fn dumpState(state: *const todo.State) void {
     }
 }
 
-/// An item added from an unknown draft is adoptable when it is what Add can
-/// produce from typed text (trimmed, non-empty, at most 128 bytes) and has
-/// the done flag the model gave it (its row's checkbox may have toggled it).
 fn adoptable(item: anytype, done: bool) bool {
     const text = item.bytes[0..item.len];
     if (item.done != done) return false;
     if (text.len == 0 or text.len > item_bytes_max) return false;
     if (text[0] == ' ') return false;
-    // Add trims, then cuts: only a cut item may end with a space, and a cut
-    // on a codepoint boundary drops at most three bytes of the last one.
     if (text[text.len - 1] == ' ' and text.len + 3 < item_bytes_max) return false;
     return validText(text);
 }
 
-/// Valid UTF-8 made only of the generator's alphabet.
 fn validText(text: []const u8) bool {
     if (!std.unicode.utf8ValidateSlice(text)) return false;
     var view = std.unicode.Utf8View.initUnchecked(text).iterator();
@@ -826,7 +733,6 @@ fn validText(text: []const u8) bool {
 
 const Room = struct { bytes_room: u32, codepoint_room: u32 };
 
-/// The longest prefix of `text` of whole codepoints within `room`.
 fn fittingPrefix(text: []const u8, room: Room) []const u8 {
     assert(std.unicode.utf8ValidateSlice(text));
     var len: usize = 0;
@@ -865,8 +771,6 @@ fn nextBoundary(text: []const u8, offset: u32) u32 {
     return offset + size;
 }
 
-/// What the control `id` is, from its accessibility node: todo's buttons by
-/// name, and a row's control by its position among the rows' controls.
 fn controlOf(frame: *const records.Frame, id: ElementId) TodoModel.Control {
     const node = findA11y(frame, id) orelse
         std.debug.panic("vopr model: clicked element has no accessibility node", .{});
@@ -888,7 +792,6 @@ fn controlOf(frame: *const records.Frame, id: ElementId) TodoModel.Control {
     std.debug.panic("vopr model: clicked an unknown control: {t} \"{s}\"", .{ node.role, name });
 }
 
-/// How many nodes of `role` (and `name`) precede `target` in tree order.
 fn rowOf(
     frame: *const records.Frame,
     target: *const records.A11yNode,
@@ -908,7 +811,6 @@ fn rowOf(
     unreachable;
 }
 
-/// The todo draft's engine, if its input is in the rendered frame.
 fn findEngine(window: *Window) ?*const InputEngine {
     const frame = window.rendered();
     const node = for (frame.a11y[0..frame.a11y_count]) |*node| {

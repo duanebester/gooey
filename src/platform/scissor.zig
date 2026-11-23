@@ -1,6 +1,3 @@
-//! Scissor rule: a draw writes only pixels whose centres lie inside its clip,
-//! edges included. Used by the Vulkan and WebGPU renderers.
-
 const std = @import("std");
 const backend = @import("../core/backend.zig");
 const packed_mod = @import("../core/packed_frame.zig");
@@ -30,10 +27,6 @@ pub fn clipRect(
 
 const Span = struct { first: u32, count: u32 };
 
-// Device pixel i has centre (i + 0.5) / scale, so the kept span is
-// `ceil(start * scale - 0.5)` through `floor((start + size) * scale - 0.5)`.
-// Both ends clamp to the framebuffer in float before converting, so the
-// unbounded clip's ±1e9 never reaches an integer at any scale.
 fn centreSpan(start: f32, size: f32, scale: f32, limit: u32) ?Span {
     assert(!std.math.isNan(start));
     assert(size >= 0);

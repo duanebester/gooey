@@ -7,8 +7,6 @@ pub const Sampler = struct {
 
     iterations: u32 = 0,
 
-    /// A zero sample is valid: work can complete below the clock's
-    /// resolution — still a valid (floored) sample, not an error.
     pub fn record(self: *Sampler, elapsed_ns: u64) void {
         self.total_time_ns += elapsed_ns;
         self.min_time_ns = @min(self.min_time_ns, elapsed_ns);

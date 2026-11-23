@@ -5,8 +5,6 @@ zig_version="0.17.0"
 zig_install_dir="/usr/local/lib/zig-${zig_version}"
 
 echo "Installing Gooey's Linux build dependencies..."
-# gnome-shell, ibus, ibus-anthy, pipewire, python3-gi, and wireplumber run the headless
-# GNOME Wayland session in .agents/skills/previewing-gooey/scripts/gnome-session.
 packages=(
     ca-certificates
     curl

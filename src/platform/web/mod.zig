@@ -13,6 +13,5 @@ pub const WebPlatform = platform.WebPlatform;
 pub const WebWindow = window.WebWindow;
 pub const WebRenderer = renderer.WebRenderer;
 
-// The names `platform/mod.zig` aliases as `Platform` and `PlatformWindow`.
 pub const Platform = platform.WebPlatform;
 pub const PlatformWindow = window.WebWindow;

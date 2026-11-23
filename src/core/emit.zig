@@ -1,8 +1,3 @@
-//! One pass over the laid-out nodes in pre-order, which is draw order. Culled
-//! content writes no paint records but keeps its hit and accessibility records,
-//! so Tab order and screen readers still see it, and paint functions still run.
-//! Paint budgets follow the viewport: a scroll box draws the lines in view.
-
 const std = @import("std");
 const records = @import("records.zig");
 const element = @import("element.zig");
@@ -29,12 +24,7 @@ const TextAlignment = layout_mod.TextConfig.TextAlignment;
 const ObjectFit = image_mod.ObjectFit;
 const ImageAtlas = image_mod.ImageAtlas;
 
-/// Drawing access for `ui.paint` functions, valid during emit only and only
-/// through the pointer the paint function receives: the painter is a field
-/// of a `PaintTarget`, and its methods find the window from their own
-/// address, so the public type carries nothing but its bounds.
 pub const Painter = struct {
-    /// The paint element's laid-out bounds.
     bounds: Rect,
 
     pub fn theme(self: *const Painter) *const element.Theme {
@@ -72,14 +62,12 @@ pub const Painter = struct {
         paint_target.window.built().appendPaint(.clip_pop);
     }
 
-    /// Draw one line of text with its top at `y`; returns its width.
     pub fn text(self: *Painter, content: []const u8, x: f32, y: f32, style: TextStyle) f32 {
         const paint_target = targetOf(self);
         if (paint_target.culled) return self.measureText(content, style);
         return emitTextLine(paint_target.window, content, x, y, style);
     }
 
-    /// Draw one line of text on `baseline`; returns its width.
     pub fn textOnBaseline(
         self: *Painter,
         content: []const u8,
@@ -107,16 +95,12 @@ pub const Painter = struct {
         return targetOf(self).window.resources.text_system.getMetrics().?;
     }
 
-    /// Draw an SVG path from the SVG atlas.
     pub fn svg(self: *Painter, path: []const u8, bounds: Rect, options: SvgStyle) void {
         const paint_target = targetOf(self);
         if (paint_target.culled) return;
         emitSvg(paint_target.window, path, bounds, options);
     }
 
-    /// Fill a triangle list, three points per triangle, in window
-    /// coordinates. A fill directly after another of the same colour joins
-    /// its mesh, so a pie of many slivers packs as one path.
     pub fn triangles(self: *Painter, points: []const [2]f32, color: Color) void {
         assert(points.len > 0);
         assert(points.len % 3 == 0);
@@ -125,8 +109,6 @@ pub const Painter = struct {
         emitTriangles(paint_target.window, points, color);
     }
 
-    /// A line `width` wide: an axis-aligned line is a quad, any other two
-    /// triangles.
     pub fn line(self: *Painter, from: [2]f32, to: [2]f32, width: f32, color: Color) void {
         assert(width > 0);
         assert(!std.math.isNan(from[0]) and !std.math.isNan(to[0]));
@@ -154,8 +136,6 @@ pub const Painter = struct {
         self.triangles(&.{ c0, c1, c2, c0, c2, c3 }, color);
     }
 
-    /// A filled circle of as many sides as its size on screen needs:
-    /// 4 below 2 px of radius, up to 32.
     pub fn circle(self: *Painter, center: [2]f32, radius: f32, color: Color) void {
         assert(radius >= 0);
         assert(!std.math.isNan(center[0]) and !std.math.isNan(center[1]));
@@ -164,7 +144,6 @@ pub const Painter = struct {
         self.triangles(points[0..count], color);
     }
 
-    /// A polyline the GPU widens to `width`, one draw for every segment.
     pub fn polyline(self: *Painter, points: []const [2]f32, width: f32, color: Color) void {
         assert(points.len >= 2);
         assert(width > 0);
@@ -177,7 +156,6 @@ pub const Painter = struct {
         });
     }
 
-    /// Circles of one radius and colour at `centers`, drawn as instances.
     pub fn pointCloud(self: *Painter, centers: []const [2]f32, radius: f32, color: Color) void {
         assert(centers.len >= 1);
         assert(radius > 0);
@@ -190,18 +168,12 @@ pub const Painter = struct {
         });
     }
 
-    /// Draw the image file at `path` into `bounds`, placed by `options.fit`.
-    /// The first frame that draws a path queues its decode on the image
-    /// worker and draws nothing, so the box's own background shows; the
-    /// decoded image lands a few frames later and requests a render. A
-    /// culled element queues no decode, so an image loads once it scrolls in.
     pub fn image(self: *Painter, path: []const u8, bounds: Rect, options: ImageStyle) void {
         const paint_target = targetOf(self);
         if (paint_target.culled) return;
         emitImage(paint_target.window, path, bounds, options);
     }
 
-    /// Answer the platform's IME questions for this frame (`Query`).
     pub fn imeCursor(self: *Painter, ime: records.Ime) void {
         assert(ime.owner.isKeyed());
         assert(ime.selected_start <= ime.selected_end);
@@ -209,19 +181,13 @@ pub const Painter = struct {
     }
 };
 
-/// What a `Painter` draws into, for emit and the debugger: the window and the
-/// paint clip stack's depth, which box clips and the paint function share.
 pub const PaintTarget = struct {
     window: *Window,
     clip_depth: u32,
-    /// The element lies wholly outside the clip around it, such as a row
-    /// scrolled out of its scroll box: the function still runs, so its IME
-    /// answer and text widths hold, but it writes no paint records.
     culled: bool,
     painter: Painter,
 };
 
-/// The target around a painter that emit or the debugger handed out.
 pub fn targetOf(painter: *const Painter) *PaintTarget {
     const paint_target: *const PaintTarget = @alignCast(@fieldParentPtr("painter", painter));
     assert(paint_target.clip_depth <= clip_depth_max);
@@ -246,21 +212,16 @@ pub const SvgStyle = struct {
 pub const ImageStyle = struct {
     fit: ObjectFit,
     corners: records.Corners = .zero,
-    /// Multiplied with every pixel; null draws the image's own colours.
     tint: ?Color = null,
-    /// 0 keeps colour, 1 is fully gray.
     grayscale: f32 = 0,
     opacity: f32 = 1,
 };
 
-/// The paint clip stack's ceiling; `limits.paint.clip_depth_max` bounds box
-/// clips and paint-function clips together below it.
 const clip_depth_max: u32 = limits_mod.MAX_CLIP_STACK_DEPTH;
 
 pub fn emit(window: *Window) void {
     window.assertPhase(.emit);
     window.resources.svg_atlas.resetFrameBudget();
-    // A decode that this frame's upload staging cannot take lands next frame.
     if (window.images.land(window.resources.image_atlas) == .deferred) {
         window.render_requested = true;
     }
@@ -283,14 +244,9 @@ pub fn emit(window: *Window) void {
     }
     assert(layers_open.len == 0);
     assert(window.built().paint_opacity == 1);
-    // A focus move this frame did not render reveals nothing later.
     window.focus_reveal = false;
 }
 
-/// Accessibility nodes in tree order, whatever fragment paints them, so a
-/// popover's options sit under their combobox for the screen reader. A
-/// `.drag` layer's subtree adds none: a preview repeats its source, which
-/// the screen reader already has.
 fn emitAccessibility(window: *Window) void {
     const elements = window.layout.elements.items();
     const nodes = window.nodes[0..window.node_count];
@@ -316,9 +272,6 @@ fn emitAccessibility(window: *Window) void {
     }
 }
 
-/// Paint and hit records for one fragment: content from the root node, or a
-/// layer's subtree from its box. A layer box met on the way opens a later
-/// fragment, and its subtree is skipped here.
 fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoot) void {
     const elements = window.layout.elements.items();
     const nodes = window.nodes[0..window.node_count];
@@ -326,10 +279,6 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     var hit_scope: [window_mod.box_depth_ceiling + 1]u32 = undefined;
     var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
     if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
-    // A drag preview follows the pointer and a tooltip sits beside its
-    // trigger, so neither takes it: the target under a preview stays the
-    // drop target, a tooltip cannot end its trigger's hover or block a click
-    // below it, and their records still bubble.
     var takes_pointer = true;
     if (root.fragment != layers.content_fragment) {
         const kind = nodes[root.node_index].layer.?.kind;
@@ -386,13 +335,10 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     }
     clips.close(window, 0);
     assert(clips.len == 0);
-    // The focus ring is a keyboard affordance and draws at full strength
-    // inside a faded subtree.
     window.built().paint_opacity = 1;
     if (ring) |focused| {
         const shifted = focusShifted(window, &focused);
         if (window.focus_reveal or shifted) revealFocus(window, &focused);
-        // Read before the literal: it writes `focus_place` field by field.
         const content = focusPlaceContent(window, &focused, shifted);
         window.focus_place = .{
             .id = window.focus,
@@ -404,39 +350,21 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     if (root.clip != null) window.built().appendPaint(.clip_pop);
 }
 
-/// The keyboard focus ring: `focus_ring_width` px wide and
-/// `focus_ring_offset` px outside the focused box, in the theme's
-/// `border_focus`, so it shows on any theme and on a box filled with
-/// `primary`. Only keyboard focus draws it (`Window.focus_visible`).
 const focus_ring_width: f32 = 2;
 const focus_ring_offset: f32 = 2;
-/// Room a revealed box keeps from its scroll box's edge, past its ring.
 const focus_reveal_margin: f32 = 8;
-/// How far an edge of the focused box must move in its scroll box's content
-/// to count as a layout shift. The content rect is `bounds - viewport +
-/// offset`, and layout placed `bounds` at `content - offset`: in f32 that
-/// round trip lands an ulp or a few away depending on the offset, so a pure
-/// scroll or clamp moves it by far less than this. The slop matches
-/// `ScrollState.end_slop_px`, the scroll state's other rounding allowance,
-/// and is well inside `focus_reveal_margin`, so a shift it hides cannot take
-/// the box out of view.
 const focus_shift_slop_px: f32 = 0.5;
 
-/// The focused box, recorded as the fragment passes it, and the innermost
-/// scroll box around it.
 const FocusRing = struct {
     bounds: Rect,
     corners: records.Corners,
     clip: ?Rect,
     scroll: ?ScrollHandle,
-    /// `Window.FocusPlace.content`: `bounds` in the scroll box's content.
     content: Rect,
 };
 
 const ScrollHandle = retained_mod.Handle(window_mod.ScrollState);
 
-/// Read while the scroll box is open, so its offset is the one this
-/// frame's layout applied; the emit may clamp it when the box closes.
 fn focusRing(window: *Window, clips: *const Clips, node: *const Node, bounds: Rect) FocusRing {
     assert(window.isFocused(node.id));
     assert(window.focus_visible);
@@ -457,12 +385,6 @@ fn focusRing(window: *Window, clips: *const Clips, node: *const Node, bounds: Re
     return ring;
 }
 
-/// Whether the last build drew this ring elsewhere in its scroll box's
-/// content: a layout change above or around the focused box, such as an
-/// error message appearing, moved or resized it. A scroll does not, though
-/// it moves the computed content rect by rounding: an exact comparison read
-/// that as a shift, and at the clamp boundary the reveal and the clamp then
-/// traded one ulp of offset every frame (VOPR seed 5284955851540158440).
 fn focusShifted(window: *const Window, ring: *const FocusRing) bool {
     const place = &window.focus_place;
     assert(place.frame_number < window.frame_number);
@@ -478,21 +400,12 @@ fn focusShifted(window: *const Window, ring: *const FocusRing) bool {
     return @abs(after.height - before.height) > focus_shift_slop_px;
 }
 
-/// Whether `Window.focus_place` describes this focus in the previous build.
 fn focusPlaceFollows(window: *const Window) bool {
     const place = &window.focus_place;
     assert(place.frame_number < window.frame_number);
     return place.id == window.focus and place.frame_number + 1 == window.frame_number;
 }
 
-/// The content rect the next build compares against. While the same focus
-/// stays put, this keeps the rect from the last shift (or focus move)
-/// rather than this build's: rounding noise then never accumulates, and a
-/// drift below `focus_shift_slop_px` per frame still adds up to a shift.
-/// Why it converges: a reveal moves only the offset, which leaves the kept
-/// rect alone, so after one reveal no later build of a steady layout calls
-/// another; the clamp alone only pulls an offset back into a measured
-/// range that rounding moves by an ulp, so it settles within a frame or two.
 fn focusPlaceContent(window: *const Window, ring: *const FocusRing, shifted: bool) Rect {
     assert(ring.content.width >= 0);
     if (shifted) return ring.content;
@@ -500,10 +413,6 @@ fn focusPlaceContent(window: *const Window, ring: *const FocusRing, shifted: boo
     return window.focus_place.content;
 }
 
-/// Scroll the innermost scroll box around keyboard focus so the box and its
-/// ring are in view: once per focus move, and again when a layout change
-/// moves the box, but not after a wheel scrolled it away. The next frame
-/// draws the new offset; outer scroll boxes stay put.
 fn revealFocus(window: *Window, ring: *const FocusRing) void {
     assert(window.focus_visible);
     assert(ring.bounds.width >= 0);
@@ -521,8 +430,6 @@ fn revealFocus(window: *Window, ring: *const FocusRing) void {
     if (state.offset_x != before_x or state.offset_y != before_y) window.render_requested = true;
 }
 
-/// How far to scroll along one axis so `[start, start + size)` lies in the
-/// view: to its start when above it or larger than it, else to its end.
 fn revealDelta(view_start: f32, view_size: f32, start: f32, size: f32) f32 {
     assert(view_size >= 0);
     assert(size >= 0);
@@ -531,9 +438,6 @@ fn revealDelta(view_start: f32, view_size: f32, start: f32, size: f32) f32 {
     return @max(0, overshoot);
 }
 
-/// Drawn after the rest of its fragment, so later siblings do not cover
-/// it, inside the clip that encloses the box, so a scrolled-away box draws
-/// none outside its viewport. One quad and at most one clip per frame.
 fn emitFocusRing(window: *Window, ring: *const FocusRing, paint_depth: u32) void {
     assert(ring.bounds.width >= 0);
     assert(ring.bounds.height >= 0);
@@ -564,16 +468,12 @@ fn emitFocusRing(window: *Window, ring: *const FocusRing, paint_depth: u32) void
     if (ring.clip != null) frame.appendPaint(.clip_pop);
 }
 
-/// A modal fragment starts here: hit tests stop at its first record, so
-/// nothing emitted before it receives the pointer.
 fn blockEarlierHits(frame: *records.Frame) void {
     assert(frame.modal_hit_start <= frame.hit_count);
     frame.modal_hit_start = frame.hit_count;
     assert(frame.hit_count <= frame.hits.len);
 }
 
-/// The index after `index`'s subtree: in pre-order, the first later node no
-/// deeper than it.
 fn subtreeEnd(nodes: []const Node, index: u32) u32 {
     assert(index < nodes.len);
     const depth = nodes[index].depth;
@@ -585,8 +485,6 @@ fn subtreeEnd(nodes: []const Node, index: u32) u32 {
 
 const layer_count_ceiling = limits_mod.layer_count_ceiling;
 
-/// Where a fragment starts: its box, the hit record its hits bubble to, and
-/// the clip it inherits (`Layer.clip = .inherit`), if any.
 const LayerRoot = struct {
     node_index: u32,
     fragment: u8,
@@ -594,13 +492,9 @@ const LayerRoot = struct {
     clip: ?Rect,
 };
 
-/// Layers opened and not yet emitted. Fragments follow in layer kind order,
-/// then open order, which is pre-order: the next fragment is
-/// the lowest kind rank, then the lowest node index.
 const LayerQueue = struct {
     roots: [layer_count_ceiling]LayerRoot,
     len: u32,
-    /// Layers opened this frame, for `build.layer_count_frame_max`.
     opened: u32,
 
     fn open(self: *LayerQueue, window: *Window, index: u32, parent_hit: u32, clip: ?Rect) void {
@@ -608,8 +502,6 @@ const LayerQueue = struct {
         assert(self.len <= self.opened);
         const opened_max = window.limits.build.layer_count_frame_max;
         assert(opened_max <= layer_count_ceiling);
-        // Each layer box is a layout floating root, a pool sized from the same
-        // field, so a frame past it already failed fast during its build.
         assert(self.opened < opened_max);
         assert(self.opened < window.layout.floating_roots.len);
         self.roots[self.len] = .{
@@ -643,40 +535,23 @@ const LayerQueue = struct {
     }
 };
 
-/// The open `Style.clip` and scroll boxes, innermost last. A box's clip
-/// closes at the first later node no deeper than it, which in pre-order is
-/// where its subtree ends. A scroll box also gathers its children's extent,
-/// so the emit that draws it measures the content the router clamps to.
 const Clips = struct {
     entries: [clip_depth_max]Entry,
     len: u32,
-    /// The clip a layer fragment inherits, pushed before its entries.
     base: ?Rect,
 
     const Entry = struct {
         depth: u8,
         node_index: u32,
         bounds: Rect,
-        /// The intersected clip rect, which bounds the subtree's hits.
         rect: Rect,
-        /// The rect has area, so its push and pop are in the paint records.
-        /// A clip box scrolled out of view writes neither, and nothing
-        /// inside it draws (`Clips.current` is empty).
         drawn: bool,
-        /// The children's right and bottom edges, as laid out (offset applied).
-        /// Each starts at the content's origin, `bounds` less the offset, not
-        /// at `bounds`: children scrolled wholly above or left of the view
-        /// still count, so content that shrank under a far offset measures
-        /// its true size and `finishScroll` clamps to its end in one frame.
-        /// Starting at `bounds` floored the content at the offset, and the
-        /// clamp then stepped back one viewport per frame.
         extent_right: f32,
         extent_bottom: f32,
     };
 
     const Scroll = struct { handle: ScrollHandle, bounds: Rect };
 
-    /// The innermost open scroll box's state and bounds, if any.
     fn innermostScroll(self: *const Clips, window: *const Window) ?Scroll {
         assert(self.len <= clip_depth_max);
         var index = self.len;
@@ -702,7 +577,6 @@ const Clips = struct {
         return bounds.intersect(rect);
     }
 
-    /// Clips open on the paint clip stack, the inherited one included.
     fn paintDepth(self: *const Clips) u32 {
         assert(self.len <= clip_depth_max);
         return self.len + @intFromBool(self.base != null);
@@ -713,15 +587,10 @@ const Clips = struct {
         assert(self.len <= clip_depth_max);
         checkClipDepth(window, self.paintDepth());
         var rect = bounds;
-        // The content's origin: `bounds` until a scroll offset moves it.
         var origin_x = bounds.x;
         var origin_y = bounds.y;
         if (node.scroll) |handle| {
-            // Keep the scrollbar outside the clip, using the overflow the last
-            // emit measured; `finishScroll` re-renders when it changes.
             const state = window.retained.get(window_mod.ScrollState, handle);
-            // The offset this frame's layout placed the children at, which a
-            // `scrollTo` or an `.end` anchor resolved against this content.
             const applied = window.layout.elements.items()[index].config.scroll.?.scroll_offset;
             state.offset_x = applied.x;
             state.offset_y = applied.y;
@@ -748,14 +617,12 @@ const Clips = struct {
         self.len += 1;
     }
 
-    /// Close every clip whose subtree ended before a node at `depth`.
     fn close(self: *Clips, window: *Window, depth: u8) void {
         assert(self.len <= clip_depth_max);
         while (self.len > 0) {
             const entry = &self.entries[self.len - 1];
             if (entry.depth < depth) break;
             if (entry.drawn) window.built().appendPaint(.clip_pop);
-            // The scrollbars draw in the clip around the box.
             const outer = if (self.len > 1) self.entries[self.len - 2].rect else self.base;
             if (window.nodes[entry.node_index].scroll) |handle| {
                 finishScroll(window, entry, handle, outer);
@@ -765,7 +632,6 @@ const Clips = struct {
         if (self.len > 0) assert(self.entries[self.len - 1].depth < depth);
     }
 
-    /// Grow the enclosing scroll box's extent by a direct child's bounds.
     fn extend(self: *Clips, depth: u8, bounds: Rect) void {
         if (self.len == 0) return;
         const entry = &self.entries[self.len - 1];
@@ -784,18 +650,12 @@ fn checkClipDepth(window: *const Window, depth: u32) void {
         "ResourceLimits.paint.clip_depth_max.", .{ depth + 1, depth_max, window.frame_number });
 }
 
-// Scroll container scrollbar colours (`widgets/scroll_container.zig`).
 const scrollbar_room = window_mod.ScrollState.scrollbar_room;
 const scrollbar_radius: f32 = 4;
 const scrollbar_track_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.05 };
 const scrollbar_thumb_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.3 };
 const scrollbar_thumb_drag_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
 
-/// Record what this emit measured, clamp the offset to it, and draw the
-/// scrollbars after the clipped content.
-/// A clamp or an overflow change makes this frame's layout or clip stale,
-/// and a resized viewport changes which rows a `List` builds, so each
-/// requests one more render; steady content requests none.
 fn finishScroll(
     window: *Window,
     entry: *const Clips.Entry,
@@ -820,7 +680,6 @@ fn finishScroll(
     {
         window.render_requested = true;
     }
-    // The scrollbars fade with their scroll box, whatever node came last.
     window.built().paint_opacity = window.nodes[entry.node_index].opacity;
     inline for (.{ window_mod.ScrollAxis.y, window_mod.ScrollAxis.x }) |axis| {
         if (state.track(axis)) |bar| {
@@ -852,8 +711,6 @@ fn emitScrollbar(window: *Window, track: Rect, thumb: Rect, dragged: bool) void 
     } });
 }
 
-/// A box's shadow and fill, each culled when it lies wholly outside `clip`,
-/// such as a row scrolled out of its scroll box.
 fn emitAppearance(window: *Window, node: *const Node, bounds: Rect, clip: ?Rect) void {
     const frame = window.built();
     if (node.shadow) |shadow| {
@@ -881,8 +738,6 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect, clip: ?Rect)
     } });
 }
 
-/// How far a shadow can reach: its box moved by its offset and grown by twice
-/// its blur, the extent pack culls by and the shader draws.
 fn shadowBounds(bounds: Rect, shadow: element.Shadow) Rect {
     assert(shadow.blur >= 0);
     assert(bounds.width >= 0);
@@ -895,9 +750,6 @@ fn shadowBounds(bounds: Rect, shadow: element.Shadow) Rect {
     };
 }
 
-/// `parent` is the nearest enclosing hit record: for a layer's box, the
-/// opener's, so clicks inside a popover count as inside its opener.
-/// `takes_pointer` is false in a `.drag` or `.tooltip` fragment.
 const HitPlace = struct { parent: u32, fragment: u8, takes_pointer: bool };
 
 fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u32 {
@@ -936,7 +788,6 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
     });
 }
 
-/// Returns 1 when the node adds an accessibility level.
 fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
     const a11y = node.a11y orelse return 0;
     const focused = window.isFocused(node.id);
@@ -972,9 +823,6 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
     return 1;
 }
 
-/// `clip_depth` is the box clips already open around the element, which
-/// share the paint clip stack with the paint function's own. A culled
-/// element's function runs with a painter that writes no records.
 const PaintPlace = struct { clip_depth: u32, culled: bool };
 
 fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace) void {
@@ -995,12 +843,6 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace
     }
 }
 
-/// One glyph run per wrapped line, pitched by the layout's
-/// line height and aligned by `lineSpan`.
-/// Only lines whose box meets `clip` draw:
-/// lines are pitched evenly, so the rows in view follow from the clip by
-/// division, and a text of thousands of lines in a scroll box costs the lines
-/// on screen, not its length.
 const TextPlace = struct { data: *const TextData, clip: ?Rect };
 
 fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) void {
@@ -1035,7 +877,6 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) 
         assert(line.extent.length <= content.len - line.start_offset);
         const x = span.x + alignOffset(alignment, span.width, line.width);
         const y = bounds.y + @as(f32, @floatFromInt(line_index)) * pitch;
-        // A line scrolled out sideways, in a box that scrolls along x.
         if (place.clip) |rect| {
             if (!lineBox(x, y, line.width, pitch).overlaps(rect)) continue;
         }
@@ -1049,15 +890,8 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) 
     }
 }
 
-/// Where a cut line sits: the span its alignment is within, and its top.
 const CutPlace = struct { span: LineSpan, alignment: TextAlignment, y: f32 };
 
-/// A line layout marked as cut (`docs/text-truncation.md`): the longest
-/// start of `run` that fits the line's cut width, beside "…" for an
-/// `.ellipsis` text, from the shaped glyphs, then "…" after it, aligned by the
-/// width drawn. `.clip` cuts the same way with no mark, so its text never
-/// draws past its cut width. A `cut_if_wide` line whose shaped width fits
-/// draws whole; a cut width narrower than the ellipsis draws nothing.
 fn emitCutLine(
     window: *Window,
     run: []const u8,
@@ -1074,7 +908,6 @@ fn emitCutLine(
     const ellipsis = layout_mod.types.ellipsis;
     const marked = data.config.overflow == .ellipsis;
     if (marked) assert(data.ellipsis_width > 0);
-    // Layout measured "…" at declaration with the same face and size.
     const mark_width = if (marked) data.ellipsis_width else 0;
     const widths: text_render.CutWidths = .{
         .kept_max = line.width - mark_width,
@@ -1093,7 +926,7 @@ fn emitCutLine(
         _ = emitTextLine(window, run, x, place.y, style);
         return;
     }
-    if (widths.kept_max < 0) return; // Too narrow for the ellipsis alone.
+    if (widths.kept_max < 0) return;
     assert(marked or line.extent.end == .cut_if_wide);
     assert(cut.length <= run.len);
     const drawn = cut.width + mark_width;
@@ -1116,9 +949,6 @@ fn emitCutLine(
     if (marked) _ = emitTextBaseline(window, ellipsis, x + cut.width, baseline, style);
 }
 
-/// A line's box with a margin of one pitch around it, for glyphs that reach
-/// past it (accents, descenders, italic overhang), so culling never drops a
-/// line that draws a pixel inside the clip.
 fn lineBox(x: f32, y: f32, width: f32, height: f32) Rect {
     assert(width >= 0);
     assert(height > 0);
@@ -1128,9 +958,6 @@ fn lineBox(x: f32, y: f32, width: f32, height: f32) Rect {
 
 const LineRange = struct { start: u32, end: u32 };
 
-/// The lines of a text at `top`, one per `pitch`, that the clip's rows can
-/// show, with one line of margin each side (`lineBox`); all of them with no
-/// clip. Work: constant, whatever the line count.
 fn linesInView(top: f32, pitch: f32, count: u32, clip: ?Rect) LineRange {
     assert(pitch > 0);
     const rect = clip orelse return .{ .start = 0, .end = count };
@@ -1145,12 +972,6 @@ fn linesInView(top: f32, pitch: f32, count: u32, clip: ?Rect) LineRange {
 
 const LineSpan = struct { x: f32, width: f32 };
 
-/// Where a text's lines are aligned from, and across what width. `.left`, the
-/// default, starts every line at the text's own box, which the parent's
-/// alignment has already placed. `.center` and `.right` place each line within
-/// the parent's content width, from that width's left edge: aligning them from
-/// the text's own x instead adds the parent's alignment offset a second time,
-/// which pushed centred text in a centred box right of centre.
 fn lineSpan(data: *const TextData, bounds: Rect) LineSpan {
     assert(bounds.width >= 0);
     assert(data.container_width >= 0);
@@ -1200,7 +1021,6 @@ const GlyphSink = struct {
     }
 };
 
-/// One line of text with its top at `y`, baseline from the face's ascender.
 fn emitTextLine(window: *Window, content: []const u8, x: f32, y: f32, style: TextStyle) f32 {
     assert(style.size > 0);
     const metrics = window.resources.text_system.getMetricsFor(style.family);
@@ -1248,7 +1068,6 @@ fn emitSvg(window: *Window, path: []const u8, bounds: Rect, options: SvgStyle) v
         options.fill != null,
         stroke_width,
     ) catch |err| switch (err) {
-        // The per-frame rasterization budget is spent; draw it next tick.
         error.RasterizationDeferred => {
             window.render_requested = true;
             return;
@@ -1275,10 +1094,8 @@ fn emitSvg(window: *Window, path: []const u8, bounds: Rect, options: SvgStyle) v
     } });
 }
 
-/// The most sides a circle gets.
 const circle_sides_max: u32 = 32;
 
-/// Fan the circle's polygon from its first corner; returns the points used.
 fn circlePoints(
     points: *[3 * (circle_sides_max - 2)][2]f32,
     center: [2]f32,
@@ -1300,8 +1117,6 @@ fn circlePoints(
     return count;
 }
 
-/// Tiny circles are squares, then hexagons, then 12,
-/// 24, and 32 sides as the radius on screen passes 8, 32, and 128 px.
 fn circleSides(screen_radius: f32) u32 {
     assert(screen_radius >= 0);
     const radius_below = [_]f32{ 2, 8, 32, 128 };
@@ -1317,8 +1132,6 @@ fn circleCorner(center: [2]f32, radius: f32, delta: f32, corner: u32) [2]f32 {
     return .{ center[0] + radius * @cos(angle), center[1] + radius * @sin(angle) };
 }
 
-/// The most points one triangle mesh holds: one path's vertex ceiling,
-/// rounded down to whole triangles.
 pub const triangle_points_max: u32 = limits_mod.MAX_PATH_VERTICES / 3 * 3;
 
 fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
@@ -1329,13 +1142,10 @@ fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
     const frame = window.built();
     const count: u32 = @intCast(points.len);
     checkMeshPoints(window, .triangles, count);
-    // Join the previous record when it is a triangle mesh of this colour
-    // that ends where the pool ends and has room for these points.
     if (frame.paint_count > 0) {
         const last = &frame.paint[frame.paint_count - 1];
         if (last.* == .mesh) {
             const mesh = &last.mesh;
-            // The record holds its colour faded (`records.fade`).
             const fill = records.fadeColor(color, frame.paint_opacity);
             const joins = mesh.topology == .triangles and colorEql(mesh.fill, fill) and
                 mesh.range.first + mesh.range.count == frame.mesh_point_count and
@@ -1372,7 +1182,6 @@ const PointMesh = struct { topology: records.Mesh.Topology, width: f32, color: C
 fn emitPointMesh(window: *Window, points: []const [2]f32, mesh: PointMesh) void {
     assert(mesh.topology != .triangles);
     const count: u32 = @intCast(points.len);
-    // The width sanity bound (`limits.zig`); `checkMeshPoints` bounds the count.
     const width_max: f32 = switch (mesh.topology) {
         .strip_expanded => limits_mod.MAX_LINE_WIDTH,
         .point_instanced => limits_mod.MAX_POINT_RADIUS,
@@ -1398,8 +1207,6 @@ fn emitPointMesh(window: *Window, points: []const [2]f32, mesh: PointMesh) void 
     } });
 }
 
-/// The frame's points of one kind stay within that kind's paint limit, so
-/// the renderer's geometry budget holds; one pool serves all three kinds.
 fn checkMeshPoints(window: *Window, topology: records.Mesh.Topology, count: u32) void {
     const paint_limits = &window.limits.paint;
     const capacity = switch (topology) {
@@ -1435,8 +1242,6 @@ fn colorEql(a: Color, b: Color) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
-/// Draw a cached image, or queue its decode and draw nothing. Placement
-/// fits inside `bounds`, then snaps to the device pixel grid.
 fn emitImage(window: *Window, path: []const u8, bounds: Rect, options: ImageStyle) void {
     assert(options.grayscale >= 0);
     assert(options.grayscale <= 1);

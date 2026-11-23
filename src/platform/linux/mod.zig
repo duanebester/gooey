@@ -15,7 +15,6 @@ pub const wayland = @import("wayland.zig");
 
 pub const input = @import("input.zig");
 
-// The names `platform/mod.zig` aliases as `Platform` and `PlatformWindow`.
 pub const Platform = platform.LinuxPlatform;
 pub const PlatformWindow = window.Window;
 

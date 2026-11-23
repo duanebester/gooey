@@ -4,7 +4,6 @@ const Window = @import("window.zig").Window;
 
 var delegate_class: ?objc.Class = null;
 
-/// Must be called once before creating any windows.
 pub fn registerClass() !void {
     if (delegate_class != null) return;
 
@@ -65,10 +64,6 @@ fn windowDidChangeBackingProperties(self: objc.c.id, _: objc.c.SEL, _: objc.c.id
     window.handleResize();
 }
 
-/// Another window or app became key, as Cmd-Tab or a system alert makes it,
-/// while a button was held: the release may never reach this window, so the
-/// drag in progress cancels (`pointer_cancelled`) rather than waiting for it
-/// or dropping where the pointer last was.
 fn windowDidResignKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     const NSEvent = objc.getClass("NSEvent") orelse return;

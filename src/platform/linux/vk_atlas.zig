@@ -1,16 +1,6 @@
-//! One generic implementation, parameterized by pixel format, serves all three
-//! atlases (text, SVG, image). Each atlas image is created once at init and
-//! never recreated. The renderer keeps no CPU copy of atlas pixels: `uploadAtlas`
-//! copies each region into the frame's staging lane, and the frame's command
-//! buffer records one barrier, one batched copy, and one barrier per batch of
-//! regions of one atlas.
-
 const std = @import("std");
 const vk = @import("vulkan.zig");
 
-/// Regions recorded per `vkCmdCopyBufferToImage` call; larger batches split.
-/// The renderer holds one batch of this many per atlas (56 B a region), so 16
-/// keeps the three batches under 3 KiB of the window that embeds the renderer.
 pub const copy_region_count_max: u32 = 16;
 
 pub const AtlasFormat = enum {
@@ -39,7 +29,6 @@ pub const AtlasResources = struct {
     width: u32 = 0,
     height: u32 = 0,
     format: AtlasFormat = .r8,
-    /// False until the first upload moves the image out of `UNDEFINED`.
     layout_ready: bool = false,
 
     pub fn destroy(self: *AtlasResources, device: vk.Device) void {
@@ -58,9 +47,6 @@ pub const AtlasError = error{
     NoSuitableMemoryType,
 };
 
-/// Create an atlas image at its budget size. Called once at init; the image is
-/// never recreated. Its contents start undefined: every uploaded item carries
-/// its own zero border, and nothing outside items is ever sampled.
 pub fn createAtlas(
     resources: *AtlasResources,
     size: u32,
@@ -76,10 +62,6 @@ pub fn createAtlas(
     std.debug.assert(resources.view != null);
 }
 
-/// Record one atlas's uploads for this frame: a barrier into `TRANSFER_DST`, the
-/// copies in batches of `copy_region_count_max`, and a barrier back to shader
-/// reads. Regions never overlap: the atlas does not reuse a region until every
-/// renderer has uploaded the records written into it.
 pub fn recordAtlasCopies(
     cmd: vk.CommandBuffer,
     resources: *AtlasResources,
@@ -91,8 +73,6 @@ pub fn recordAtlasCopies(
     std.debug.assert(staging_buffer != null);
     if (regions.len == 0) return;
 
-    // The first upload discards the image's undefined contents; later ones
-    // wait for the previous frames' shader reads and keep the pixels.
     const from = if (resources.layout_ready) &sampled_state else &undefined_state;
     recordBarrier(cmd, resources.image, from, &transfer_state);
 
@@ -126,8 +106,8 @@ pub fn copyRegion(
     std.debug.assert(height > 0);
     return .{
         .bufferOffset = staging_offset,
-        .bufferRowLength = 0, // tightly packed (row length = imageExtent.width)
-        .bufferImageHeight = 0, // tightly packed (height = imageExtent.height)
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
         .imageSubresource = .{
             .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
             .mipLevel = 0,
@@ -139,29 +119,24 @@ pub fn copyRegion(
     };
 }
 
-/// One side of an atlas image barrier: the stage and access that last touched
-/// (or will next touch) the image, and its layout.
 const ImageState = struct {
     stage: u32,
     access: u32,
     layout: vk.ImageLayout,
 };
 
-/// A freshly created image: no prior access, contents discarded.
 const undefined_state = ImageState{
     .stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
     .access = 0,
     .layout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
 };
 
-/// Written by a buffer copy.
 const transfer_state = ImageState{
     .stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
     .access = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
     .layout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 };
 
-/// Sampled by the text, SVG and image fragment shaders.
 const sampled_state = ImageState{
     .stage = vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
     .access = vk.VK_ACCESS_SHADER_READ_BIT,
@@ -185,7 +160,7 @@ fn createAtlasImage(
     mem_properties: *const vk.PhysicalDeviceMemoryProperties,
 ) AtlasError!void {
     std.debug.assert(device != null);
-    std.debug.assert(resources.image == null); // Must be destroyed first
+    std.debug.assert(resources.image == null);
 
     const vk_fmt = format.vkFormat();
 

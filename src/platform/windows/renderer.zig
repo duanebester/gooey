@@ -1,7 +1,3 @@
-//! The renderer a Win32 window draws through, selected at compile time with
-//! `-Dwindows-renderer`. Only Windows-target code may import this file:
-//! `windows_renderer` means nothing outside this backend.
-
 const build_options = @import("gooey_build_options");
 
 pub const WindowsRenderer = @TypeOf(build_options.windows_renderer);

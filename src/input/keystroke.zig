@@ -88,8 +88,6 @@ test "Keystroke parsing" {
     const ks3 = Keystroke.parse("escape").?;
     try std.testing.expectEqual(KeyCode.escape, ks3.key);
 
-    // Digits and letters resolve by tag name; aliases resolve by table; tag
-    // names that are not key names (`forward_delete`) stay rejected.
     try std.testing.expectEqual(KeyCode.@"5", Keystroke.parse("alt-5").?.key);
     try std.testing.expectEqual(KeyCode.@"return", Keystroke.parse("enter").?.key);
     try std.testing.expectEqual(KeyCode.page_down, Keystroke.parse("pagedown").?.key);

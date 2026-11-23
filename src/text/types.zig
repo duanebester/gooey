@@ -5,10 +5,8 @@ const is_wasm = platform.is_wasm;
 const is_macos = builtin.os.tag == .macos;
 
 pub const SUBPIXEL_VARIANTS_X: u8 = 4;
-pub const SUBPIXEL_VARIANTS_Y: u8 = 1; // Only horizontal subpixel variants are used.
+pub const SUBPIXEL_VARIANTS_Y: u8 = 1;
 
-/// Maximum unique fallback fonts tracked during `ShapedRun` cleanup;
-/// exceeding it means an unusually complex run with many scripts or emoji.
 pub const MAX_FALLBACK_FONTS_PER_RUN: usize = 16;
 
 pub const SystemFont = enum {
@@ -18,7 +16,6 @@ pub const SystemFont = enum {
     system,
 };
 
-/// Ordered from lightest to heaviest.
 pub const FontWeight = enum(u8) {
     thin,
     light,
@@ -28,7 +25,6 @@ pub const FontWeight = enum(u8) {
     bold,
     black,
 
-    /// CSS `font-weight` number, the shared scale every backend maps from.
     pub fn cssWeight(self: FontWeight) u16 {
         const result: u16 = switch (self) {
             .thin => 100,
@@ -45,9 +41,6 @@ pub const FontWeight = enum(u8) {
     }
 };
 
-/// One loadable face of a font family. The tag value is the layout
-/// `font_id`; `regular` is 0 so the layout default (`TextConfig.font_id = 0`)
-/// selects the regular upright face.
 pub const FontVariant = enum(u8) {
     regular,
     italic,
@@ -66,7 +59,6 @@ pub const FontVariant = enum(u8) {
 
     pub const count: u8 = @typeInfo(FontVariant).@"enum".field_names.len;
 
-    /// Weight of each tag pair, in tag order: tag `2k` is upright, `2k + 1` italic.
     const weight_by_pair = [_]FontWeight{
         .regular, .thin, .light, .medium, .semibold, .bold, .black,
     };
@@ -114,9 +106,6 @@ pub const FontVariant = enum(u8) {
     }
 };
 
-/// Which loaded family a run draws with: `app` is the app's font
-/// (`Config.font`); `mono` is the optional second family
-/// (`Config.fonts.mono`), with its own faces from `FontLimits.mono_variants`.
 pub const FontFamily = enum(u1) {
     app,
     mono,
@@ -155,23 +144,18 @@ pub const TextDecoration = packed struct {
     }
 };
 
-/// Font metrics computed once at load time
 pub const Metrics = struct {
     units_per_em: u32,
-    /// Points, positive above the baseline.
     ascender: f32,
-    /// Points, positive below the baseline.
     descender: f32,
     line_gap: f32,
     cap_height: f32,
     x_height: f32,
-    /// Negative below the baseline.
     underline_position: f32,
     underline_thickness: f32,
     line_height: f32,
     point_size: f32,
     is_monospace: bool,
-    /// Advance of 'M'.
     cell_width: f32,
 
     pub inline fn calcBaseline(self: Metrics, box_y: f32, box_height: f32) f32 {
@@ -181,9 +165,7 @@ pub const Metrics = struct {
     }
 };
 
-/// Glyph metrics for a single glyph
 pub const GlyphMetrics = struct {
-    /// 0 = missing glyph.
     glyph_id: u16,
     advance_x: f32,
     advance_y: f32,
@@ -193,17 +175,13 @@ pub const GlyphMetrics = struct {
     height: f32,
 };
 
-/// A shaped glyph with positioning information
 pub const ShapedGlyph = struct {
     glyph_id: u16,
     x_offset: f32,
     y_offset: f32,
     x_advance: f32,
     y_advance: f32,
-    /// Byte offset into the original text.
     cluster: u32,
-    /// Fallback font reference retained by the shaper and released in
-    /// `ShapedRun.deinit`; null means the primary font.
     font_ref: ?*anyopaque = null,
     is_color: bool = false,
 };
@@ -211,10 +189,8 @@ pub const ShapedGlyph = struct {
 pub const ShapedRun = struct {
     glyphs: []ShapedGlyph,
     width: f32,
-    /// False for cache hits, which do not own their memory.
     owned: bool = true,
 
-    // CFRelease for fallback fonts; macOS only.
     const CFRelease = if (is_macos)
         struct {
             extern "c" fn CFRelease(cf: *anyopaque) void;
@@ -231,7 +207,6 @@ pub const ShapedRun = struct {
         }
 
         if (self.glyphs.len > 0) {
-            // Release each retained fallback font once.
             if (is_macos) {
                 var released: [MAX_FALLBACK_FONTS_PER_RUN]usize = @splat(0);
                 var released_count: usize = 0;
@@ -253,7 +228,6 @@ pub const ShapedRun = struct {
                                 released[released_count] = ptr_val;
                                 released_count += 1;
                             }
-                            // At capacity in release builds: leak instead of crash.
                         }
                     }
                 }
@@ -264,16 +238,11 @@ pub const ShapedRun = struct {
     }
 };
 
-/// Result of rasterizing a glyph
 pub const RasterizedGlyph = struct {
     width: u32,
     height: u32,
-    /// From the pen position to the glyph's left edge, physical pixels.
     offset_x: i32,
-    /// From the baseline to the glyph's top edge, physical pixels;
-    /// positive above the baseline.
     offset_y: i32,
-    /// Logical pixels.
     advance_x: f32,
     is_color: bool,
 };
@@ -284,11 +253,6 @@ pub const TextMeasurement = struct {
     line_count: u32 = 1,
 };
 
-/// `null` selects the shaper's default instead of a numeric sentinel:
-/// `max_width == null` measures a single unwrapped line and `font_size ==
-/// null` measures at the currently loaded font's size. `weight` and `italic`
-/// select the face exactly as `TextStyle` does, so a measured width matches
-/// the drawn text; a combination outside `FontLimits.variants` panics.
 pub const MeasureTextOptions = struct {
     max_width: ?f32 = null,
     font_size: ?f32 = null,

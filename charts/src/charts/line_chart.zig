@@ -1,11 +1,3 @@
-//! LineChart stores a slice to externally-owned series data; the caller must
-//! keep the data alive while the chart renders. Capacities are the app's,
-//! fixed at comptime:
-//! `const Revenue = LineChart(.{ .point_count_max = 64, .series_count_max = 2 });`
-//! sizes `Revenue.Series` and the per-render projection scratch for 64 points.
-//! Each render keeps at most one `[point_count_max][2]f32` array (8 bytes per
-//! point) plus `projectSeries`' two LTTB arrays of the same size on the stack.
-
 const std = @import("std");
 const paint = @import("../paint.zig");
 const constants = @import("../constants.zig");
@@ -26,14 +18,11 @@ const ChartTheme = theme_mod.ChartTheme;
 
 pub const Color = paint.Color;
 pub const Painter = paint.Painter;
-// NOTE: Path is ~70KB on the stack, so we avoid it and use strokeLine instead
 
 const LOD_THRESHOLD = constants.LOD_THRESHOLD;
 
 pub const default_palette = theme_mod.google_palette;
 
-/// A line chart drawing up to `capacity.series_count_max` series, each holding
-/// up to `capacity.point_count_max` points.
 pub fn LineChart(comptime capacity: types.PointCapacity) type {
     capacity.check();
     return struct {
@@ -73,8 +62,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
         accessible_title: ?[]const u8 = null,
         accessible_description: ?[]const u8 = null,
 
-        // Level-of-Detail (LOD) for large datasets
-        // When enabled, datasets with >LOD_THRESHOLD points use LTTB decimation
         enable_lod: bool = true,
         lod_target_points: u32 = LOD_THRESHOLD,
 
@@ -86,14 +73,12 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
 
         pub const Series = types.Series(point_count_max);
 
-        /// The slice must outlive the chart; the data is not copied.
         pub fn init(data: []const Series) Self {
             std.debug.assert(data.len > 0);
             std.debug.assert(data.len <= series_count_max);
             return .{ .data = data };
         }
 
-        /// The series must outlive the chart; the data is not copied.
         pub fn initSingle(series: *const Series) Self {
             const slice: []const Series = @as([*]const Series, @ptrCast(series))[0..1];
             return .{ .data = slice };
@@ -110,7 +95,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             return info;
         }
 
-        /// Writes into `buf` and returns a slice of it.
         pub fn describe(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.describe(&info, buf);
@@ -121,7 +105,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             return a11y.summarize(&info, buf);
         }
 
-        /// Render the line chart, offset by the paint element's bounds.
         pub fn render(self: *const Self, painter: *Painter) void {
             std.debug.assert(self.data.len > 0);
             std.debug.assert(self.width > 0 and self.height > 0);
@@ -148,7 +131,7 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             const y_scale = LinearScale.init(
                 self.y_domain_min orelse nice_y.min,
                 self.y_domain_max orelse nice_y.max,
-                inner_y + inner_height, // Y is inverted (0 at bottom)
+                inner_y + inner_height,
                 inner_y,
             );
 
@@ -216,7 +199,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
                 return .{ .min = 0, .max = 1 };
             }
 
-            // With an area fill, include 0 in the Y range.
             if (min > 0 and self.show_area) {
                 min = 0;
             }
@@ -267,13 +249,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Fill the area between a series' line and `baseline` as one triangle
-        /// mesh: two triangles per segment, under the same projected (and
-        /// LTTB-decimated) points the line draws, so the fill meets the line.
-        /// Neighbouring segments share their vertical edge bit for bit, and the
-        /// two triangles of a segment share its diagonal, so the renderers
-        /// classify those edges as interior (`platform/mesh_edges.zig`) and the
-        /// fill tiles without the anti-aliased seams that abutting quads leave.
         fn drawSeriesArea(
             self: *const Self,
             painter: *Painter,
@@ -310,7 +285,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Draw a series as one polyline, decimated with LTTB past `lod_target_points`.
         fn drawSeriesLine(
             self: *const Self,
             painter: *Painter,
@@ -325,7 +299,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             if (count >= 2) painter.polyline(points[0..count], self.line_width, color);
         }
 
-        /// Draw each series' markers as one point cloud, after every line.
         fn drawPoints(
             self: *const Self,
             painter: *Painter,
@@ -343,7 +316,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Projects at this chart's LOD; returns the point count.
         fn project(
             self: *const Self,
             series: *const Series,
@@ -366,7 +338,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
         }
 
         fn getSeriesColor(self: *const Self, series: *const Series, index: usize) Color {
-            // Priority: series explicit color > theme palette > default palette.
             if (series.color) |color| {
                 return color;
             }
@@ -378,16 +349,8 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
     };
 }
 
-/// A segment's area is a trapezoid of two triangles, or one triangle on the
-/// side of a crossing that lies above the baseline.
 const area_segment_points_max: u32 = 6;
 
-/// The triangles filling the area between the segment `from`-`to` and the
-/// horizontal `baseline` (screen y grows down, so "above" is a smaller y),
-/// written to `out`; returns their point count, a multiple of three. A
-/// segment that crosses the baseline keeps only its part above it, and one
-/// at or below it fills nothing, and so does one that runs backwards in x.
-/// Triangles wind clockwise on screen.
 fn areaSegment(
     out: *[area_segment_points_max][2]f32,
     from: [2]f32,
@@ -414,7 +377,6 @@ fn areaSegment(
         return count;
     }
     if (height_from <= 0 and height_to <= 0) return 0;
-    // One end lies above the baseline and the other below: cut at the crossing.
     const t = height_from / (height_from - height_to);
     std.debug.assert(t > 0);
     std.debug.assert(t < 1);
@@ -426,7 +388,6 @@ fn areaSegment(
     return 3;
 }
 
-/// A chart with room for two series of 16 points, enough for every test below.
 const TestChart = LineChart(.{ .point_count_max = 16, .series_count_max = 2 });
 const TestSeries = TestChart.Series;
 
@@ -521,9 +482,6 @@ test "LineChart LOD defaults" {
 }
 
 test "LineChart fills exactly its capacity" {
-    // Goal: a chart whose series are all full projects every point, with no
-    // loss at the boundary. Methodology: two series of exactly point_count_max
-    // points, projected with and without LOD, and counted by the a11y summary.
     const Full = LineChart(.{ .point_count_max = 8, .series_count_max = 2 });
     var series_array: [Full.series_count_max]Full.Series = undefined;
     for (&series_array, 0..) |*series, series_index| {
@@ -552,8 +510,6 @@ test "LineChart fills exactly its capacity" {
 }
 
 test "LineChart decimates a full series to its LOD target" {
-    // Goal: LTTB scratch sized by point_count_max holds a full series. With a
-    // target below the capacity, the projection keeps exactly the target.
     const Full = LineChart(.{ .point_count_max = 8, .series_count_max = 1 });
     var series = Full.Series.init("Full", null);
     for (0..Full.point_count_max) |point_index| {
@@ -570,22 +526,15 @@ test "LineChart decimates a full series to its LOD target" {
 }
 
 test "areaSegment tiles a trapezoid, cuts at the baseline, and skips the rest" {
-    // Goal: the area under a segment is covered exactly once, and only above
-    // the baseline. Methodology: the triangle areas must sum to the area the
-    // segment encloses with the baseline, worked out by hand, and a segment
-    // crossing the baseline must keep the side above it, cut at its crossing.
     var out: [area_segment_points_max][2]f32 = undefined;
-    // From 10 to 30 above a baseline at 100, 40 wide: (10 + 30) / 2 * 40.
     var count = areaSegment(&out, .{ 0, 90 }, .{ 40, 70 }, 100);
     try std.testing.expectEqual(@as(u32, 6), count);
     try std.testing.expectEqual(@as(f32, 800), trianglesArea(out[0..count]));
     try std.testing.expectEqual([2]f32{ 40, 100 }, out[2]);
     try std.testing.expectEqual([2]f32{ 0, 100 }, out[5]);
-    // One end on the baseline: one triangle, 20 * 10 / 2.
     count = areaSegment(&out, .{ 0, 100 }, .{ 10, 80 }, 100);
     try std.testing.expectEqual(@as(u32, 3), count);
     try std.testing.expectEqual(@as(f32, 100), trianglesArea(out[0..count]));
-    // 20 above, then 60 below: crosses at a quarter of 40 px, so 10 * 20 / 2.
     count = areaSegment(&out, .{ 0, 80 }, .{ 40, 160 }, 100);
     try std.testing.expectEqual(@as(u32, 3), count);
     try std.testing.expectEqual([2]f32{ 10, 100 }, out[1]);
@@ -594,13 +543,11 @@ test "areaSegment tiles a trapezoid, cuts at the baseline, and skips the rest" {
     try std.testing.expectEqual(@as(u32, 3), count);
     try std.testing.expectEqual([2]f32{ 30, 100 }, out[0]);
     try std.testing.expectEqual(@as(f32, 100), trianglesArea(out[0..count]));
-    // At or below the baseline, vertical, or backwards: nothing.
     try std.testing.expectEqual(@as(u32, 0), areaSegment(&out, .{ 0, 100 }, .{ 40, 120 }, 100));
     try std.testing.expectEqual(@as(u32, 0), areaSegment(&out, .{ 5, 50 }, .{ 5, 60 }, 100));
     try std.testing.expectEqual(@as(u32, 0), areaSegment(&out, .{ 40, 50 }, .{ 0, 60 }, 100));
 }
 
-/// The summed areas of a triangle list, each counted positive.
 fn trianglesArea(points: []const [2]f32) f32 {
     std.debug.assert(points.len % 3 == 0);
     var total: f32 = 0;
@@ -610,7 +557,6 @@ fn trianglesArea(points: []const [2]f32) f32 {
         const b = points[index + 1];
         const c = points[index + 2];
         const cross = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-        // Clockwise on screen, where y grows down, is a positive cross product.
         std.debug.assert(cross >= 0);
         total += cross / 2;
     }

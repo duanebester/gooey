@@ -1,18 +1,3 @@
-//! Mesh rasterization for the CPU renderer: path triangles, polyline strips,
-//! and point clouds, matching the GPU pipelines they mirror. Triangles and
-//! strip segments are convex polygons rasterized with coverage over Vulkan's
-//! four standard sample locations, color evaluated once per pixel center,
-//! samples on an edge under the top-left rule. All polygons of one draw
-//! accumulate into one per-row sample mask before shading, so shared edges
-//! add to full coverage instead of blending twice — what MSAA's per-sample
-//! resolve gives on the GPU. Points fade alpha across the circle edge
-//! (`pointFalloff`, the falloff `mesh.frag` and Metal's point shaders share),
-//! so they need no sample coverage.
-//!
-//! Every coordinate here is in device pixels; `renderer.zig` converts from
-//! logical pixels. Nothing allocates: polygons, bucket chains, and the row
-//! mask live in a `Scratch` the renderer reserves at initialization.
-
 const std = @import("std");
 const raster = @import("raster.zig");
 
@@ -21,23 +6,18 @@ const Premul = raster.Premul;
 const Span = raster.Span;
 const Target = raster.Target;
 
-/// Vulkan's standard 4x sample locations, as offsets inside a pixel. Each sits
-/// on its own sub-row, so one interval per polygon per sub-row covers it.
 const sample_x = [sample_count]f32{ 0.375, 0.875, 0.125, 0.625 };
 const sample_y = [sample_count]f32{ 0.125, 0.375, 0.625, 0.875 };
 const sample_count: u8 = 4;
 
-/// `round(covered * 255 / 4)`, indexed by the number of covered samples.
 const coverage_bytes = [sample_count + 1]u8{ 0, 64, 128, 191, 255 };
 
 const chain_end: u32 = std.math.maxInt(u32);
 
-// A convex polygon in device pixels: a triangle or a strip segment's quad.
 pub const Polygon = struct {
     x: [4]f32,
     y: [4]f32,
     vertex_count: u8,
-    /// First and last pixel rows whose sample rows can meet the polygon.
     row_first: u32,
     row_last: u32,
 
@@ -55,7 +35,6 @@ pub const Polygon = struct {
         };
     }
 
-    /// The vertices in order around the outline.
     pub fn quad(x: [4]f32, y: [4]f32) Polygon {
         for (x, y) |vertex_x, vertex_y| {
             assert(!std.math.isNan(vertex_x));
@@ -78,11 +57,6 @@ pub const Polygon = struct {
         return high;
     }
 
-    /// The half-open x interval `[low, high)` of samples the polygon covers
-    /// on the horizontal line `y`, or null when the line misses it. Exact for
-    /// convex polygons. Under the top-left rule a line through the bottom
-    /// vertex or bottom edge (`y == yMax`) covers nothing, a line through a
-    /// top edge covers it, and the right end of every span is excluded.
     fn interval(self: *const Polygon, y: f32) ?[2]f32 {
         assert(self.vertex_count == 3 or self.vertex_count == 4);
         assert(!std.math.isNan(y));
@@ -107,12 +81,6 @@ pub const Polygon = struct {
     }
 };
 
-/// A polygon edge with its endpoints ordered by `(y, x)`.
-///
-/// Two triangles that share an edge list its endpoints in opposite orders.
-/// Ordering them first makes both evaluate the identical float expression, so
-/// a sample exactly on the shared edge is the left end of one span and the
-/// right end of the other: covered once, with no crack and no overlap.
 const Edge = struct {
     x0: f32,
     y0: f32,
@@ -128,8 +96,6 @@ const Edge = struct {
         return .{ .x0 = first[0], .y0 = first[1], .x1 = second[0], .y1 = second[1] };
     }
 
-    /// The x span the edge covers on line `y`, which lies in `[y0, y1]`. A
-    /// horizontal edge covers its whole length.
     fn xRange(self: Edge, y: f32) [2]f32 {
         assert(y >= self.y0);
         assert(y <= self.y1);
@@ -139,17 +105,11 @@ const Edge = struct {
     }
 };
 
-/// Storage one mesh draw uses, reserved by the renderer at initialization.
 pub const Scratch = struct {
     polygons: []Polygon,
-    /// Bucket chain links, parallel to `polygons`.
     next: []u32,
-    /// Polygons spanning the row being rasterized.
     active: []u32,
-    /// First polygon of each row's bucket, one per framebuffer row.
     heads: []u32,
-    /// Covered-sample bits of each pixel of the row being rasterized. All
-    /// zero between draws: a draw clears exactly the columns it set.
     mask: []u8,
 
     pub fn bytes(polygon_count_max: u32, width_max: u32, height_max: u32) u64 {
@@ -162,8 +122,6 @@ pub const Scratch = struct {
     }
 };
 
-/// Fill the union of `polygons` (one draw) clipped to `clip` with `color`,
-/// each pixel weighted by its covered-sample count.
 pub fn fillPolygons(
     target: Target,
     scratch: *const Scratch,
@@ -195,15 +153,12 @@ pub fn fillPolygons(
     }
 }
 
-/// Link each polygon into the bucket of the first row in `rows` it can
-/// reach, after computing its row range. Polygons outside `rows` are skipped.
 fn bucketPolygons(scratch: *const Scratch, polygon_count: u32, rows: Span) void {
     assert(polygon_count <= scratch.polygons.len);
     assert(!rows.isEmpty());
     for (scratch.polygons[0..polygon_count], 0..) |*polygon, index| {
         const top = polygon.yMin();
         const bottom = polygon.yMax();
-        // A sample row sits at least 0.125 below a pixel row's top edge.
         const first = raster.clampIndex(@floor(top), rows.end);
         const last_exclusive = raster.clampIndex(@floor(bottom) + 1.0, rows.end);
         if (last_exclusive <= rows.start) continue;
@@ -221,7 +176,6 @@ fn activateRow(scratch: *const Scratch, y: u32, active_count: u32, polygon_count
     assert(y < scratch.heads.len);
     var count = active_count;
     var index = scratch.heads[y];
-    // Each polygon sits in exactly one bucket, so the chain is bounded.
     while (index != chain_end) : (index = scratch.next[index]) {
         assert(count < polygon_count);
         scratch.active[count] = index;
@@ -231,8 +185,6 @@ fn activateRow(scratch: *const Scratch, y: u32, active_count: u32, polygon_count
     return count;
 }
 
-// Set the covered-sample bits of row `y` for every active polygon, retiring
-// polygons that end above the row. Returns the columns that gained bits.
 fn coverRow(scratch: *const Scratch, y: u32, active_count: *u32, columns: Span) Span {
     assert(active_count.* <= scratch.active.len);
     assert(!columns.isEmpty());
@@ -264,7 +216,6 @@ fn coverPolygonRow(
     const row_y: f32 = @floatFromInt(y);
     for (sample_x, sample_y, 0..) |offset_x, offset_y, sample| {
         const range = polygon.interval(row_y + offset_y) orelse continue;
-        // Pixels whose sample `x + offset_x` lies in `[low, high)`.
         const first = raster.clampIndex(@ceil(range[0] - offset_x), columns.end);
         const last_exclusive = raster.clampIndex(@ceil(range[1] - offset_x), columns.end);
         const start = @max(first, columns.start);
@@ -290,9 +241,6 @@ fn shadeRow(row: []u32, covered: Span, mask: []const u8, color: Premul) void {
     }
 }
 
-/// One point of a point cloud: a circle of `radius` device pixels whose alpha
-/// fades across its edge (`pointFalloff`). The pixels visited are the square
-/// that reaches the end of the falloff, as the GPU's quad does.
 pub fn drawPoint(
     target: Target,
     center: [2]f32,
@@ -305,8 +253,6 @@ pub fn drawPoint(
     if (color.a == 0) return;
     const extent = pointFalloffEnd(radius);
     assert(extent >= radius);
-    // The GPU rasterizes the square's pixel centers half-open and the shader
-    // discards centers outside the clip.
     const rows = raster.centerSpanHalfOpen(center[1] - extent, center[1] + extent, target.height)
         .intersect(raster.centerSpanClosed(clip.y, clip.y + clip.height, target.height));
     const columns = raster.centerSpanHalfOpen(center[0] - extent, center[0] + extent, target.width)
@@ -327,18 +273,8 @@ pub fn drawPoint(
     }
 }
 
-/// Smallest radius, in device pixels, whose historical falloff band (the
-/// outer 15% of the radius) is at least one pixel wide.
 const point_radius_band_min: f32 = 1.0 / 0.15;
 
-/// Point alpha at `uv_distance` (distance from the center over the radius)
-/// for a point of `radius` device pixels. The contract shared with
-/// `shaders/mesh.frag` and Metal's point shaders:
-///
-/// - From a 6.7 px radius up: `1 - smoothstep(0.85, 1, uv_distance)`, the
-///   historical falloff, computed the same way so large points do not change.
-/// - Smaller points: a one-pixel band that moves outward to straddle the edge,
-///   so a sub-pixel dot keeps roughly its true area instead of vanishing.
 fn pointFalloff(uv_distance: f32, radius: f32) f32 {
     assert(radius > 0);
     assert(uv_distance >= 0);
@@ -349,8 +285,6 @@ fn pointFalloff(uv_distance: f32, radius: f32) f32 {
     return 1.0 - raster.smoothstep(end - 1.0, end, uv_distance * radius);
 }
 
-/// Distance from the center, in device pixels, where a point's alpha reaches
-/// zero: the radius for large points, up to half a pixel beyond for small ones.
 fn pointFalloffEnd(radius: f32) f32 {
     assert(radius > 0);
     const end = radius + 0.5 * @max(1.0 - 0.15 * radius, 0.0);
@@ -408,8 +342,6 @@ test "two triangles sharing a diagonal fill their square with no seam" {
 }
 
 test "a half-pixel edge covers the samples on its side only" {
-    // Pixel 1's samples sit at x offsets 0.875 and 0.625 inside the rect's
-    // left edge at 1.5, so two of four samples: red byte 128.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.quad(.{ 1.5, 4, 4, 1.5 }, .{ 0, 0, 1, 1 });
@@ -438,10 +370,6 @@ test "clip discards pixels by center, and polygons outside the clip are skipped"
 }
 
 test "samples exactly on an edge follow the top-left rule" {
-    // Pixel 0's samples sit at y 0.125..0.875 and x 0.375, 0.875, 0.125,
-    // 0.625. A rectangle from y = 0.375 to 0.875 has its top edge on sample
-    // 1 and bottom edge on sample 3, so it covers samples 1 and 2: byte 128,
-    // where a closed edge test would give 191.
     var storage = TestScratch{};
     const scratch = storage.view();
     var pixels: [2 * 1]u32 = undefined;
@@ -472,9 +400,6 @@ test "rows reuse the mask without leaking coverage downward" {
 }
 
 test "degenerate polygons draw nothing" {
-    // The inputs put samples exactly on the degenerate shapes: the collapsed
-    // strip is the vertical line at x = 1.375 (pixel 1's first sample
-    // column) and the flat triangle lies on the sample row y = 0.125.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.quad(.{ 1.375, 1.375, 1.375, 1.375 }, .{ 0, 0, 2, 2 });
@@ -492,16 +417,10 @@ test "large point alpha keeps the historical falloff" {
     drawPoint(target, .{ 10, 10.5 }, 8, open_clip, white);
     try testing.expectEqual(@as(u32, 0xFFFF_FFFF), target.row(10)[10]);
     try testing.expectEqual(test_background, target.row(3)[3]);
-    // Pixel (17, 10) has |uv| = 7.5 / 8 = 0.9375: smoothstep(0.85, 1, 0.9375)
-    // = 0.6238, so coverage 0.3762 rounds to byte 96.
     try testing.expectEqual(@as(u32, 0xFF60_6060), target.row(10)[17]);
 }
 
 test "sub-pixel point keeps its area with a one-pixel falloff" {
-    // A radius-0.7 point centered on a pixel corner draws its four pixels at
-    // about its true area (pi * 0.49 / 4 = 0.385 each). The band ends at
-    // 0.7 + 0.5 * (1 - 0.105) = 1.1475 px, so a pixel center at 0.7071 px
-    // gives smoothstep 0.5890, alpha 0.4110, byte 105.
     var pixels: [8 * 8]u32 = undefined;
     const target = testTarget(&pixels, 8, 8);
     const white = Premul{ .r = 255, .g = 255, .b = 255, .a = 255 };

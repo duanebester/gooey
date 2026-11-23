@@ -56,7 +56,7 @@ pub const DBusBasicValue = extern union {
     u16: u16,
     i32: i32,
     u32: u32,
-    bool_val: u32, // D-Bus booleans are 32-bit
+    bool_val: u32,
     i64: i64,
     u64: u64,
     dbl: f64,
@@ -148,7 +148,6 @@ pub const Connection = struct {
 
     const Self = @This();
 
-    /// Private connection: must be explicitly closed.
     pub fn connectSessionPrivate() Error!Self {
         var err = ErrorState.init();
         defer err.deinit();
@@ -218,12 +217,10 @@ pub const Connection = struct {
         return Message{ .msg = reply };
     }
 
-    /// Queue a message without waiting for a reply; `flush` sends it.
     pub fn send(self: *Self, message: *Message) Error!void {
         if (dbus_connection_send(self.conn, message.msg, null) == 0) return Error.OutOfMemory;
     }
 
-    /// The connection's socket, for a caller that polls it with other fds.
     pub fn unixFd(self: *Self) ?std.posix.fd_t {
         var fd: c_int = -1;
         if (dbus_connection_get_unix_fd(self.conn, &fd) == 0) return null;
@@ -290,7 +287,7 @@ pub const Message = struct {
     pub fn iterInit(self: *Self) ?MessageIter {
         var iter = MessageIter{};
         if (dbus_message_iter_init(self.msg, &iter.inner) == 0) {
-            return null; // No arguments
+            return null;
         }
         return iter;
     }
@@ -346,7 +343,6 @@ pub const MessageIter = struct {
         return dbus_message_iter_append_basic(&self.inner, TYPE_BOOLEAN, &dbus_bool) != 0;
     }
 
-    /// Append raw bytes (for "ay" type - byte array)
     pub fn appendBytes(self: *Self, bytes: []const u8) bool {
         var sub = Self{};
         if (dbus_message_iter_open_container(&self.inner, TYPE_ARRAY, "y", &sub.inner) == 0) {
@@ -390,7 +386,6 @@ test "DBusError size check" {
 }
 
 test "DBusMessageIter size check" {
-    // Large enough for libdbus internals.
     comptime {
         std.debug.assert(@sizeOf(DBusMessageIter) >= 64);
     }

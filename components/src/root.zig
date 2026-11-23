@@ -1,6 +1,3 @@
-//! Controls compose only the public gooey API: `zig build import-ban` fails on
-//! any `gooey.internals` reference here.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -178,13 +175,11 @@ pub const Select = struct {
         const handle = cx.retain(SelectState, id, .frame, SelectState.init);
         const state = cx.get(SelectState, handle);
         state.root = id;
-        // A disabled Select shows no menu, even one opened before it was.
         const open = state.open and !self.disabled;
         const trigger_height = @as(f32, @floatFromInt(theme.font_size_base)) +
             self.padding * 2 + 4;
         cx.render(ui.box(.{
             .key = key,
-            // The trigger's corners, for the focus ring; the box paints none.
             .style = .{
                 .width = .{ .fixed = self.width },
                 .corner_radius = .all(theme.radius_md),
@@ -194,8 +189,6 @@ pub const Select = struct {
                 .entity = handle,
                 .arg = self.keyArg(SelectState.on_combobox, open),
             }),
-            // A chosen option's click bubbles here after its `on_select`
-            // ran, and closes the menu; closing twice changes nothing.
             .on_click = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
             .on_click_outside = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
             .a11y = .{
@@ -239,22 +232,15 @@ pub const Select = struct {
     }
 };
 
-/// The most options one `Select` lists: the key handlers pack indexes into
-/// 16 bits.
 pub const select_option_count_max: u32 = 1024;
 
-/// A `Select`'s open state and keyboard handling, retained under its key. The
-/// key handlers' arguments come from the frame on screen, so a key a drain
-/// routes after a choice closed the menu still acts on the menu it shows.
 const SelectState = struct {
     root: ElementId,
     open: bool,
 
-    /// `Arg.focused` for the combobox itself.
     const on_combobox: u16 = std.math.maxInt(u16);
 
     const Arg = packed struct(u64) {
-        /// The focused option, or `on_combobox`.
         focused: u16,
         count: u16,
         start: u16,
@@ -276,8 +262,6 @@ const SelectState = struct {
         effects.requestRender();
     }
 
-    /// Closing a closed menu changes nothing, so a key routed against a frame
-    /// that still showed the menu cannot reopen it.
     fn close(self: *SelectState, effects: *Effects) void {
         self.open = false;
         effects.requestRender();
@@ -294,7 +278,6 @@ const SelectState = struct {
         return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
     }
 
-    /// Shift+Tab takes the Tab arm too: `KeyCode` has no back-tab.
     fn onKey(self: *SelectState, arg: Arg, effects: *Effects) void {
         assert(self.root.isKeyed());
         assert(arg.start < @max(arg.count, 1));
@@ -330,8 +313,6 @@ const SelectState = struct {
                 effects.focus(self.root);
                 effects.stopPropagation();
             },
-            // Tab moves to the next tab stop, which the closing menu's
-            // options, still in the frame on screen, are not.
             .tab => if (arg.open) {
                 effects.click(self.trigger());
                 effects.focus(self.root);
@@ -350,8 +331,6 @@ const SelectState = struct {
             .home => 0,
             .end => last,
             .@"return", .keypad_enter, .space => {
-                // `effects.click` runs the option's own handler only, so
-                // close the menu here.
                 effects.click(self.option(arg.focused));
                 self.close(effects);
                 effects.focus(self.root);
@@ -382,11 +361,6 @@ const SelectTrigger = struct {
         const background = if (hovered) theme.overlay else theme.surface;
         const text_color = if (select.selected == null) theme.muted else theme.text;
         const chevron = &chevrons[@intFromBool(self.open)][@intFromBool(select.disabled)];
-        // An open menu's trigger closes, it does not toggle. Every key a
-        // drain delivers after a choice routes against this frame, where the
-        // menu is still open, so a Tab or Esc that presses the trigger here
-        // must not reopen the menu the choice closed; closing a closed menu
-        // changes nothing.
         var on_click: ?Handler = null;
         if (!select.disabled) {
             on_click = if (self.open)
@@ -431,7 +405,6 @@ const SelectMenu = struct {
         assert(!select.disabled);
         const theme = cx.theme();
         cx.render(ui.box(.{
-            // `SelectState.option` derives the options' ids from this key.
             .key = .{ .name = "menu" },
             .layer = .{
                 .kind = .popover,
@@ -469,7 +442,6 @@ const SelectOptions = struct {
             const key = Key{ .index = index };
             const position: u16 = @intCast(index);
             const chosen = select.selected == index;
-            // The focused option is the highlighted one, drawn as hovered.
             const lit = cx.hovered(cx.id(key)) or cx.focused(cx.id(key));
             const background: ?Color = if (lit)
                 theme.overlay
@@ -486,7 +458,6 @@ const SelectOptions = struct {
                     .alignment = .{ .main = .space_between, .cross = .center },
                     .cursor = .pointer,
                 },
-                // Arrow keys reach the options; Tab leaves the menu.
                 .focusable = true,
                 .tab_stop = false,
                 .on_click = handler,
@@ -518,7 +489,6 @@ const SelectOptions = struct {
     }
 };
 
-/// Tinted by a theme colour at paint time, so one constant serves every theme.
 const SelectIcon = struct {
     path: []const u8,
     color: enum { text, primary },
@@ -537,7 +507,6 @@ const SelectIcon = struct {
 const chevron_down = "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z";
 const chevron_up = "M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z";
 
-/// Indexed by `open`, then `disabled`.
 const chevrons = [2][2]SelectIcon{
     .{
         .{ .path = chevron_down, .color = .text, .opacity = 1 },
@@ -590,7 +559,6 @@ pub const RadioGroup = struct {
                 .color = .text,
             }) else null,
             ui.box(.{
-                // `RadioKeys.option` derives the options' ids from this key.
                 .key = .{ .name = "options" },
                 .style = .{ .gap = 8 },
             }, .{RadioOptions{ .group = &self, .keys = handle }}),
@@ -598,12 +566,8 @@ pub const RadioGroup = struct {
     }
 };
 
-/// The most options one `RadioGroup` lists: the key handlers pack indexes
-/// into 16 bits.
 pub const radio_option_count_max: u32 = 256;
 
-/// A `RadioGroup`'s arrow keys, retained under its key; only the group's id,
-/// which never changes, is kept.
 const RadioKeys = struct {
     root: ElementId,
 
@@ -654,7 +618,6 @@ const RadioOptions = struct {
         assert(group.options.len == group.on_select.len);
         assert(group.options.len <= radio_option_count_max);
         const count: u16 = @intCast(group.options.len);
-        // With nothing selected, the first option is the group's tab stop.
         const tab_stop = group.selected orelse 0;
         for (group.options, group.on_select, 0..) |label, handler, index| {
             const position: u16 = @intCast(index);
@@ -730,8 +693,6 @@ const RadioOption = struct {
     }
 };
 
-/// An on/off toggle. Like `Checkbox`, it shows the app's `checked` and runs
-/// `on_click` to flip it; Enter and Space press it through the router.
 pub const Switch = struct {
     checked: bool,
     on_click: ?Handler = null,
@@ -766,7 +727,6 @@ pub const Switch = struct {
                 .direction = .row,
                 .gap = 10,
                 .alignment = .center_cross,
-                // The track's ends, for the focus ring.
                 .corner_radius = .all(track_height / 2),
                 .cursor = if (interactive) .pointer else null,
                 .opacity = if (self.disabled) 0.5 else 1,
@@ -806,12 +766,6 @@ pub const Switch = struct {
     }
 };
 
-/// A value in `[min, max]` bound to an app field, as `TextInput` binds its
-/// text: the slider's handlers write `bind` and the app reads it there. With
-/// a `step`, every value it writes is `min` plus a whole number of steps, at
-/// most `max`. Arrows move one step (a hundredth of the range without one), Page
-/// Up and Page Down a tenth of the range, Home and End to the ends; a press
-/// on the track jumps there and a drag follows the pointer.
 pub const Slider = struct {
     key: []const u8,
     bind: *f32,
@@ -841,7 +795,6 @@ pub const Slider = struct {
                 .height = .{ .fixed = slider_thumb_size },
                 .direction = .row,
                 .alignment = .center_cross,
-                // The thumb's ends, for the focus ring.
                 .corner_radius = .all(slider_thumb_size / 2),
                 .cursor = if (self.disabled) null else .pointer,
                 .opacity = if (self.disabled) 0.5 else 1,
@@ -891,8 +844,6 @@ pub const Slider = struct {
 
 const slider_thumb_size: f32 = 20;
 const slider_track_height: f32 = 6;
-/// A formatted f32: at most 39 integer digits, a sign, a point, and
-/// `slider_decimals_max` decimals.
 const slider_value_bytes_max: u32 = 48;
 const slider_decimals_max: u8 = 3;
 
@@ -901,14 +852,10 @@ comptime {
     assert(39 + 2 + slider_decimals_max <= slider_value_bytes_max);
 }
 
-/// A `Slider`'s pointer and keys, retained under its key. `sync` copies the
-/// props of each build, so the handlers act on the slider on screen: the
-/// frame they route against is the last one built.
 const SliderState = struct {
     root: ElementId,
     bind: ?*f32,
     scale: SliderScale,
-    /// The value at the press, which a cancelled drag restores.
     drag_start: f32,
     dragging: bool,
     disabled: bool,
@@ -935,7 +882,6 @@ const SliderState = struct {
         self.bind = slider.bind;
         self.scale = .{ .min = slider.min, .max = slider.max, .step = slider.step orelse 0 };
         self.disabled = slider.disabled;
-        // A slider disabled mid-drag drops the drag where it is.
         if (slider.disabled) self.dragging = false;
         assert(self.scale.step >= 0);
     }
@@ -964,7 +910,6 @@ const SliderState = struct {
         effects.stopPropagation();
     }
 
-    /// The primary button only, as native sliders answer.
     fn onDrag(self: *SliderState, effects: *Effects) void {
         assert(self.root.isKeyed());
         const drag = effects.pointerDrag() orelse return;
@@ -991,10 +936,6 @@ const SliderState = struct {
         assert(bind.* <= self.scale.max);
     }
 
-    /// The value under window x `x`, or null when the slider is not on
-    /// screen. The thumb's centre travels from half a thumb inside the left
-    /// end to half a thumb inside the right. The bounds are those hit testing
-    /// sees, so a slider cut by a horizontal clip maps the visible part.
     fn valueAt(self: *const SliderState, effects: *const Effects, x: f32) ?f32 {
         assert(std.math.isFinite(x));
         const bounds = effects.bounds(self.root) orelse return null;
@@ -1006,20 +947,14 @@ const SliderState = struct {
     }
 };
 
-/// The values a `Slider` writes: with a `step` above 0, the stops
-/// `min + n * step` up to `max`; with `step` 0, all of `[min, max]`, in
-/// keyboard stops of a hundredth of the range.
 const SliderScale = struct {
     min: f32,
     max: f32,
     step: f32,
 
-    /// A stop's offset within `step` of a whole one that counts as on it,
-    /// so float error in `min + n * step` does not skip or repeat a stop.
     const stop_tolerance: f32 = 1e-3;
     const continuous_stop_count: f32 = 100;
 
-    /// The size of one keyboard stop.
     fn unit(self: SliderScale) f32 {
         assert(self.min < self.max);
         assert(self.step >= 0);
@@ -1027,21 +962,18 @@ const SliderScale = struct {
         return (self.max - self.min) / continuous_stop_count;
     }
 
-    /// The index of the last stop, at or below `max`.
     fn last(self: SliderScale) f32 {
         const stops = @floor((self.max - self.min) / self.unit() + stop_tolerance);
         assert(stops >= 1);
         return stops;
     }
 
-    /// A tenth of the range in whole stops, and at least one.
     fn pageStops(self: SliderScale) f32 {
         const stops = @max(1, @round(self.last() / 10));
         assert(stops <= self.last());
         return stops;
     }
 
-    /// `value` clamped to `[min, max]`, at the nearest stop when stepped.
     fn snap(self: SliderScale, value: f32) f32 {
         assert(std.math.isFinite(value));
         const clamped = std.math.clamp(value, self.min, self.max);
@@ -1050,9 +982,6 @@ const SliderScale = struct {
         return self.stop(index);
     }
 
-    /// The stop `count` stops above `value` (below for a negative count). A
-    /// value between stops moves first to the stop on that side, so every
-    /// press moves toward its end.
     fn move(self: SliderScale, value: f32, count: f32) f32 {
         assert(std.math.isFinite(value));
         assert(count != 0);
@@ -1085,8 +1014,6 @@ fn sliderFraction(value: f32, min: f32, max: f32) f32 {
     return fraction;
 }
 
-/// The decimals a screen reader hears: as many as `step` has, up to
-/// `slider_decimals_max`, or for a continuous slider fewer the wider the range.
 fn sliderDecimals(step: ?f32, range: f32) u8 {
     assert(range > 0);
     const size = step orelse {
@@ -1107,14 +1034,15 @@ fn sliderDecimals(step: ?f32, range: f32) u8 {
 fn sliderValueText(buffer: *[slider_value_bytes_max]u8, value: f32, decimals: u8) []const u8 {
     assert(std.math.isFinite(value));
     assert(decimals <= slider_decimals_max);
-    // The buffer holds any finite f32 at `slider_decimals_max` decimals.
+    comptime assert(std.fmt.count("{d:.[1]}", .{
+        -std.math.floatMax(f32),
+        slider_decimals_max,
+    }) <= slider_value_bytes_max);
     const text = std.fmt.bufPrint(buffer, "{d:.[1]}", .{ value, decimals }) catch unreachable;
     assert(text.len > 0);
     return text;
 }
 
-/// The filled track before the thumb, the thumb, and the empty track after
-/// it, laid out in a row whose widths add to the slider's.
 const SliderTrack = struct {
     before: f32,
     travel: f32,
@@ -1177,8 +1105,6 @@ pub fn Tooltip(comptime Child: type) type {
                 .delay_ns = @as(u64, self.delay_ms) * std.time.ns_per_ms,
             });
             if (state.wait_ms) |wait_ms| cx.requestRenderAfter(wait_ms);
-            // The child's height from the last frame: a tooltip shows only
-            // after a frame has laid its child out.
             const height = if (cx.bounds(id)) |rect| rect.height else 0;
             cx.render(ui.box(.{
                 .key = key,
@@ -1195,16 +1121,13 @@ pub fn Tooltip(comptime Child: type) type {
     };
 }
 
-/// The rest before a hovered tooltip shows, as macOS and Windows wait.
 pub const tooltip_delay_ms_default: u32 = 500;
 const tooltip_gap: f32 = 4;
 
 const TooltipState = struct {
     hover_since_ns: ?u64,
     wait_ms: ?u32,
-    /// Shown in the last build, so Escape claims the key only then.
     shown: bool,
-    /// Escape hid it; cleared once hover and focus both leave.
     dismissed: bool,
 
     const Inputs = struct { hovered: bool, focused: bool, now_ns: u64, delay_ns: u64 };
@@ -1234,7 +1157,6 @@ const TooltipState = struct {
             if (!rested) {
                 const wait_ns = inputs.delay_ns - elapsed_ns;
                 assert(wait_ns > 0);
-                // Rounded up, so the render it asks for lands at or past the delay.
                 const wait_ms = @divFloor(wait_ns - 1, std.time.ns_per_ms) + 1;
                 assert(wait_ms <= std.math.maxInt(u32));
                 self.wait_ms = @intCast(wait_ms);
@@ -1246,8 +1168,6 @@ const TooltipState = struct {
         return self.shown;
     }
 
-    /// Other keys, and Escape while it is hidden, go on to the child's
-    /// ancestors, such as a modal that closes.
     fn onKey(self: *TooltipState, effects: *Effects) void {
         const event = effects.inputEvent() orelse return;
         if (event.* != .key_down) return;
@@ -1296,8 +1216,6 @@ const TooltipBubble = struct {
 
 pub const MenuItem = struct {
     label: []const u8 = "",
-    /// Runs when the row is chosen; it must not stop propagation, since the
-    /// menu closes on the click it bubbles.
     on_select: ?Handler = null,
     shortcut: ?[]const u8 = null,
     disabled: bool = false,
@@ -1351,11 +1269,8 @@ pub fn ContextMenu(comptime Child: type) type {
     };
 }
 
-/// The most rows one `ContextMenu` holds: its key handler carries which rows
-/// are actions as a 64-bit mask.
 pub const menu_item_count_max: u32 = 64;
 
-/// Bit `i` set when row `i` is an action the keys reach.
 fn enabledMask(items: []const MenuItem) u64 {
     assert(items.len <= menu_item_count_max);
     var mask: u64 = 0;
@@ -1365,10 +1280,6 @@ fn enabledMask(items: []const MenuItem) u64 {
     return mask;
 }
 
-/// Every handler sits on a `menuitem` row, so each handled record belongs to
-/// an interactive accessibility node: the row's own handler closes the menu
-/// and takes the keys, and the app's `on_select` sits on a box inside it that
-/// fills it, so a click runs `on_select` and then bubbles to the close.
 const MenuState = struct {
     root: ElementId,
     shown: bool,
@@ -1386,7 +1297,6 @@ const MenuState = struct {
         return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
     }
 
-    /// The box inside row `index` that holds its `on_select`.
     fn pick(self: *const MenuState, index: u32) ElementId {
         return self.row(index).child(.{ .name = "pick" });
     }
@@ -1415,7 +1325,6 @@ const MenuState = struct {
         effects.requestRender();
     }
 
-    /// A press outside: the press itself moves focus.
     fn dismiss(self: *MenuState, effects: *Effects) void {
         self.shown = false;
         effects.requestRender();
@@ -1441,7 +1350,6 @@ const MenuState = struct {
             .end => .last,
             .@"return", .keypad_enter, .space => {
                 const index = current orelse return;
-                // `effects.click` runs the box's own handler only.
                 effects.click(self.pick(index));
                 self.close(effects);
                 effects.stopPropagation();
@@ -1470,8 +1378,6 @@ const MenuState = struct {
 
 const MenuStep = enum { next, previous, first, last };
 
-/// The action row a key moves to among `enabled`'s set bits, wrapping, or
-/// null when there is none.
 fn menuStep(enabled: u64, current: ?u32, step: MenuStep) ?u32 {
     if (enabled == 0) return null;
     const first: u32 = @ctz(enabled);
@@ -1496,9 +1402,6 @@ fn menuStep(enabled: u64, current: ?u32, step: MenuStep) ?u32 {
     };
 }
 
-/// The open menu, on a `.popover` layer anchored to the window, which keeps
-/// it inside the window near an edge. Its rows sit directly under it, keyed
-/// by index (`MenuState.row`).
 const MenuPanel = struct {
     items: []const MenuItem,
     width_min: f32,
@@ -1574,8 +1477,6 @@ const MenuRow = struct {
         const theme = cx.theme();
         const enabled = item.enabled();
         const id = cx.id(self.key);
-        // The keyboard's row is lit only while focus shows, so a menu opened
-        // with the pointer lights only what the pointer is over.
         const lit = enabled and (cx.hovered(id) or cx.focusVisibleWithin(id));
         const label_color: ui.ColorToken = if (!enabled)
             .muted
@@ -1594,7 +1495,6 @@ const MenuRow = struct {
             .on_key = if (enabled) self.on_key else null,
             .a11y = .{ .role = .menuitem, .label = item.label, .disabled = !enabled },
         }, .{ui.box(.{
-            // Fills the row, so every click on it lands here first.
             .key = .{ .name = "pick" },
             .style = .{
                 .direction = .row,
@@ -1687,9 +1587,6 @@ pub fn List(comptime Row: type) type {
 
         const Self = @This();
 
-        /// Bring row `index` of the list with id `list` into view: `list` is
-        /// the list's id taken in the render that builds it, under the same
-        /// parent.
         pub fn scrollTo(
             effects: *gooey.Effects,
             list: gooey.ElementId,
@@ -1703,7 +1600,6 @@ pub fn List(comptime Row: type) type {
             } });
         }
         const uniform = @hasDecl(Row, "row_height");
-        /// The most rows a list that sums row by row may hold.
         const sum_count_max: u32 = if (uniform) list_count_max else Row.count_max;
 
         pub fn render(self: Self, cx: *Cx) void {
@@ -1712,8 +1608,6 @@ pub fn List(comptime Row: type) type {
             self.checkStyle();
             if (!(uniform and self.multiplies())) self.checkCount();
             const key = Key{ .name = self.key };
-            // The offset and viewport the wheel, scrollbar, and last emit
-            // left; none before the box first renders.
             const position = cx.scroll(cx.id(key)) orelse Cx.ScrollPosition{
                 .offset_x = 0,
                 .offset_y = 0,
@@ -1743,7 +1637,6 @@ pub fn List(comptime Row: type) type {
             }));
         }
 
-        /// The list owns the scroll box's size, scrolling, and row spacing.
         fn checkStyle(self: Self) void {
             assert(self.style.width == .fit);
             assert(self.style.height == .fit);
@@ -1752,8 +1645,6 @@ pub fn List(comptime Row: type) type {
             assert(self.style.direction == .column);
         }
 
-        /// Each row in view is at least one element (its keyed box), so
-        /// the frame's element budget bounds the rows one build may emit.
         fn checkRowsVisible(self: Self, cx: *Cx, rows_visible: u32) void {
             const element_count_max = cx.limits().build.element_count_frame_max;
             if (rows_visible <= element_count_max) return;
@@ -1763,9 +1654,6 @@ pub fn List(comptime Row: type) type {
             });
         }
 
-        /// A list that sums row by row (`multiplies` is false) does so on
-        /// every render, so its rows are bounded: `Row.count_max`, or
-        /// `list_count_max` for uniform rows whose sums are inexact.
         fn checkCount(self: Self) void {
             if (self.count <= sum_count_max) return;
             if (uniform) {
@@ -1780,9 +1668,6 @@ pub fn List(comptime Row: type) type {
             });
         }
 
-        /// The rows from the first one the offset reaches through the last
-        /// one the viewport shows, partial rows included, and the heights
-        /// above and below them.
         fn visibleRows(
             self: Self,
             cx: *Cx,
@@ -1791,9 +1676,6 @@ pub fn List(comptime Row: type) type {
         ) ListRange {
             const padding = self.style.padding;
             const rows_height = self.contentHeight(cx, width);
-            // `position_pass.resolveScrollTarget`'s `max_y`, operation for
-            // operation, from the rows' exact height; layout's own end may
-            // sit an ulp further (`belowSpacer`).
             const offset_max = @max(0, rows_height - viewHeight(self.style, state));
             const offset = self.offsetFor(cx, state, .{ .offset_max = offset_max, .width = width });
             const view_top = std.math.clamp(offset, 0, offset_max) - padding.top;
@@ -1817,8 +1699,6 @@ pub fn List(comptime Row: type) type {
             return result;
         }
 
-        /// Where the core's layout will put the offset this frame, so the
-        /// rows it shows are the ones built.
         fn offsetFor(
             self: Self,
             cx: *Cx,
@@ -1844,16 +1724,6 @@ pub fn List(comptime Row: type) type {
             return state.offset_y;
         }
 
-        // Row tops and the rows' height are the sums layout makes: the
-        // spacer above the window, then each row box in turn
-        // (`position_pass.childSpan`, `sumChildrenAlongMainAxis`). f32
-        // addition rounds, so a sum taken any other way, such as heights
-        // and gaps added separately, can differ by an ulp; an `.end` or
-        // `.child` target predicted from it then builds a window one row off
-        // the one the resolved offset shows, and the next render moves the
-        // rows. So the list adds row boxes one by one from the first row,
-        // as layout does, unless `multiplies` proves the product exact.
-
         fn rowTop(self: Self, cx: *Cx, index: u32, width: f32) f32 {
             assert(index < self.count);
             if (uniform and self.multiplies()) {
@@ -1874,22 +1744,12 @@ pub fn List(comptime Row: type) type {
             return self.rowTop(cx, last, width) + self.rowBox(cx, last, width);
         }
 
-        /// Row `index`'s box: the row and the gap below it, but for the
-        /// last row, as `ListRows` sizes it.
         fn rowBox(self: Self, cx: *Cx, index: u32, width: f32) f32 {
             assert(index < self.count);
             const gap: f32 = if (index + 1 < self.count) self.gap else 0;
             return listRowHeight(Row, cx, index, width) + gap;
         }
 
-        /// Whether a uniform list may multiply instead of summing: every
-        /// sum of its boxes, `pitch` each and `row_height` for the last, is
-        /// a whole number of steps of the finer of the two values' binary
-        /// grids, under 2^24 steps, so f32 holds each exactly and the
-        /// product has the bits layout's box-by-box sum has. Whole-pixel or
-        /// half-pixel rows qualify up to millions of pixels.
-        /// Callers test `uniform and` first, so a list of measured rows
-        /// never compiles the product.
         fn multiplies(self: Self) bool {
             if (comptime !uniform) return false;
             if (self.count == 0) return true;
@@ -1900,8 +1760,6 @@ pub fn List(comptime Row: type) type {
             const pitch_steps = std.math.ldexp(@as(f64, row_pitch), -grid);
             const height_steps = std.math.ldexp(@as(f64, row_height), -grid);
             const last: f64 = @floatFromInt(self.count - 1);
-            // f64 holds the sum exactly near 2^24; a larger one may round
-            // but stays far above the bound.
             return pitch_steps * last + height_steps < 1 << 24;
         }
 
@@ -1917,8 +1775,6 @@ pub fn List(comptime Row: type) type {
             return Row.row_height + gap;
         }
 
-        /// The first row the view's top reaches through the last its height
-        /// covers, plus one for a partial row. `below` is unset.
         fn uniformRows(view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
             const row_pitch = pitch(gap);
             const first: u32 = @intFromFloat(@floor(@max(0, view_top) / row_pitch));
@@ -1930,7 +1786,6 @@ pub fn List(comptime Row: type) type {
             return .{ .start = start, .end = end, .above = above, .below = 0 };
         }
 
-        /// `below` carries the end row's top for `visibleRows` to subtract.
         fn variableRows(self: Self, cx: *Cx, view: ListView) ListRange {
             const count = self.count;
             assert(count <= sum_count_max);
@@ -1961,28 +1816,15 @@ pub fn List(comptime Row: type) type {
 
 const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
 
-/// The view a scroll target aligns in: the box's height less its vertical
-/// padding, as layout's `content_box.height`, operation for operation.
 fn viewHeight(style: ui.Style, state: *const Cx.ScrollPosition) f32 {
     assert(state.viewport.height >= 0);
     const padding = style.padding;
     return @max(0, state.viewport.height - (padding.top + padding.bottom));
 }
 
-/// The spacer below the window. Layout adds it to the boxes above it,
-/// `end_top`, to find the rows' end and its `max_y`. f32 cannot always
-/// land that sum on `rows_height`: when `end_top` carries half an ulp of
-/// the sum, every spacer rounds to a neighbour. So the spacer is the
-/// difference rounded up, which puts the end at `rows_height` or one ulp
-/// past it, never short. The list's `offset_max`, from `rows_height`, is
-/// then at most layout's `max_y`, and an offset layout clamps to its
-/// `max_y` clamps to the same `offset_max` here: the target frame and
-/// every rebuild after it choose the same rows.
 fn belowSpacer(end_top: f32, rows_height: f32) f32 {
     assert(end_top >= 0);
     assert(end_top <= rows_height);
-    // f64 holds the difference of two f32 values exactly unless their
-    // exponents differ by more than 29, far past any list's rows.
     const exact = @as(f64, rows_height) - @as(f64, end_top);
     var below: f32 = @floatCast(exact);
     if (below < exact) below = std.math.nextAfter(f32, below, std.math.inf(f32));
@@ -1991,8 +1833,6 @@ fn belowSpacer(end_top: f32, rows_height: f32) f32 {
     return below;
 }
 
-/// The exponent of `value`'s lowest set mantissa bit: `value` is a whole
-/// number of steps of 2^exponent.
 fn gridExponent(value: f32) i32 {
     assert(std.math.isNormal(value));
     assert(value > 0);
@@ -2004,8 +1844,6 @@ fn gridExponent(value: f32) i32 {
 
 const ListView = struct { top: f32, height: f32, width: f32 };
 
-/// The offset that shows a row box at `top`, `height` tall, in a view of
-/// `view` px, as the core's layout aligns a scroll target's child.
 fn alignRow(alignment: ui.ScrollAlignment, top: f32, height: f32, view: f32, current: f32) f32 {
     assert(height >= 0);
     assert(view >= 0);
@@ -2021,8 +1859,6 @@ fn alignRow(alignment: ui.ScrollAlignment, top: f32, height: f32, view: f32, cur
     };
 }
 
-/// The longest list of per-row heights: each render sums them all, and
-/// 65,536 calls stay well inside a frame.
 pub const list_count_max: u32 = 65_536;
 
 fn listRowHeight(comptime Row: type, cx: *Cx, index: u32, width: f32) f32 {
@@ -2035,8 +1871,6 @@ fn listRowHeight(comptime Row: type, cx: *Cx, index: u32, width: f32) f32 {
     return height;
 }
 
-/// The rows in view, each in a box keyed by its index and as tall as the
-/// row plus the gap below it; the last row has no gap below.
 fn ListRows(comptime Row: type) type {
     return struct {
         start: u32,
@@ -2063,9 +1897,6 @@ fn ListRows(comptime Row: type) type {
     };
 }
 
-/// A single-line input bound to an app field. `bind` points into the
-/// engine's buffer after an edit, so the app reads the text there and
-/// assigns `""` to replace it.
 pub const TextInput = struct {
     key: []const u8,
     bind: *[]const u8,
@@ -2221,9 +2052,6 @@ pub const TextArea = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    /// Null fills the parent's free width. Nothing the build computes
-    /// depends on the laid-out width, so a resize draws at the new width
-    /// with no frame of lag.
     width: ?f32 = 300,
     rows: u16 = 4,
     padding: f32 = 8,
@@ -2284,13 +2112,10 @@ pub const TextArea = struct {
         assert(engine.len == 0);
     }
 
-    /// Paint work is bounded by `rows` + 1 lines; finding them scans the
-    /// text once.
     fn paintArea(engine: *const AreaEngine, painter: *ui.Painter) void {
         paintText(engine, painter);
     }
 
-    /// The editor draws its text so.
     fn paintText(engine: anytype, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const metrics = painter.fontMetrics();
@@ -2344,7 +2169,6 @@ pub const TextArea = struct {
             if (from <= to and engine.selectionEnd() > start) {
                 const x0 = painter.measureText(line[0 .. from - start], style);
                 const x1 = painter.measureText(line[0 .. to - start], style);
-                // A selected newline shows as a sliver past the line's end.
                 const newline: f32 = if (engine.selectionEnd() > end) 4 else 0;
                 painter.fill(.{
                     .x = left + x0,
@@ -2398,7 +2222,6 @@ pub const TextArea = struct {
         });
     }
 
-    /// A track and thumb at the right edge while the lines overflow.
     fn paintScrollbar(engine: anytype, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const line_height = painter.fontMetrics().line_height;
@@ -2428,8 +2251,6 @@ pub const CodeEditor = struct {
     bind: *[]const u8,
     placeholder: []const u8 = "",
     width: ?f32 = 500,
-    /// Null fills the parent's height: the rows are what fit in the height
-    /// the editor was laid out at last frame; before any layout, one row.
     rows: ?u16 = 10,
     padding: f32 = 8,
     border_width: f32 = 1,
@@ -2460,7 +2281,6 @@ pub const CodeEditor = struct {
             line_height * @as(f32, @floatFromInt(rows))
         else
             self.filledViewportHeight(cx, id, line_height);
-        // The separator after the gutter is one pixel wide.
         const separator: f32 = if (gutter > 0) 1 else 0;
         engine.resolveClick(cx, .{
             .text_x = self.border_width + gutter + separator + self.padding,
@@ -2528,14 +2348,6 @@ pub const CodeEditor = struct {
         }));
     }
 
-    /// The text's height when filling: the editor's laid-out height last
-    /// frame less its border, padding, and status bar, in whole lines so no
-    /// row draws past the border. One line before the first layout.
-    ///
-    /// The box's own size never depends on its rows (it grows), so this
-    /// cannot oscillate. A build after a resize, or before any layout, reads
-    /// a stale height, so it asks for exactly one more render: the next
-    /// build reads the frame laid out at the new size and asks for none.
     fn filledViewportHeight(
         self: *const CodeEditor,
         cx: *Cx,
@@ -2544,7 +2356,6 @@ pub const CodeEditor = struct {
     ) f32 {
         assert(self.rows == null);
         assert(line_height > 0);
-        // After a resize `bounds` asks for the render that reads the new size.
         const bounds = cx.bounds(id) orelse {
             cx.requestRenderAfter(0);
             return line_height;
@@ -2585,8 +2396,6 @@ pub const CodeEditor = struct {
         } }, .{});
     }
 
-    /// The gutter is inset like the text beside it, so a number's row is
-    /// the text line's row.
     fn paintGutter(engine: *const EditorEngine, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const metrics = painter.fontMetrics();
@@ -2601,7 +2410,7 @@ pub const CodeEditor = struct {
         var line = first;
         while (line < @min(line_count, first + visible)) : (line += 1) {
             var buffer: [10]u8 = undefined;
-            // Ten digits hold any u32 line number.
+            comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u32)}) <= buffer.len);
             const label = std.fmt.bufPrint(&buffer, "{d}", .{line + 1}) catch unreachable;
             const view = &engine.view;
             const color = if (line == caret_line) view.text_color else view.placeholder_color;
@@ -2623,12 +2432,18 @@ pub const CodeEditor = struct {
             const column = engine.cursor - engine.lineStart(engine.cursor) + 1;
             var position_buffer: [32]u8 = undefined;
             var indent_buffer: [16]u8 = undefined;
-            // 32 bytes hold "Ln " and ", Col " with two u32s; 16 hold the indent.
+            comptime assert(std.fmt.count("Ln {d}, Col {d}", .{
+                std.math.maxInt(u32),
+                std.math.maxInt(u32),
+            }) <= position_buffer.len);
             const position = std.fmt.bufPrint(&position_buffer, "Ln {d}, Col {d}", .{
                 line,
                 column,
             }) catch unreachable;
             const indent_name = if (self.editor.use_hard_tabs) "Tab" else "Spaces";
+            comptime assert(std.fmt.count("Spaces: {d}", .{
+                std.math.maxInt(u8),
+            }) <= indent_buffer.len);
             const indent = std.fmt.bufPrint(&indent_buffer, "{s}: {d}", .{
                 indent_name,
                 self.editor.tab_size,

@@ -248,7 +248,7 @@ jobs run at once (2 at `nano`, 8 at `standard`); one more is refused with `error
 Each has a `job_input_bytes_max` input, and
 `events.job_result_count_max` posted results of up to `job_result_bytes_max` bytes wait for a
 drain. The fields and
-their measurements are in `src/core/limits.zig` and `docs/memory-budget.md`.
+their measurements are in `src/core/limits.zig`.
 
 ### Render with `Cx` and `ui`
 
@@ -1205,7 +1205,7 @@ Wayland window renders at a reduced scale.
 
 Win32 windows, the shared Vulkan renderer or Direct3D 11 (`-Dwindows-renderer=dx11`, which
 falls back to WARP without a hardware driver), DirectWrite text, WIC images, native file
-dialogs, IME, and UI Automation. 64-bit only. See [docs/windows-port.md](docs/windows-port.md).
+dialogs, IME, and UI Automation. 64-bit only.
 
 ```bash
 zig build run-todo

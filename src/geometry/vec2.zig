@@ -1,5 +1,3 @@
-//! `Vec2` is raw f32 geometry math; `geometry.Point(T)` serves layout and positioning.
-
 const std = @import("std");
 
 pub const Vec2 = struct {
@@ -38,7 +36,6 @@ pub const Vec2 = struct {
         return @sqrt(self.lengthSq());
     }
 
-    /// Returns (1, 0) for degenerate (near-zero) inputs, never NaN.
     pub fn normalize(self: Vec2) Vec2 {
         const len_sq = self.lengthSq();
         if (len_sq < 1e-12) {
@@ -59,14 +56,6 @@ pub const Vec2 = struct {
     pub const zero = Vec2{ .x = 0, .y = 0 };
 };
 
-/// A half-open [start, end) range of vertex indices within a shared buffer.
-///
-/// `closed` records whether the source subpath ended with an explicit close
-/// command (SVG `Z`). Fill rasterization wraps polygons implicitly and
-/// ignores this; stroke rendering needs it so open subpaths (arcs, curves
-/// without `Z`) do not get a phantom segment joining their endpoints.
-/// Defaults to `false` so non-SVG callers (triangulator, mesh builder) can
-/// keep using positional `IndexSlice{ .start = ..., .end = ... }` literals.
 pub const IndexSlice = struct {
     start: u32,
     end: u32,

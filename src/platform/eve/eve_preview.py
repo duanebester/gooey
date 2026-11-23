@@ -65,7 +65,6 @@ class Renderer:
         self.point_size = 16
         self.frac = 4
         self.translate = [0.0, 0.0]
-        # BITMAP_TRANSFORM_A and _E: texels per pixel.
         self.transform = [1.0, 1.0]
         self.scissor = (0, 0, 2048, 2048)
         self.handle = 0
@@ -77,7 +76,6 @@ class Renderer:
         self.pending = []
         self.counts = {}
 
-    # -- coverage helpers -------------------------------------------------
     def box(self, x0, y0, x1, y1):
         sx, sy, sw, sh = self.scissor
         left = max(int(np.floor(x0)), sx, 0)
@@ -119,7 +117,6 @@ class Renderer:
     def color_array(self):
         return np.array(self.color, np.float32)
 
-    # -- primitives --------------------------------------------------------
     def rect(self, a, b):
         r = self.line_width / 16.0
         x0, x1 = sorted((a[0], b[0]))
@@ -162,7 +159,6 @@ class Renderer:
         if region is None or h.stride == 0:
             return
         top, bottom, left, right = region[:4]
-        # Texel coordinates of each pixel centre under the transform.
         u = (np.arange(left, right) - x + 0.5) * self.transform[0]
         v = (np.arange(top, bottom) - y + 0.5) * self.transform[1]
         if h.bilinear:
@@ -207,7 +203,6 @@ class Renderer:
         out[..., 3] = alpha
         return out
 
-    # -- command decoding --------------------------------------------------
     def vertex(self, point, handle=None, cell=None):
         prim = self.primitive
         if prim == BITMAPS:
@@ -296,7 +291,6 @@ class Renderer:
             elif op == 39:
                 self.frac = word & 7
             elif op in (21, 25):
-                # 8.8 fixed point unless bit 17 selects 1.15.
                 scale = 1 << 15 if word & (1 << 17) else 256
                 self.transform[0 if op == 21 else 1] = signed(word & 0x1FFFF, 17) / scale
             elif op in (43, 44):

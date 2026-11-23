@@ -1,8 +1,3 @@
-//! Web/Canvas2D SVG rasterization. Two-channel encoding: R = fill alpha,
-//! G = stroke alpha, so the shader colors fill and stroke differently.
-//! `Path2D` reads only path data, so the icon is parsed here, as the native
-//! backends parse it, and handed over as the path data of its commands.
-
 const std = @import("std");
 const svg_mod = @import("../path.zig");
 
@@ -15,13 +10,8 @@ pub const RasterizedSvg = struct {
 
 pub const RasterBudget = svg_mod.RasterBudget;
 
-/// Alignment padding before the parsed numbers, the one 4-byte aligned
-/// reservation; the path data and the parsed commands are bytes.
 const scratch_alignment_slack_bytes: u32 = 3;
 
-/// Bytes one rasterization allocates: the parsed path and the path data the
-/// browser draws. The browser flattens curves itself, so `vertex_count_max`
-/// does not apply here.
 pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     std.debug.assert(device_size_max > 0);
     std.debug.assert(budget.path_bytes_max > 0);
@@ -42,10 +32,6 @@ pub const StrokeOptions = struct {
     width: f32 = 1.0,
 };
 
-/// Draw `path_data` into a `device_size` square of RGBA pixels at `out_buffer`
-/// (`buffer_size` = `device_size² × 4` bytes), with `viewbox` units scaled to
-/// it, as CoreGraphics and Cairo do: the stroke is clipped at the square's
-/// edge. Returns false if the browser could not draw it.
 extern "env" fn rasterizeSvgPath(
     path_ptr: [*]const u8,
     path_len: u32,
@@ -76,7 +62,6 @@ pub fn rasterize(
     );
 }
 
-/// Output format: R = fill alpha, G = stroke alpha, B = unused, A = combined alpha.
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -117,7 +102,6 @@ pub fn rasterizeWithOptions(
     );
     if (!drawn) return error.GraphicsError;
 
-    // The browser drew the square the native backends draw, at its origin.
     return RasterizedSvg{
         .width = device_size,
         .height = device_size,

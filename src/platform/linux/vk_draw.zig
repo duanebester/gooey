@@ -14,31 +14,22 @@ const FrameCapacity = vk_types.FrameCapacity;
 
 pub const pipeline_count: u32 = @typeInfo(Pipeline).@"enum".field_names.len;
 
-/// Vertices per quad or sprite instance, and per strip segment or point.
 const instance_vertex_count: u32 = 6;
 
 comptime {
-    // `shaders/triangles.vert` hard-codes the triangle's draw layout.
     assert(mesh_edges.triangle_draw_vertex_count == 21);
 }
 
-/// Where and how one frame's draws are recorded.
 pub const Target = struct {
     command: vk.CommandBuffer,
     layout: vk.PipelineLayout,
-    /// Indexed by `Pipeline`.
     pipelines: *const [pipeline_count]vk.Pipeline,
     descriptor_set: vk.DescriptorSet,
     extent: vk.Extent2D,
-    /// Device pixels per logical pixel on each axis.
     scale_x: f32,
     scale_y: f32,
 };
 
-/// Copy each packed array's used prefix into the frame's mapped buffers,
-/// indexed by `FrameBuffer`. A frame is packed at the budget the buffers were
-/// sized from, so a count past capacity is a programmer error, stopped before
-/// it can write past a buffer in any build mode.
 pub fn writeInstances(
     frame: *const PackedFrame,
     mapped: *const [vk_types.frame_buffer_count][*]u8,
@@ -85,14 +76,11 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
     var bound_pipeline: ?Pipeline = null;
     var bound_clip: ?u32 = null;
     var draw_calls: u32 = 0;
-    // One iteration per draw; the draw list is bounded by the paint records.
     for (frame.drawList()) |*draw| {
         assert(draw.count > 0);
         assert(draw.clip < frame.clip_count);
         assert(frame.clips[draw.clip][2] > 0);
         assert(frame.clips[draw.clip][3] > 0);
-        // A clip that covers no pixel centre (off the framebuffer, or between
-        // centres) draws nothing.
         const scissor = scissorRect(frame.clips[draw.clip], target) orelse continue;
         if (bound_clip != draw.clip) {
             vk.vkCmdSetScissor(target.command, 0, 1, (&scissor)[0..1]);
@@ -105,7 +93,6 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
             bound_pipeline = draw.pipeline;
         }
         switch (draw.pipeline.kind()) {
-            // Instance `i` is vertices 6i..6i+5 (`gl_VertexIndex / 6`).
             .quad, .sprite => {
                 vk.vkCmdDraw(
                     target.command,
@@ -155,14 +142,12 @@ fn recordMeshes(
             .point_instanced => {
                 vk.vkCmdDraw(target.command, instance_vertex_count, mesh.count, 0, 0);
             },
-            .quad, .glyph, .svg, .image => unreachable, // `drawRange` asserted a mesh draw.
+            .quad, .glyph, .svg, .image => unreachable,
         }
     }
     return draw.count;
 }
 
-/// The scissor that keeps exactly the pixels whose centres lie inside `clip`,
-/// edges included, or null when there are none.
 fn scissorRect(clip: packed_mod.Rect, target: *const Target) ?vk.Rect2D {
     const rect = scissor_rule.clipRect(clip, target.scale_x, target.scale_y, .{
         .width = target.extent.width,

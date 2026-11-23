@@ -1,10 +1,3 @@
-//! Scripted input traces and the loop that turns one into a golden: a trace
-//! is a window size and a list of labelled steps, and the runner renders an
-//! initial frame, then for each step delivers its input events, renders one
-//! frame, and records it. Drivers are duck-typed with three methods, checked
-//! at comptime: `deliver`, `frame`, and `writeRecord(out: *TextBuffer)`,
-//! the last writing the three sections.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -16,18 +9,11 @@ const TextBuffer = gooey.testing.record_dump.TextBuffer;
 pub const Point = struct { x: f32, y: f32 };
 
 pub const Step = union(enum) {
-    /// A pointer move to one point, then a primary-button press and release
-    /// there, as a platform reports a click after the pointer travels.
     click: Point,
-    /// A pointer move with no button down.
     move: Point,
-    /// A key press and release with no modifiers and no characters.
     key: input.KeyCode,
-    /// A key press and release with modifiers held, such as a shortcut.
     chord: Chord,
-    /// Committed text, as an IME or a plain key press delivers it.
     text: []const u8,
-    /// IME preedit text; an empty string ends the composition.
     compose: []const u8,
 };
 
@@ -46,7 +32,6 @@ pub const Trace = struct {
     steps: []const LabeledStep,
 };
 
-/// Most steps a trace may hold, so a golden's size is bounded.
 pub const step_count_max: u32 = 64;
 
 pub fn run(driver: anytype, trace: *const Trace, out: *TextBuffer) void {
@@ -130,7 +115,6 @@ fn verifyDriver(comptime Pointer: type) void {
     }
 }
 
-/// Compare `actual` with `expected` and describe the first differing line.
 pub fn matches(name: []const u8, expected: []const u8, actual: []const u8) bool {
     if (std.mem.eql(u8, expected, actual)) return true;
     var expected_lines = std.mem.splitScalar(u8, expected, '\n');

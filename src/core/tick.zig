@@ -1,15 +1,3 @@
-//! The per-window frame driver: drain → build → layout → emit → pack → draw →
-//! swap, with every phase transition asserted.
-//!
-//! Two sides, one owner each. `tickMain` runs on the main thread: drain,
-//! build, layout, emit, then it publishes the built frame by setting
-//! `frame_in_flight`. `presentBuilt` runs on the render side: pack, draw, then
-//! it clears the flag. While a frame is in flight the main thread still drains
-//! (handlers read only the rendered frame) but neither builds nor flips, so
-//! the frame, the atlases, and their upload journal each have one writer at a
-//! time. The main thread makes a drawn frame `rendered` at its next tick.
-//! TestBackend runs both sides in order on one thread.
-
 const std = @import("std");
 const records = @import("records.zig");
 const window_mod = @import("window.zig");
@@ -25,49 +13,32 @@ const assert = std.debug.assert;
 
 const Window = window_mod.Window;
 
-/// One synchronous tick: both sides on the calling thread (TestBackend).
 pub fn tick(app: anytype, window: *Window, now_ns: u64) void {
     if (tickMain(app, window, now_ns)) presentBuilt(window);
     flipPresented(window);
 }
 
-/// The main-thread side. Returns true when it published a frame that the
-/// render side must present. A render requested while a frame is in flight
-/// stays requested for a later tick.
 pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     const App = @TypeOf(app.*);
     assert(now_ns >= window.now_ns);
     window.now_ns = now_ns;
     flipPresented(window);
     const in_flight = window.frame_in_flight.load(.acquire);
-    // A trace's synthetic input enters the queue before the drain, as a
-    // platform's would; the trace's end asks the host to quit.
     if (frame_trace.beginTick(&window.trace, window, in_flight) == .quit) {
         window.quit_requested = true;
     }
-    // Shaped runs of the frame in flight may still sit in the scratch.
     if (!in_flight) window.text_scratch_allocator.reset();
-    // The tick that ran a dialog builds nothing: the frame would show the
-    // state from before the outcome, which only the next drain delivers. On
-    // macOS that extra frame, presented as the modal session ends, can make
-    // Core Animation discard the next one, leaving the stale frame on screen.
-    // The render stays requested and the host ticks again for the queued
-    // outcome, so the next build shows it.
     if (drain(window)) {
         assert(window.render_requested);
         return false;
     }
     fireDeadline(window, now_ns);
-    // A reload clears the glyph cache and atlas the render side reads while
-    // it draws, so it waits for a tick with no frame in flight.
     if (!in_flight) applyFont(window);
     if (!window.render_requested) return false;
     if (in_flight) return false;
     window.render_requested = false;
 
     buildFrame(App, window);
-    // An item skipped because this frame's upload staging was full is staged
-    // by the next frame (`AtlasLimits.upload_bytes_frame_max`).
     if (window.resources.atlas_uploads.deferredSince(window.atlas_frame)) {
         window.render_requested = true;
     }
@@ -75,9 +46,6 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     return true;
 }
 
-/// Build, lay out, and emit one frame into the built slot. Runs only with no
-/// frame in flight, so the main thread is the slot's only writer, and leaves
-/// the window back in the idle phase.
 fn buildFrame(comptime App: type, window: *Window) void {
     assert(!window.frame_in_flight.load(.acquire));
     assert(!window.render_requested);
@@ -87,17 +55,12 @@ fn buildFrame(comptime App: type, window: *Window) void {
     }
     window.frame_number += 1;
     frame_trace.mark(&window.trace, window.frame_number, .build);
-    // Open this build's atlas frame: items used from here on stay resident
-    // until the renderer uploads them, and items only older frames used may
-    // be evicted. Without it every glyph stays protected and the atlas fills.
     window.atlas_frame = window.resources.atlas_uploads.beginFrame(window.atlas_consumer_key);
     window.built().reset(window.frame_number, .{
         .width = window.width,
         .height = window.height,
         .scale_factor = window.scale_factor,
     });
-    // No frame is in flight here, so the render side reads neither until
-    // this frame is published.
     window.built().announcements.copyFrom(&window.announcements);
     window.announcements.clear();
     window.clear_color = window.theme.bg;
@@ -127,15 +90,11 @@ fn buildFrame(comptime App: type, window: *Window) void {
         window.limits.retained.sweep_delay_frames,
         &window.keys,
     );
-    // The debugger's overlay paints last, over every layer.
     debugger.finishBuild(window, .{ .build = build_ns, .layout = layout_ns, .emit = emit_ns });
     window.setPhase(.emit, .idle);
     assert(window.built().frame_number == window.frame_number);
 }
 
-/// The render side: pack the published frame, draw it, and hand it back.
-/// Reads only the built frame, which the main thread leaves alone while it is
-/// in flight, and writes only the packed frame and the presenter's renderer.
 pub fn presentBuilt(window: *Window) void {
     assert(window.frame_in_flight.load(.acquire));
     assert(window.render_phase == .idle);
@@ -173,8 +132,6 @@ fn publish(window: *Window) void {
     window.frame_in_flight.store(true, .release);
 }
 
-/// Make the last presented frame `rendered`, on the main thread. The new
-/// frame may have moved what the pointer is over.
 fn flipPresented(window: *Window) void {
     assert(window.phase == .idle);
     if (!window.awaiting_flip) return;
@@ -190,9 +147,6 @@ fn flipPresented(window: *Window) void {
     );
 }
 
-/// Request the render the last build asked for once its deadline passes
-/// (`cx.requestRenderAfter`). The deadline is spent here: the build it
-/// requests renews it if the view still depends on the clock.
 fn fireDeadline(window: *Window, now_ns: u64) void {
     assert(window.phase == .idle);
     const deadline = window.renderDeadlineNs() orelse return;
@@ -201,9 +155,6 @@ fn fireDeadline(window: *Window, now_ns: u64) void {
     window.render_deadline_ns = window_mod.deadline_none;
 }
 
-/// Reload the app family a handler asked for (`Effects.setFont`), after the
-/// drain. A family that fails to load is an operating error: the text system
-/// keeps the previous one, and the failure is logged with the name.
 fn applyFont(window: *Window) void {
     assert(window.phase == .idle);
     const pending = window.pending_font orelse return;
@@ -219,41 +170,28 @@ fn applyFont(window: *Window) void {
     window.render_requested = true;
 }
 
-/// Route every queued event. Returns whether a file dialog ran to completion
-/// in this drain; one that stays open completes in a later tick.
 fn drain(window: *Window) bool {
     window.setPhase(.idle, .drain);
     window.completions.drainInto(&window.queue, &window.images.landed, &window.job_inbox);
-    // A landed decode is uploaded and drawn by the next build's emit.
     if (window.images.landed != null) window.render_requested = true;
     const pending = window.queue.pending();
     for (pending) |*event| router.route(window, event);
     window.queue.clear();
-    // Job results and ends, after input, in the order they were posted.
     for (window.job_inbox.pending()) |*entry| router.routeJob(window, entry);
     window.job_inbox.count = 0;
-    // Copy and cut reach the platform after the drain, outside any handler.
     window.clipboard.flush();
-    // Entities removed by this drain's handlers leave before the build.
     window.store.freeRemoved();
-    // Without worker threads, jobs spawned by this drain run here, between
-    // handlers; what they post is delivered by the next drain.
     if (window.jobs.runQueued()) window.render_requested = true;
     var dialog_ran = false;
     if (window.pending_dialog) |request| {
         window.pending_dialog = null;
         dialog_ran = openDialog(window, request);
-        if (dialog_ran) assert(window.queue.count > 0); // Its outcome, for the next drain.
+        if (dialog_ran) assert(window.queue.count > 0);
     }
     window.setPhase(.drain, .idle);
     return dialog_ran;
 }
 
-/// Open a requested file dialog on the main thread. A platform's modal
-/// dialog runs its own event loop here and its outcome is queued for the next
-/// tick's drain; the core is between handlers, so nothing re-enters it.
-/// Returns false when the dialog stays open: the backend queues the outcome
-/// with the request's id once it closes (`FileDialogService`).
 fn openDialog(window: *Window, request: @import("handler.zig").FileDialogRequest) bool {
     const service = window.file_dialog orelse std.debug.panic(
         "a file dialog was requested but this backend binds no file dialog service",
@@ -289,12 +227,9 @@ pub fn selectsMany(request: @import("handler.zig").FileDialogRequest) bool {
     };
 }
 
-// Public so a backend that completes a dialog later checks its selection's
-// totals here before it queues the completion.
 pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: u64) void {
     assert(count > 0);
     if (!many) assert(count == 1);
-    // Every path holds at least one byte, and NUL bytes separate them.
     assert(bytes_len >= @as(u64, count) * 2 - 1);
     const limits = &window.limits.events;
     if (count > limits.dialog_path_count_max) {
@@ -313,16 +248,11 @@ pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: 
     }
 }
 
-// The lowest free request id. A request reaches the tick only while a slot
-// is free: `Effects.openFileDialog` refuses one when every slot holds a
-// dialog still awaiting its completion.
 fn freeDialogSlot(window: *Window) u32 {
     assert(window.dialog_handlers.len == window.limits.events.dialog_count_max);
     for (window.dialog_handlers, 0..) |slot, index| {
         if (slot == null) return @intCast(index);
     }
-    // `Effects.openFileDialog` refuses with `error.DialogBusy` while every
-    // slot is in use, and `router.requestDialog` asserts a free one.
     unreachable;
 }
 

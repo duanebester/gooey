@@ -1,6 +1,3 @@
-//! Platform-aware logger: `std.log.scoped`-compatible on native; writes to the
-//! browser console on WASM, with no root-file `std_options` needed.
-
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -73,7 +70,6 @@ fn WasmLogger(comptime scope: @EnumLiteral()) type {
 
             var buf: [MAX_LOG_MESSAGE_LEN]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, full_prefix ++ format, args) catch blk: {
-                // Message too long — emit what we can with a truncation marker.
                 const marker = "...[truncated]";
                 std.debug.assert(buf.len > marker.len);
                 @memcpy(buf[buf.len - marker.len ..], marker);

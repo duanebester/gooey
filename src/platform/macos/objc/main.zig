@@ -1,7 +1,3 @@
-//! Local, zero-dependency Objective-C runtime wrapper: a trimmed in-tree port
-//! of the subset of `mitchellh/zig-objc` Gooey uses, with the same public
-//! surface so files that `@import("objc")` read as against upstream.
-
 const autorelease = @import("autorelease.zig");
 const class = @import("class.zig");
 const encoding = @import("encoding.zig");

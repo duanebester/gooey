@@ -1,7 +1,3 @@
-//! Derives Objective-C method type-encoding strings (e.g. "v@:c" for
-//! `void method(id, SEL, char)`) from a Zig function type at comptime, so
-//! `Class.addMethod` can register Zig callbacks with the runtime.
-
 const std = @import("std");
 const objc = @import("main.zig");
 const c = @import("c.zig").c;
@@ -189,7 +185,6 @@ pub const Encoding = union(enum) {
             .function => |fn_info| {
                 assert(std.meta.eql(fn_info.attrs.@"callconv", std.builtin.CallingConvention.c));
 
-                // Return type first, as a method encoding requires.
                 const ret_type_enc = init(fn_info.return_type.?);
                 try ret_type_enc.format(writer);
                 inline for (fn_info.param_types) |param_type| {

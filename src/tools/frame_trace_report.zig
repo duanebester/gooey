@@ -1,6 +1,3 @@
-//! Summarizes `-Dframe-trace` traces (CSV or saved browser console log) as
-//! Markdown: phase percentiles, present cadence, and 120 Hz headroom.
-
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
@@ -9,7 +6,6 @@ const assert = std.debug.assert;
 
 const row_count_max: u32 = 32_768;
 const file_bytes_max: u32 = 8 * 1024 * 1024;
-/// Columns of a row; traces before `present_ns` have one fewer.
 const column_count: u32 = 14;
 const present_dropped: u64 = 1;
 const frame_ms_target: f64 = 1000.0 / 120.0;
@@ -29,7 +25,6 @@ const Row = struct {
     nodes: u64,
     width_px: u64,
     height_px: u64,
-    /// When the frame reached the glass: 0 = not reported, 1 = never shown.
     present: u64,
 };
 
@@ -41,13 +36,10 @@ const Trace = struct {
     row_count: u32,
     meta: [256]u8,
     meta_len: u32,
-    /// Both sides of the tick run on one thread (the web).
     single_thread: bool,
 };
 
 pub fn main(init: std.process.Init) void {
-    // `toSlice` decodes the WTF-16 command line on Windows, where the raw
-    // vector is not argv.
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch {
         std.debug.print("frame-trace-report: cannot read the command line\n", .{});
         std.process.exit(2);
@@ -197,16 +189,12 @@ fn phaseMs(rows: []const Row, index: usize, phase: Phase, single_thread: bool) ?
             const previous = &rows[index - 1];
             if (previous.frame + 1 != row.frame) break :blk null;
             if (row.tick < previous.done) break :blk null;
-            // On the web both sides run in one animation frame, so the
-            // previous done → tick gap is the wait for the next frame, not
-            // a wake, and is left out.
             const wake_ms = if (single_thread) 0 else ms(row.tick - previous.done);
             break :blk ms(row.publish - row.tick) + ms(row.done - row.pack) + wake_ms;
         },
     };
 }
 
-/// The value at `fraction` of the sorted `values` (nearest rank).
 fn percentile(sorted: []const f64, fraction: f64) f64 {
     assert(sorted.len > 0);
     assert(fraction >= 0);
@@ -294,7 +282,6 @@ fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f
     });
 }
 
-/// Intervals between consecutive frames that both reached the glass.
 fn reportGlass(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64) void {
     var count: usize = 0;
     var dropped: u64 = 0;
@@ -339,10 +326,6 @@ fn reportGlass(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64
     });
 }
 
-/// The refresh period from sorted pack-to-pack intervals: compositor frame
-/// callbacks jitter below the true period (mutter: p10 15% short), so a
-/// 10th percentile under 3/4 of the median means the app misses most
-/// refreshes and is used instead of the median.
 fn estimatePeriod(sorted: []const f64) f64 {
     assert(sorted.len > 0);
     const median = percentile(sorted, 0.50);
@@ -361,7 +344,6 @@ fn snapPeriod(measured_ms: f64) f64 {
     return measured_ms;
 }
 
-/// "A" in the output is moving draw off the main thread's path.
 fn reportHeadroom(rows: []const Row, single_thread: bool) void {
     var main_fits: u64 = 0;
     var render_fits: u64 = 0;

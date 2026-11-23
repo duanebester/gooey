@@ -15,9 +15,6 @@ const linux_backend = @import("../linux_backend.zig");
 
 const fractional_scale_manager_name = wayland.WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME;
 
-/// The highest `wl_compositor` version to bind. `wl_surface` events are demarshaled with
-/// the linked libwayland's `wl_surface` table, not the compositor's, so that table caps the
-/// compositor too: libwayland 1.21 knows `wl_surface` 5, without `preferred_buffer_scale`.
 fn compositorVersionMax() u32 {
     const surface_version = wayland.tableVersion(&wayland.wl_surface_interface);
     const version = @min(wayland.compositor_version_max, surface_version);
@@ -26,8 +23,6 @@ fn compositorVersionMax() u32 {
     return version;
 }
 
-/// The highest `wl_seat` version to bind, capped by the linked libwayland's tables for the
-/// pointer, keyboard, and touch objects the seat creates, for the same reason.
 fn seatVersionMax() u32 {
     const version = @min(
         wayland.seat_version_max,
@@ -105,15 +100,11 @@ const text_input_listener = wayland.ZwpTextInputV3Listener{
     .done = LinuxPlatform.textInputDone,
 };
 
-/// Monotonic milliseconds for key repeat, on the clock `Window` uses for
-/// render deadlines. Wayland's key timestamps are on the compositor's clock.
 fn nowMs() u64 {
     return @intCast(linux_window.awakeTimeMs());
 }
 
 pub const LinuxPlatform = struct {
-    /// Cleared only by legacy `quit`; the core host's loop ends when the
-    /// window closes.
     running: bool = false,
 
     display: ?*wayland.Display = null,
@@ -129,20 +120,12 @@ pub const LinuxPlatform = struct {
     keyboard: ?*wayland.Keyboard = null,
     touch: ?*wayland.Touch = null,
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
-    /// Enabled by the core host only while a text field is focused, so keys
-    /// typed with no field focused never start a composition nothing receives.
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
-    /// Fractional output scales (1.5 rather than the rounded-up 2). Windows use
-    /// it only together with `viewporter`; without it they keep integer scales.
     fractional_scale_manager: ?*wayland.WpFractionalScaleManagerV1 = null,
-    /// Shared-memory allocator for CPU-rendered frames. Bound on every build
-    /// because it is a core global, but only `wayland_cpu` windows use it.
     shm: ?*wayland.Shm = null,
     cursor_shape_manager: ?*wayland.WpCursorShapeManagerV1 = null,
     cursor_shape_device: ?*wayland.WpCursorShapeDeviceV1 = null,
-    /// XCursor theme images, loaded at initialization only when the compositor offers no
-    /// `wp_cursor_shape_manager_v1`, which stays the preferred path.
     cursor_surface: CursorSurface = .{},
     output: ?*wayland.Output = null,
 
@@ -161,9 +144,6 @@ pub const LinuxPlatform = struct {
     modifier_ctrl: bool = false,
     modifier_shift: bool = false,
     modifier_super: bool = false,
-    /// Client-side key repeat: the compositor sends each held key once, with
-    /// the rate and delay in `repeat_info`. The core host turns its loop at
-    /// the deadline and calls `fireKeyRepeat`.
     key_repeat: linux_input.KeyRepeat = .{},
 
     active_window: ?*LinuxWindow = null,
@@ -202,8 +182,6 @@ pub const LinuxPlatform = struct {
         else
             null;
 
-        // `setActiveWindow` already asserted the id is registered, so the
-        // lookup above cannot miss; a null here would mean registry corruption.
         if (id != null) std.debug.assert(self.active_window != null);
         if (id == null) std.debug.assert(self.active_window == null);
     }
@@ -211,7 +189,6 @@ pub const LinuxPlatform = struct {
     pub fn reelectActiveWindow(self: *Self) void {
         std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
 
-        // The registry is capped at window_count_max, so one pass is bounded work.
         var scanned: u32 = 0;
         var chosen: ?WindowId = null;
         var ids = self.window_registry.iterator();
@@ -242,8 +219,6 @@ pub const LinuxPlatform = struct {
             return error.FailedToConnectToDisplay;
         };
         errdefer {
-            // Disconnecting also reclaims any globals bound during the
-            // roundtrips below, so a failed bind needs no separate unwind.
             wayland.wl_display_disconnect(self.display.?);
             self.display = null;
         }
@@ -445,8 +420,8 @@ pub const LinuxPlatform = struct {
                 .default => 1,
                 .text => 9,
                 .pointer => 4,
-                .resize_left_right => 30, // col_resize
-                .resize_up_down => 31, // row_resize
+                .resize_left_right => 30,
+                .resize_up_down => 31,
             };
             wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
         } else {
@@ -785,9 +760,6 @@ pub const LinuxPlatform = struct {
         const self: *Self = @ptrCast(@alignCast(data));
         self.pointer_enter_serial = null;
         self.cursor_shape = null;
-        // A leave with a button held means the compositor broke the implicit
-        // grab (a release outside arrives before its leave), so the gesture
-        // is gone: cancel it rather than leave a drag waiting for a release.
         self.cancelPointerGesture();
 
         if (self.active_window) |window| {
@@ -881,8 +853,6 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    /// The `pointer_buttons` bit for an evdev button code; zero for buttons it
-    /// does not track.
     fn pointerButtonBit(button: u32) u32 {
         return switch (button) {
             wayland.BTN_LEFT => 1,
@@ -917,11 +887,6 @@ pub const LinuxPlatform = struct {
         return window.handleInput(event);
     }
 
-    /// Without server-side decorations, a left press the app did not handle
-    /// resizes the window from its edges or moves it from its title bar area.
-    /// Content wins at the edges too: GTK's resize border lies in the shadow
-    /// outside the window, but these 8 px are inside it, where a press on an
-    /// edge-flush button, text field, or scrollbar must reach the app.
     fn startPointerMoveOrResize(self: *Self, window: *LinuxWindow) void {
         std.debug.assert(!window.has_server_decorations);
         const border_width: f64 = 8.0;
@@ -1087,8 +1052,6 @@ pub const LinuxPlatform = struct {
         const self: *Self = @ptrCast(@alignCast(data));
 
         if (self.touch_window) |window| {
-            // Reuse the last known position for the up event — the protocol
-            // does not repeat coordinates on up, only on down and motion.
             const event = linux_input.touchUpEvent(id, 0, 0);
             _ = window.handleInput(event);
         }
@@ -1168,8 +1131,6 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = keyboard;
         _ = surface;
-        // Keys already held at enter do not repeat, as in GTK: their press
-        // time, which the delay counts from, is unknown.
         _ = keys;
         const self: *Self = @ptrCast(@alignCast(data));
         self.key_repeat.clear();
@@ -1185,13 +1146,10 @@ pub const LinuxPlatform = struct {
         _ = surface;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // The compositor sends no release for keys held as focus leaves.
         self.key_repeat.clear();
         if (self.active_window) |window| {
             window.click_tracker.reset();
         }
-        // Another window took the keyboard mid-drag, as Alt+Tab does; its
-        // release may never reach this surface.
         self.cancelPointerGesture();
     }
 
@@ -1213,9 +1171,6 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = keyboard;
-        // std.posix.close was removed in Zig 0.16 ("posix and os.windows
-        // removals" in the release notes); libc is linked on Linux so we
-        // call the libc symbol directly.
         _ = std.c.close(fd);
     }
 
@@ -1253,8 +1208,6 @@ pub const LinuxPlatform = struct {
         );
 
         if (state == .pressed) {
-            // A compositor that repeats for the client sends repeats as
-            // presses; they reach the app as repeats and close nothing.
             const press = self.key_repeat.press(key, nowMs());
             const is_repeat = press == .synthesized;
 
@@ -1288,8 +1241,6 @@ pub const LinuxPlatform = struct {
         const key = self.key_repeat.fire(now_ms) orelse return;
         std.debug.assert(self.key_repeat.timeoutMs(now_ms).? > 0);
         const window = self.active_window orelse return self.key_repeat.clear();
-        // While the input method composes, it owns the keyboard and repeats
-        // its own keys; the core drops key downs then, so stop instead.
         if (window.hasMarkedText()) return self.key_repeat.stop();
         std.debug.assert(linux_input.repeats(key));
         const modifiers = linux_input.modifiersFromFlags(
@@ -1450,14 +1401,11 @@ pub const LinuxPlatform = struct {
         const window = self.active_window orelse return;
 
         if (self.ime_delete_before > 0 or self.ime_delete_after > 0) {
-            // TODO: Implement delete surrounding text support
             self.ime_delete_before = 0;
             self.ime_delete_after = 0;
         }
 
         if (self.ime_commit_text.get()) |commit_text| {
-            // Whole, up to the protocol's bound: the core queue copies it,
-            // cutting it at a codepoint boundary past its text budget.
             window.clearMarkedText();
             const event = linux_input.textInputEvent(commit_text);
             _ = window.handleInput(event);
@@ -1513,11 +1461,6 @@ pub const LinuxPlatform = struct {
     }
 };
 
-/// One text-input-v3 string, copied out of libwayland's argument buffer.
-/// Bounded by the Wayland message size, which text-input-v3 states as 4000
-/// bytes of text, so a commit arrives whole; a longer string is still
-/// external input, not a programmer error, so it is cut at the last
-/// codepoint boundary that fits (a warning is logged) rather than failing.
 const ImeText = struct {
     bytes: [bytes_max]u8 = undefined,
     len: u16 = 0,
@@ -1527,7 +1470,6 @@ const ImeText = struct {
 
     comptime {
         std.debug.assert(bytes_max <= std.math.maxInt(u16));
-        // The protocol limit, which the preedit budget never exceeds.
         std.debug.assert(bytes_max >= limits_mod.TextLimits.ceiling.preedit_bytes_max);
     }
 
@@ -1562,14 +1504,9 @@ const ImeText = struct {
     }
 };
 
-/// The longest prefix of `text` within `len_max` bytes that ends on a UTF-8
-/// codepoint boundary: a cut never splits a multi-byte sequence.
 fn codepointPrefixLen(text: []const u8, len_max: usize) usize {
     if (text.len <= len_max) return text.len;
     var len = len_max;
-    // A continuation byte (0b10xxxxxx) at `len` means the cut splits a
-    // sequence; a sequence is at most 4 bytes, so at most 3 steps back. The
-    // bound also holds for invalid input, which the IME, not Gooey, produced.
     var steps: u8 = 0;
     while (steps < 3 and len > 0 and (text[len] & 0xC0) == 0x80) : (steps += 1) {
         len -= 1;

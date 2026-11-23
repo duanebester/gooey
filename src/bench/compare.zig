@@ -2,10 +2,8 @@ const std = @import("std");
 const Dir = std.Io.Dir;
 const Io = std.Io;
 
-/// Matches json_writer.zig.
 const MAX_ENTRIES: u32 = 256;
 
-/// Matches json_writer.zig.
 const MAX_NAME_LENGTH: u32 = 128;
 
 const MAX_PATH_LENGTH: u32 = 1024;
@@ -16,23 +14,12 @@ const MAX_META_STRING_LENGTH: u32 = 32;
 
 const DEFAULT_THRESHOLD_PERCENT: f64 = 15.0;
 
-/// Below ~10 ns/op, timer resolution and scheduler jitter dominate:
-/// identical code swings far past any percentage threshold (observed
-/// 0.40 -> 0.58 ns/op = +46%). Sub-floor entries are `.noisy`, unless
-/// the absolute growth itself clears this floor.
 const MIN_NS_FOR_THRESHOLD: f64 = 10.0;
 
-/// Near the floor, jitter alone doubles a measurement (observed
-/// 9.49 -> 19.84 ns/op on identical code), so a sub-floor entry must
-/// grow 4x and clear the floor to count as a real regression.
 const CATASTROPHIC_JUMP_MULTIPLIER: f64 = 4.0;
 
-/// Below ~1 us the p99 reflects scheduler preemptions, not the code
-/// (identical code swings +138%); it is reported but informational.
 const P99_MIN_NS_FOR_THRESHOLD: f64 = 1000.0;
 
-/// FFI-bound tails (CoreText/HarfBuzz) swing up to +31% run-to-run on
-/// identical code; 3x clears that noise while failing genuine blowups.
 const P99_THRESHOLD_MULTIPLIER: f64 = 3.0;
 
 const SMALL_BENCH_NS_CEILING: f64 = 100.0;
@@ -41,7 +28,6 @@ const MEDIUM_BENCH_NS_CEILING: f64 = 1000.0;
 const SMALL_BENCH_THRESHOLD_MULTIPLIER: f64 = 2.5;
 const MEDIUM_BENCH_THRESHOLD_MULTIPLIER: f64 = 1.5;
 
-/// 256 entries serialize to ~100 KB; 4 MB gives 40x headroom.
 const MAX_JSON_FILE_BYTES: u32 = 4 * 1024 * 1024;
 
 const COLUMN_WIDTH_NAME: u32 = 38;
@@ -52,8 +38,6 @@ const COLUMN_WIDTH_STATUS: u32 = 14;
 const TABLE_WIDTH: u32 = COLUMN_WIDTH_NAME + COLUMN_WIDTH_VALUE * 2 +
     COLUMN_WIDTH_DELTA + COLUMN_WIDTH_STATUS + 4;
 
-/// Strings are copied into fixed buffers so the JSON parse tree can
-/// be freed immediately.
 const ParsedEntry = struct {
     name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
@@ -64,8 +48,6 @@ const ParsedEntry = struct {
     avg_time_ms: f64 = 0.0,
     time_per_op_ns: f64 = 0.0,
 
-    // `has_min` is false on baselines written before the schema
-    // carried it; the gate then classifies on the mean.
     has_min: bool = false,
     min_per_op_ns: f64 = 0.0,
 
@@ -116,8 +98,6 @@ const ParsedReport = struct {
         return self.date[0..self.date_length];
     }
 
-    /// With <=256 entries a linear scan beats a hash map and avoids
-    /// heap allocation.
     fn findByName(self: *const ParsedReport, name: []const u8) ?u32 {
         std.debug.assert(name.len > 0);
         for (0..self.count) |i| {
@@ -135,8 +115,6 @@ const ComparisonStatus = enum(u8) {
     improvement = 2,
     new_entry = 3,
     removed_entry = 4,
-    /// Too fast for a percentage delta to mean anything; shown but
-    /// never fails the build.
     noisy = 5,
 };
 
@@ -166,10 +144,7 @@ const ComparisonEntry = struct {
     }
 };
 
-/// Capacity 2 x MAX_ENTRIES: the worst case is no overlap between the
-/// baseline and current entry sets.
 const ComparisonResult = struct {
-    /// 2 × 256 entries × ~200 bytes each ≈ 100 KB on the stack.
     entries: [MAX_ENTRIES * 2]ComparisonEntry = undefined,
     count: u32 = 0,
 
@@ -221,8 +196,6 @@ fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
     var args: Args = .{};
     var positional_count: u32 = 0;
 
-    // Test runners may pass empty argv; skip the program name only
-    // when one is present.
     var i: u32 = if (argv.len >= 1) 1 else 0;
     const argc: u32 = @intCast(argv.len);
     while (i < argc) : (i += 1) {
@@ -260,8 +233,6 @@ fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
     return args;
 }
 
-/// JSON serializers sometimes emit `17` instead of `17.0` for round
-/// floats.
 fn jsonAsFloat(value: std.json.Value) ?f64 {
     return switch (value) {
         .float => |f| f,
@@ -322,9 +293,6 @@ fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     if (stat.size > MAX_JSON_FILE_BYTES) {
         return error.file_read_failed;
     }
-    // Byte-source methods (`readAlloc` and friends) live on the
-    // reader's `.interface`; `stat.size` is bounded by
-    // MAX_JSON_FILE_BYTES above.
     var stream_buf: [4096]u8 = undefined;
     var reader = file.readerStreaming(io, &stream_buf);
     const contents = reader.interface.readAlloc(allocator, @intCast(stat.size)) catch {
@@ -332,8 +300,6 @@ fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     };
     defer allocator.free(contents);
 
-    // The parsed tree references `contents`; both must outlive the
-    // copy into the fixed-capacity report.
     var parsed = std.json.parseFromSlice(
         std.json.Value,
         allocator,
@@ -417,8 +383,6 @@ fn extractEntry(obj: std.json.ObjectMap) ParsedEntry {
         e.time_per_op_ns = jsonAsFloat(v) orelse 0.0;
     }
 
-    // A null/absent min leaves `has_min` false so the gate falls back
-    // to the mean for this entry.
     if (obj.get("min_per_op_ns")) |v| {
         if (jsonAsFloat(v)) |min_per_op| {
             e.has_min = true;
@@ -467,10 +431,6 @@ fn classifyAvgStatus(baseline_ns: f64, current_ns: f64, base_threshold: f64) Com
     std.debug.assert(base_threshold > 0.0);
 
     if (baseline_ns < MIN_NS_FOR_THRESHOLD) {
-        // Near the floor, noise alone doubles a benchmark (observed
-        // 9.49 -> 19.84 ns on identical code), so only an
-        // order-of-magnitude blowup that also clears the floor counts
-        // as a regression.
         const catastrophic = current_ns >= MIN_NS_FOR_THRESHOLD and
             current_ns >= baseline_ns * CATASTROPHIC_JUMP_MULTIPLIER;
         if (catastrophic) return .regression;
@@ -594,7 +554,6 @@ fn updateResultCounters(result: *ComparisonResult, status: ComparisonStatus) voi
     }
 }
 
-/// `writer.writeByteNTimes()` is unavailable in Zig 0.15.
 fn printRepeat(char: u8, count: u32) void {
     var buf: [TABLE_WIDTH]u8 = undefined;
     const len = @min(count, TABLE_WIDTH);

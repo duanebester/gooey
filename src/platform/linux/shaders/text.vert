@@ -2,7 +2,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "packed.glsl"
 
-// The glyph pipeline: sprites sampling the R8 glyph coverage atlas.
 layout(location = 0) out vec2 out_tex_coord;
 layout(location = 1) out vec4 out_color;
 

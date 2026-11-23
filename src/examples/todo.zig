@@ -14,10 +14,6 @@ const todo_count_max = 64;
 const todo_bytes_max = 128;
 
 const Todo = struct {
-    /// Assigned at push and never reused. Rows key by it and their handlers
-    /// carry it, so a click on a frame built before the list changed acts on
-    /// the todo that row showed, or on nothing once it is gone. An array
-    /// index would name whatever todo has moved into that slot since.
     id: u64 = 0,
     bytes: [todo_bytes_max]u8 = @splat(0),
     len: u32 = 0,
@@ -30,9 +26,6 @@ const Todo = struct {
 
 pub const Filter = enum { all, active, done };
 
-/// The longest prefix of UTF-8 `value` that fits `bytes_max` and ends on a
-/// codepoint boundary, so a cut never leaves half an "é". A codepoint is at
-/// most four bytes, so at most three continuation bytes are stepped back.
 fn utf8Prefix(value: []const u8, bytes_max: u32) u32 {
     assert(bytes_max >= 4);
     if (value.len <= bytes_max) return @intCast(value.len);
@@ -237,7 +230,6 @@ const TodoRow = struct {
             Checkbox{
                 .checked = todo.done,
                 .on_click = cx.on(State.toggle, .{ .arg = todo.id }),
-                // The todo's text names it; the row's text box is not read.
                 .accessible_name = todo.text(),
             },
             ui.text(todo.text(), .{ .size = 16, .color = .{ .rgba = color } }),
@@ -256,7 +248,7 @@ const Footer = struct {
     pub fn render(_: Footer, cx: *Cx) void {
         const s = cx.state(State);
         var buffer: [32]u8 = undefined;
-        // 32 bytes hold any u32 and " left".
+        comptime assert(std.fmt.count("{d} left", .{std.math.maxInt(u32)}) <= buffer.len);
         const left = std.fmt.bufPrint(&buffer, "{d} left", .{s.remaining()}) catch unreachable;
         cx.render(ui.box(.{
             .style = .{ .direction = .row, .gap = 12, .alignment = .center_cross },

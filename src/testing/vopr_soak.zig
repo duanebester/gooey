@@ -1,24 +1,13 @@
-//! `zig build vopr-soak -- [--app NAME] [--hours H | --minutes M] [--jobs N]
-//! [--out DIR]`: run the VOPR on random seeds for hours, one child process
-//! per seed, because a failing seed panics and aborts its process. The build
-//! passes the `vopr` executable as the first argument. Resource sketch:
-//! `jobs` children at once, each one VOPR process (about 100 MiB resident);
-//! per child, at most `stderr_bytes_max` of captured stderr held until it
-//! exits.
-
 const std = @import("std");
 
 const assert = std.debug.assert;
 
 const Io = std.Io;
 
-/// Upper bound on worker threads, so a mistyped `--jobs` cannot fork-bomb.
 const jobs_max: u32 = 64;
 const minutes_max: u32 = 7 * 24 * 60;
-/// A seed takes about a second; one past this is hung, and a finding.
 const seed_timeout_seconds: i64 = 300;
 const progress_interval_seconds: u32 = 60;
-/// Stderr kept per child: a panic's trace is a few KiB, a verbose run more.
 const stderr_bytes_max: usize = 4 * 1024 * 1024;
 const stderr_tail_bytes_max: usize = 16 * 1024;
 
@@ -27,7 +16,6 @@ const Options = struct {
     minutes: u32,
     jobs: u32,
     out_dir: []const u8,
-    /// The VOPR's `--app`, passed to every child and its replay command.
     app: []const u8,
 };
 
@@ -99,7 +87,6 @@ fn parseArgs(args: []const [*:0]const u8) ?Options {
     return options;
 }
 
-/// Half the cores: the soak shares the machine.
 fn defaultJobs() u32 {
     const cores = std.Thread.getCpuCount() catch 2;
     const jobs: u32 = @intCast(@min(@max(cores / 2, 1), jobs_max));
@@ -167,6 +154,7 @@ const Soak = struct {
 
     fn runSeed(self: *Soak, gpa: std.mem.Allocator, seed: u64) void {
         var seed_buffer: [24]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u64)}) <= seed_buffer.len);
         const seed_text = std.fmt.bufPrint(&seed_buffer, "{d}", .{seed}) catch unreachable;
         const vopr = self.options.vopr_path;
         const argv = [_][]const u8{ vopr, "--app", self.options.app, seed_text };
@@ -203,13 +191,12 @@ const Soak = struct {
     fn recordFailure(self: *Soak, seed: u64, how: []const u8, stderr: []const u8) void {
         const tail = stderr[stderr.len - @min(stderr.len, stderr_tail_bytes_max) ..];
         var header_buffer: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&header_buffer, "\n== seed {d}: {s}\n" ++
-            "replay: zig build vopr -- --app {s} {d} --verbose\n", .{
-            seed,
-            how,
-            self.options.app,
-            seed,
-        }) catch unreachable;
+        const header_format = "\n== seed {d}: {s}\n" ++
+            "replay: zig build vopr -- --app {s} {d} --verbose\n";
+        const header_args = .{ seed, how, self.options.app, seed };
+        assert(std.fmt.count(header_format, header_args) <= header_buffer.len);
+        const header = std.fmt.bufPrint(&header_buffer, header_format, header_args) catch
+            unreachable;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.failed += 1;
@@ -217,7 +204,6 @@ const Soak = struct {
         appendTo(self.io, self.results, &self.results_len, tail);
     }
 
-    /// Log the counts every interval until the deadline and the workers end.
     fn reportUntilDeadline(self: *Soak) void {
         const second_count_max = (self.options.minutes + 1) * 60 + seed_timeout_seconds;
         var second: u64 = 1;
@@ -256,6 +242,7 @@ const Soak = struct {
 
     fn log(self: *Soak, comptime format: []const u8, args: anytype) void {
         var buffer: [256]u8 = undefined;
+        assert(std.fmt.count(format, args) <= buffer.len);
         const line = std.fmt.bufPrint(&buffer, format, args) catch unreachable;
         std.debug.print("{s}", .{line});
         self.mutex.lockUncancelable(self.io);
@@ -270,8 +257,6 @@ fn openAppend(io: Io, dir_path: []const u8, name: []const u8) !Io.File {
     return Io.Dir.cwd().createFile(io, path, .{ .truncate = false });
 }
 
-/// Append at the file's end; a failed write is logged, not fatal, so one
-/// full disk does not end an overnight run's other reporting.
 fn appendTo(io: Io, file: Io.File, len: *u64, bytes: []const u8) void {
     file.writePositionalAll(io, bytes, len.*) catch |err| {
         std.log.err("vopr-soak: write failed: {s}", .{@errorName(err)});

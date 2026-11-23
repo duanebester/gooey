@@ -1,18 +1,3 @@
-//! Text dumps of packed frames for goldens: one line per paint primitive in
-//! draw order, then hit records and the accessibility tree. Numbers print
-//! with two decimals and colours as 8-bit RGBA, so float noise below 1/200
-//! of a pixel or 1/510 of a channel cannot change a golden, while any
-//! visible change does. Glyphs are folded into runs (consecutive glyphs
-//! sharing a colour, clip, and top edge); a run prints its glyph count, its
-//! union bounds, and a hash of every glyph's position, size, and, when the
-//! caller passes the glyph atlas, the coverage at the centre of its atlas
-//! region; the synthetic text backend shades each glyph by its id
-//! (`glyphShade`), so the sampled coverage tells "0" from "1" at one
-//! position. Atlas UVs are left out: they record where a rasterizer packed
-//! a glyph, which is not behaviour a port must keep. Storage is one fixed
-//! buffer reserved by the owner; writing past it panics with the buffer's
-//! name and capacity.
-
 const std = @import("std");
 const packed_mod = @import("../core/packed_frame.zig");
 
@@ -20,7 +5,6 @@ const assert = std.debug.assert;
 
 const PackedFrame = packed_mod.PackedFrame;
 
-/// Fixed-capacity text sink. `bytes` is borrowed storage the owner reserved.
 pub const TextBuffer = struct {
     bytes: []u8,
     len: u32,
@@ -56,13 +40,10 @@ pub const TextBuffer = struct {
     }
 };
 
-/// A read-only view of a single-channel glyph atlas, `size` pixels square.
 pub const GlyphAtlasView = struct {
     pixels: []const u8,
     size: u32,
 
-    /// Coverage at the centre of a glyph's atlas rectangle (left, top, right,
-    /// bottom in 0..1).
     fn sample(self: *const GlyphAtlasView, uv: [4]f32) u8 {
         assert(self.size > 0);
         assert(self.pixels.len >= @as(u64, self.size) * self.size);
@@ -77,9 +58,6 @@ pub const GlyphAtlasView = struct {
     }
 };
 
-/// Write every instance of a packed frame in draw order: one line per quad,
-/// shadow, SVG, and image, one per glyph run, and one per run of consecutive
-/// meshes of one topology.
 pub fn writePacked(
     out: *TextBuffer,
     frame: *const PackedFrame,
@@ -110,8 +88,6 @@ pub fn writePacked(
 
 fn writeQuad(out: *TextBuffer, quad: *const packed_mod.Quad, clip: packed_mod.Rect) void {
     if (quad.blur > 0) {
-        // Shadows print their clip: the packed frame clips them like every
-        // other draw; no golden holds a shadow today.
         out.print("  shadow {f} blur={d:.2} offset={d:.2},{d:.2} {f}", .{
             rect(quad.bounds),
             quad.blur,
@@ -163,8 +139,6 @@ fn writeImage(out: *TextBuffer, image: *const packed_mod.Sprite, clip: packed_mo
     out.print("\n", .{});
 }
 
-/// Consecutive glyphs folded into runs that share a colour, clip, and top
-/// edge. A run ends at any other draw.
 const GlyphRun = struct {
     count: u32 = 0,
     first: packed_mod.Sprite = undefined,
@@ -235,8 +209,6 @@ const GlyphRun = struct {
     }
 };
 
-/// Consecutive meshes of one topology print as one count, whatever their
-/// clips.
 const MeshRun = struct {
     pipeline: ?packed_mod.Pipeline = null,
     count: u32 = 0,
@@ -265,14 +237,11 @@ fn rect(bounds: packed_mod.Rect) Rect {
     return .{ .x = bounds[0], .y = bounds[1], .w = bounds[2], .h = bounds[3] };
 }
 
-/// Hundredths of a pixel, the precision every other field prints at.
 fn quantize(value: f32) i32 {
     assert(std.math.isFinite(value));
     return @intFromFloat(@round(value * 100));
 }
 
-/// The unbounded clip (`packed.clip_unbounded`) is noise in a golden, so
-/// only a real clip prints.
 fn writeClip(out: *TextBuffer, clip: packed_mod.Rect) void {
     if (clip[2] >= 99999 or clip[3] >= 99999) return;
     out.print(" clip={f}", .{rect(clip)});

@@ -3,7 +3,6 @@
 layout(location = 0) in vec2 in_tex_coord;
 layout(location = 1) in vec4 in_color;
 
-// Glyph coverage atlas (R8): coverage in the red channel.
 layout(set = 0, binding = 6) uniform texture2D glyph_atlas;
 layout(set = 0, binding = 9) uniform sampler atlas_sampler;
 

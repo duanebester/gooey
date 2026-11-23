@@ -1,35 +1,3 @@
-//! Glyph and icon cells in `RAM_G`, so a cached glyph draws with one
-//! `VERTEX2II`. Gooey's atlases pack glyphs and icons at arbitrary
-//! positions, but a `VERTEX2II` names a bitmap handle and a cell index, and
-//! EVE finds the cell at `source + index * cell bytes`. So each atlas region
-//! a frame draws is copied into a fixed-size, zero-padded square L8 cell.
-//! Cells of one size share a page; each page is one bitmap handle and one
-//! 64 KiB slot of `RAM_G`.
-//!
-//! `upload` copies atlas pixels into host mirrors (`uploadAtlas` hands them
-//! over once). A cached cell stays valid until an upload rewrites any texel
-//! of its atlas region; then its entry is removed and its cell retired. The
-//! panel keeps scanning out the last swapped list, which may still draw a
-//! retired cell, so retired cells return to the free pool only at the second
-//! `beginFrame` after they retire: by then the renderer has waited for a swap
-//! of a list built after the retirement, and no list on screen names them.
-//!
-//! The core's atlases also drop items without uploading over them (the text
-//! atlas evicts whole shelves), and a glyph drawn again lands at a new
-//! region, so entries alone would pile up over an app's lifetime. Each entry
-//! records the frame that last drew it. When no cell fits, every entry no list
-//! drew in the last two frames is dropped and its cell freed at once: the
-//! renderer has waited for the previous list's swap, so only that list and
-//! the one being built can name a cell. Exhaustion then means the cells of two
-//! consecutive frames do not fit.
-//!
-//! Reserved by `initInPlace` from the window's `AtlasLimits`: the glyph
-//! mirror (`text_size²` bytes) and two SVG coverage planes (`svg_size²`
-//! bytes each), from fresh pages. Everything else is inline and fixed: the
-//! entry table (4096 slots, 64 KiB), up to 14 pages, the retirement lists,
-//! and a 64 KiB upload staging buffer. Nothing allocates after
-//! initialization.
-
 const std = @import("std");
 const chip_mod = @import("chip.zig");
 const display_list = @import("display_list.zig");
@@ -40,22 +8,15 @@ const reservation = @import("../../core/reservation.zig");
 const assert = std.debug.assert;
 const Chip = chip_mod.Chip;
 
-/// Square cell sides in pixels. A region uses the smallest that holds it.
 pub const cell_sizes = [_]u32{ 8, 16, 24, 32, 40, 48, 64, 80, 96, 128 };
 pub const cell_size_max: u32 = cell_sizes[cell_sizes.len - 1];
 pub const page_bytes: u32 = eve_limits.EveLimits.bt81x.cell_page_bytes;
 pub const page_count_max: u32 = display_list.handle_count_max;
-/// `VERTEX2II` names cells 0..127.
 pub const page_cell_count_max: u32 = 128;
 pub const cell_count_max: u32 = page_count_max * page_cell_count_max;
-/// Entry table slots; kept at most half full, so probes stay short.
 const slot_count: u32 = 4096;
-/// Largest burst of cells written to the chip at once.
 const staging_bytes_max: u32 = 64 * 1024;
-/// SVG coverage at or below this is filtering bleed between the packed
-/// channels (the CPU renderer's 0.02 threshold).
 const svg_coverage_min: u8 = 5;
-/// Atlas sides the entry key can address (13 bits per coordinate).
 pub const atlas_size_max: u32 = 4096;
 
 comptime {
@@ -70,7 +31,6 @@ comptime {
 
 pub const CellKind = enum(u2) { glyph, svg_fill, svg_stroke };
 
-/// An atlas rectangle in texels.
 pub const Region = struct {
     x: u32,
     y: u32,
@@ -79,34 +39,24 @@ pub const Region = struct {
 };
 
 pub const Cell = struct {
-    /// Page, which is also the bitmap handle.
     page: u8,
-    /// Cell within the page.
     index: u8,
 };
 
 const Page = struct {
-    /// Index into `cell_sizes`.
     class: u8 = 0,
-    /// Cells holding a live entry or retiring; bit i is cell i.
     used_mask: u128 = 0,
     used_count: u8 = 0,
 };
 
 const Entry = struct {
-    /// Zero marks an empty slot.
     key: u64 = 0,
     cell: Cell = .{ .page = 0, .index = 0 },
-    /// `CellCache.frame` when a list last drew the cell. It wraps: an entry
-    /// idle for exactly 2^32 frames looks fresh for two frames, then drops.
     frame_used: u32 = 0,
 };
 
-/// Frames a list may still be on screen or being built after it last named
-/// a cell: the one built now and the one swapped in before it.
 const frame_in_use_count: u32 = 2;
 
-/// Cells retired in one interval between frames.
 const RetiredList = struct {
     cells: [cell_count_max]Cell = undefined,
     count: u32 = 0,
@@ -118,33 +68,24 @@ pub const CellCache = struct {
     svg_fill: []u8 = &.{},
     svg_stroke: []u8 = &.{},
     svg_size: u32 = 0,
-    /// One past the highest mirror byte any upload wrote, for zeroing.
     glyph_bytes_used: usize = 0,
     svg_bytes_used: usize = 0,
 
     entries: [slot_count]Entry = @splat(.{}),
     entry_count: u32 = 0,
     pages: [page_count_max]Page = @splat(.{}),
-    /// Pages this app's `RAM_G` layout holds; the rest of `pages` stays unused.
     page_count: u32 = 0,
-    /// `retired[retired_new]` collects cells retired since the last
-    /// `beginFrame`; the other list holds those retired before it.
     retired: [2]RetiredList = .{ .{}, .{} },
     retired_new: u1 = 0,
-    /// Frames begun, for `Entry.frame_used`; wraps.
     frame: u32 = 0,
 
     staging: [staging_bytes_max]u8 = undefined,
     staging_address: u32 = 0,
     staging_len: u32 = 0,
-    /// Cell bytes staged since `beginFrame`.
     cell_bytes_frame: u32 = 0,
 
     const Self = @This();
 
-    /// Reserve the host mirrors for the window's atlases, with `page_count`
-    /// pages of `RAM_G` (`limits.zig`). Fails when an atlas is past what the
-    /// entry key addresses or an icon past the largest cell.
     pub fn initInPlace(
         self: *Self,
         atlas: *const limits_mod.AtlasLimits,
@@ -158,8 +99,6 @@ pub const CellCache = struct {
         if (atlas.text_size > atlas_size_max) return error.EveGlyphAtlasTooLarge;
         if (atlas.svg_size > atlas_size_max) return error.EveSvgAtlasTooLarge;
         if (atlas.svg_icon_size_max > cell_size_max) return error.EveSvgIconsExceedCells;
-        // Field by field: the cache is about 140 KiB, too large for a
-        // struct literal's stack temporary.
         self.glyph_size = atlas.text_size;
         self.svg_size = atlas.svg_size;
         self.glyph_bytes_used = 0;
@@ -188,8 +127,6 @@ pub const CellCache = struct {
         self.svg_stroke = &.{};
     }
 
-    /// Copy a glyph atlas region (1 byte per texel, rows of `dirty.w`) into
-    /// the mirror, and retire every glyph cell it overwrote.
     pub fn uploadGlyphs(self: *Self, dirty: Region, pixels: []const u8) void {
         assert(dirty.x + dirty.w <= self.glyph_size);
         assert(dirty.y + dirty.h <= self.glyph_size);
@@ -204,9 +141,6 @@ pub const CellCache = struct {
         self.retireOverlapping(dirty, .glyph);
     }
 
-    /// Split an SVG atlas region (RGBA, red is fill and green stroke
-    /// coverage) into the two coverage planes, and retire the icon cells it
-    /// overwrote.
     pub fn uploadSvgs(self: *Self, dirty: Region, pixels: []const u8) void {
         assert(dirty.x + dirty.w <= self.svg_size);
         assert(dirty.y + dirty.h <= self.svg_size);
@@ -227,16 +161,12 @@ pub const CellCache = struct {
         self.retireOverlapping(dirty, .svg_stroke);
     }
 
-    /// Remove every `kind` entry whose region overlaps `dirty`, retiring its
-    /// cell. Removal shifts later probe-chain entries back, so the slot is
-    /// examined again before moving on.
     fn retireOverlapping(self: *Self, dirty: Region, kind: CellKind) void {
         assert(dirty.w > 0);
         assert(dirty.h > 0);
         var slot: u32 = 0;
         var visits: u32 = 0;
         while (slot < slot_count) {
-            // Each removal empties one entry, so revisits are bounded too.
             visits += 1;
             assert(visits <= 2 * slot_count);
             const entry = self.entries[slot];
@@ -254,22 +184,17 @@ pub const CellCache = struct {
         assert(self.retired[0].count + self.retired[1].count <= cell_count_max);
     }
 
-    /// Start a frame, after the renderer has waited for the previous swap:
-    /// cells retired before the previous frame are free again.
     pub fn beginFrame(self: *Self) void {
         assert(self.staging_len == 0);
         const old = &self.retired[1 - self.retired_new];
         for (old.cells[0..old.count]) |cell| self.freeCell(cell);
         old.count = 0;
-        // The list that collected since the last frame becomes the old one.
         self.retired_new = 1 - self.retired_new;
         self.frame +%= 1;
         self.cell_bytes_frame = 0;
         assert(self.retired[self.retired_new].count == 0);
     }
 
-    /// The cell holding `region` of `kind`'s atlas, uploading it first when
-    /// it is not cached. Fails fast when no cell can hold it.
     pub fn lookup(
         self: *Self,
         chip: *Chip,
@@ -291,7 +216,6 @@ pub const CellCache = struct {
             return self.entries[found].cell;
         }
         const cell = self.allocateCell(class) orelse cell: {
-            // Dropping entries shifts probe chains, so the slot is found again.
             self.dropIdle();
             break :cell self.allocateCell(class) orelse self.panicExhausted(class, frame_number);
         };
@@ -304,16 +228,12 @@ pub const CellCache = struct {
         return cell;
     }
 
-    /// Remove every entry no list drew in the last `frame_in_use_count`
-    /// frames and free its cell now: neither the list on screen nor the one
-    /// being built names it (see the file comment).
     fn dropIdle(self: *Self) void {
         assert(self.entry_count <= cell_count_max);
         const live_before = self.liveCellCount();
         var slot: u32 = 0;
         var visits: u32 = 0;
         while (slot < slot_count) {
-            // Each removal empties one entry, so revisits are bounded too.
             visits += 1;
             assert(visits <= 2 * slot_count);
             const entry = self.entries[slot];
@@ -327,7 +247,6 @@ pub const CellCache = struct {
         assert(self.liveCellCount() <= live_before);
     }
 
-    /// Write the staged cells to the chip.
     pub fn flush(self: *Self, chip: *Chip) chip_mod.Error!void {
         assert(self.staging_len <= staging_bytes_max);
         if (self.staging_len == 0) return;
@@ -336,8 +255,6 @@ pub const CellCache = struct {
         try chip.writeMemory(self.staging_address, self.staging[0..len]);
     }
 
-    /// Drop every entry and cell, after a failed transfer left `RAM_G` in an
-    /// unknown state; the cells upload again when next drawn.
     pub fn forgetAll(self: *Self) void {
         self.entries = @splat(.{});
         self.entry_count = 0;
@@ -366,8 +283,6 @@ pub const CellCache = struct {
         return count;
     }
 
-    /// A free cell of `class`: in a page of that class with room, else in an
-    /// empty page, which takes the class. Null when every page is in use.
     fn allocateCell(self: *Self, class: u32) ?Cell {
         assert(class < cell_sizes.len);
         const capacity = pageCapacity(class);
@@ -469,7 +384,6 @@ pub const CellCache = struct {
         assert(self.entry_count < slot_count);
         var slot = homeSlot(key);
         var probes: u32 = 0;
-        // At most half full, so an empty slot is always reached.
         while (self.entries[slot].key != 0 and self.entries[slot].key != key) {
             probes += 1;
             assert(probes < slot_count);
@@ -478,8 +392,6 @@ pub const CellCache = struct {
         return slot;
     }
 
-    /// Empty `slot` and move later entries of its probe chain back, so every
-    /// remaining key stays reachable from its home slot.
     fn removeSlot(self: *Self, slot: u32) void {
         assert(self.entries[slot].key != 0);
         assert(self.entry_count > 0);
@@ -490,8 +402,6 @@ pub const CellCache = struct {
             probes += 1;
             assert(probes < slot_count);
             const home = homeSlot(self.entries[next].key);
-            // The entry may fill the hole when its home is not cyclically
-            // between the hole (exclusive) and its own slot (inclusive).
             const from_home = (next -% home) & (slot_count - 1);
             const from_hole = (next -% hole) & (slot_count - 1);
             if (from_home >= from_hole) {
@@ -523,8 +433,6 @@ fn cellClass(extent: u32) ?u32 {
     return null;
 }
 
-/// Kind, position, and size in one nonzero key. Sizes are at most 128, so
-/// 8 bits hold each; positions are below 8192.
 fn cacheKey(kind: CellKind, region: Region) u64 {
     assert(region.x < 8192);
     assert(region.y < 8192);
@@ -551,7 +459,6 @@ fn overlaps(a: Region, b: Region) bool {
     return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h;
 }
 
-/// Red and green coverage, below the bleed threshold zeroed.
 fn splitCoverage(rgba: []const u8, fill: []u8, stroke: []u8) void {
     assert(rgba.len == fill.len * 4);
     assert(fill.len == stroke.len);
@@ -581,8 +488,6 @@ fn testCache(cache: *CellCache) !void {
 }
 
 test "a glyph uploads once into a zero-padded cell and later draws reuse it" {
-    // A 3x2 glyph lands in an 8x8 cell: its rows at stride 8, the rest zero.
-    // Looking it up twice must stage one cell.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();
@@ -658,8 +563,6 @@ test "removal keeps every other key of a probe chain reachable" {
 }
 
 test "the page pool fills exactly, then the next size class has no page" {
-    // Capacity: 128 px cells fit 4 per page, so 14 pages hold exactly 56.
-    // The 56th allocates; the 57th, and any other class, finds no page.
     const cache = try testing.allocator.create(CellCache);
     defer testing.allocator.destroy(cache);
     try testCache(cache);
@@ -717,8 +620,6 @@ test "glyphs churned over many frames reuse idle cells and keep the shown list's
     }
 }
 
-/// Distinct 16 px-class regions of a 512² atlas: 1024 positions, each at
-/// eight widths.
 fn churnRegion(number: u32) Region {
     assert(number < 1024 * 8);
     return .{
@@ -759,7 +660,6 @@ test "SVG uploads split fill and stroke coverage and drop channel bleed" {
     defer testing.allocator.destroy(cache);
     try testCache(cache);
     defer cache.deinit();
-    // Texel 0: fill 200, stroke 5 (bleed). Texel 1: fill 4 (bleed), stroke 90.
     cache.uploadSvgs(.{ .x = 0, .y = 0, .w = 2, .h = 1 }, &.{ 200, 5, 0, 255, 4, 90, 0, 255 });
     try testing.expectEqualSlices(u8, &.{ 200, 0 }, cache.svg_fill[0..2]);
     try testing.expectEqualSlices(u8, &.{ 0, 90 }, cache.svg_stroke[0..2]);

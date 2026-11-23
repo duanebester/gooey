@@ -13,10 +13,8 @@ pub const MAX_SUMMARY_LENGTH: usize = 128;
 
 pub const MAX_POINT_DESCRIPTION_LENGTH: usize = 64;
 
-/// Most points one chart can describe: every series of the largest chart full.
 const point_count_total_max: u32 = constants.point_count_ceiling * constants.series_count_ceiling;
 
-/// Past this many points, descriptions summarize with min/max/average.
 pub const VERBALIZE_THRESHOLD: usize = 8;
 
 pub const ChartInfo = struct {
@@ -66,7 +64,6 @@ pub const ChartType = enum {
     }
 };
 
-/// Writes into `buf` and returns a slice of it.
 pub fn describe(info: *const ChartInfo, buf: []u8) []const u8 {
     std.debug.assert(buf.len >= MAX_DESCRIPTION_LENGTH);
     std.debug.assert(info.point_count <= point_count_total_max);
@@ -216,8 +213,6 @@ pub fn describeScatterPoint(
     return writer.buffered();
 }
 
-/// Build ChartInfo from CategorySeries (for bar charts). `SeriesType` is a
-/// `types.CategorySeries(category_count_max)`, such as `BarChart(...).Series`.
 pub fn infoFromCategorySeries(
     comptime SeriesType: type,
     series: []const SeriesType,
@@ -273,8 +268,6 @@ pub fn infoFromCategorySeries(
     return info;
 }
 
-/// Build ChartInfo from Series (for line/scatter charts). `SeriesType` is a
-/// `types.Series(point_count_max)`, such as `LineChart(...).Series`.
 pub fn infoFromSeries(
     comptime SeriesType: type,
     series: []const SeriesType,

@@ -1,17 +1,3 @@
-//! Hand-written UI Automation bindings for the Windows accessibility bridge
-//! (`accessibility/windows_bridge.zig`).
-//!
-//! Gooey implements these COM interfaces rather than calling them, so every
-//! vtable slot is typed: UI Automation calls a method by its slot index alone,
-//! in the order of `uiautomationcore.h`. The comptime block at the end pins
-//! each slot and each vtable size, and the IIDs match the header's
-//! `DEFINE_GUID` lines.
-//!
-//! Out-parameters are nullable pointers because a COM caller may pass null;
-//! implementations return `E_POINTER` rather than writing through it. Names
-//! follow the SDK so each declaration can be checked against Microsoft's
-//! documentation by name.
-
 const std = @import("std");
 const win32 = @import("win32.zig");
 const shell = @import("shell.zig");
@@ -27,13 +13,9 @@ pub const E_NOINTERFACE: HRESULT = @bitCast(@as(u32, 0x8000_4002));
 pub const E_POINTER: HRESULT = @bitCast(@as(u32, 0x8000_4003));
 pub const E_INVALIDARG: HRESULT = @bitCast(@as(u32, 0x8007_0057));
 pub const E_OUTOFMEMORY: HRESULT = @bitCast(@as(u32, 0x8007_000E));
-/// The element behind a provider no longer exists in the UI.
 pub const UIA_E_ELEMENTNOTAVAILABLE: HRESULT = @bitCast(@as(u32, 0x8004_0201));
-/// The provider does not support the requested operation.
 pub const UIA_E_NOTSUPPORTED: HRESULT = @bitCast(@as(u32, 0x8004_0204));
 
-/// A length-prefixed UTF-16 string owned by `oleaut32`'s allocator. A provider
-/// returns one through an out-parameter and the caller frees it.
 pub const BSTR = [*:0]u16;
 
 pub const VARIANT_BOOL = i16;
@@ -46,8 +28,6 @@ pub const VT_R8: u16 = 5;
 pub const VT_BSTR: u16 = 8;
 pub const VT_BOOL: u16 = 11;
 
-/// `VARIANT`: a type tag and a 16-byte payload. Only the payloads the bridge
-/// writes are named; `record` gives the union the size of the largest member.
 pub const VARIANT = extern struct {
     vt: u16,
     reserved1: u16 = 0,
@@ -68,7 +48,6 @@ pub const VARIANT = extern struct {
 
 pub const SAFEARRAY = opaque {};
 
-/// A rectangle in screen coordinates, physical pixels.
 pub const UiaRect = extern struct {
     left: f64,
     top: f64,
@@ -78,16 +57,11 @@ pub const UiaRect = extern struct {
     pub const empty: UiaRect = .{ .left = 0, .top = 0, .width = 0, .height = 0 };
 };
 
-/// `SRWLOCK`: zero is the unlocked state (`SRWLOCK_INIT`).
 pub const SRWLOCK = extern struct {
     ptr: ?*anyopaque = null,
 };
 
-/// `WM_GETOBJECT`'s object id for a UI Automation root request. The message
-/// carries it in the low 32 bits of `lParam`.
 pub const UiaRootObjectId: i32 = -25;
-/// First element of a runtime id that asks UI Automation to prefix the host
-/// window's id, making the rest unique only within this window.
 pub const UiaAppendRuntimeId: i32 = 3;
 
 pub const ProviderOptions_ServerSideProvider: i32 = 0x2;
@@ -116,7 +90,6 @@ pub const LiveSetting_Off: i32 = 0;
 pub const LiveSetting_Polite: i32 = 1;
 pub const LiveSetting_Assertive: i32 = 2;
 
-// Heading levels: `HeadingLevel_None` and `HeadingLevel1`; levels 2-9 follow.
 pub const HeadingLevel_None: i32 = 80050;
 pub const HeadingLevel1: i32 = 80051;
 
@@ -288,7 +261,7 @@ pub const IRawElementProviderFragment = extern struct {
         Release: ReferenceFn(Self),
         Navigate: *const fn (
             *Self,
-            i32, // NavigateDirection
+            i32,
             ?*?*IRawElementProviderFragment,
         ) callconv(.winapi) HRESULT,
         GetRuntimeId: GetFn(Self, ?*SAFEARRAY),
@@ -307,7 +280,6 @@ pub const IRawElementProviderFragmentRoot = extern struct {
         QueryInterface: QueryInterfaceFn(Self),
         AddRef: ReferenceFn(Self),
         Release: ReferenceFn(Self),
-        /// The point is in screen coordinates, physical pixels.
         ElementProviderFromPoint: *const fn (
             *Self,
             f64,
@@ -393,15 +365,9 @@ pub const ISelectionItemProvider = extern struct {
     };
 };
 
-/// The window half of the bridge, embedded in each platform window. The bridge
-/// publishes its root provider here; the window procedure answers
-/// `WM_GETOBJECT` with it and records that a client asked, which the bridge's
-/// `isActive` reads. Both sides run on the window's thread.
 pub const Host = struct {
     hwnd: ?win32.HWND = null,
     root: ?*IRawElementProviderSimple = null,
-    /// Sticky: once a client has asked for the root, the bridge keeps the
-    /// snapshot current for the window's lifetime.
     client_requested: bool = false,
 };
 
@@ -436,7 +402,6 @@ pub extern "uiautomationcore" fn UiaRaiseStructureChangedEvent(
     cRuntimeIdLen: i32,
 ) callconv(.winapi) HRESULT;
 
-/// Windows 10 1709 and later.
 pub extern "uiautomationcore" fn UiaRaiseNotificationEvent(
     provider: *IRawElementProviderSimple,
     notificationKind: i32,
@@ -484,7 +449,6 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // x86_64-windows only.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(VARIANT) == 24);

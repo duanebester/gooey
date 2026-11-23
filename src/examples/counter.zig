@@ -43,8 +43,6 @@ pub const App = gooey.App(State, render, .{
     .title = "Counter",
     .width = 580,
     .height = 350,
-    // `.embedded`, not `.nano`: it is also the EVE panel demo, and only
-    // `.embedded`'s paint limits fit the chip's display list.
     .limits = .embedded,
     .theme = &gooey.Theme.catppuccin_macchiato,
 });
@@ -95,6 +93,7 @@ const CounterCard = struct {
     pub fn render(_: CounterCard, cx: *Cx) void {
         const s = cx.state(State);
         var digits: [16]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.minInt(i32)}) <= digits.len);
         const count = std.fmt.bufPrint(&digits, "{d}", .{s.count}) catch unreachable;
         cx.render(ui.box(.{ .style = .{
             .direction = .row,

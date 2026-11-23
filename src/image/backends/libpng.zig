@@ -10,7 +10,6 @@ comptime {
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
-    /// RGBA pixel data (owned by allocator)
     pixels: []u8,
     allocator: std.mem.Allocator,
 
@@ -51,7 +50,7 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
 
     return switch (format) {
         .png => loadPng(allocator, data),
-        .jpeg => LoadError.UnsupportedSource, // TODO: Add libjpeg support
+        .jpeg => LoadError.UnsupportedSource,
         else => LoadError.UnsupportedSource,
     };
 }
@@ -150,8 +149,6 @@ fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImag
         png.png_destroy_read_struct(&png_ptr, &info_ptr, &null_info);
     }
 
-    // Use memory-based reading: libpng needs a FILE*, so wrap the bytes with
-    // fmemopen instead of a temporary file.
     const fp = libc.fmemopen(@ptrCast(data.ptr), data.len, "rb") orelse {
         return LoadError.IoError;
     };

@@ -1,11 +1,3 @@
-//! The Direct3D 11 device behind the DirectX 11 renderer, with a WARP fallback.
-//!
-//! The device and its immediate context are created on the main thread during
-//! window initialization, then owned by the render thread once the core host
-//! binds the window, so they are never used from two threads at once. The
-//! device is not created single-threaded because creation and use happen on
-//! different threads, which `D3D11_CREATE_DEVICE_SINGLETHREADED` forbids.
-
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
 
@@ -27,8 +19,6 @@ pub const Device = struct {
 
     pub const CreateError = error{Dx11DeviceUnavailable};
 
-    /// Feature levels requested, best first. 11_1 adds nothing the renderer
-    /// needs but lets the runtime pick the newer level where it exists.
     const feature_levels = [_]u32{ d3d11.D3D_FEATURE_LEVEL_11_1, d3d11.D3D_FEATURE_LEVEL_11_0 };
 
     pub fn create(preference: DriverPreference) CreateError!Device {
@@ -43,8 +33,6 @@ pub const Device = struct {
 
     pub fn release(self: *Device) void {
         assert(self.feature_level >= d3d11.D3D_FEATURE_LEVEL_11_0);
-        // Unbinds everything, so no view or buffer outlives the device in
-        // the context's state.
         self.context.vtable.ClearState(self.context);
         self.context.vtable.Flush(self.context);
         self.context.release();
@@ -52,9 +40,6 @@ pub const Device = struct {
         self.* = undefined;
     }
 
-    /// The DXGI factory that created the device's adapter. A swapchain must
-    /// come from it, or `CreateSwapChainForHwnd` rejects the device. The
-    /// caller releases the factory.
     pub fn factory(self: *const Device) ?*d3d11.IDXGIFactory2 {
         assert(self.feature_level >= d3d11.D3D_FEATURE_LEVEL_11_0);
         const adapter = self.queryAdapter() orelse return null;
@@ -70,7 +55,6 @@ pub const Device = struct {
         return @ptrCast(@alignCast(factory_raw.?));
     }
 
-    /// The device's adapter; the caller releases it.
     fn queryAdapter(self: *const Device) ?*d3d11.IDXGIAdapter {
         var dxgi_raw: ?*anyopaque = null;
         const query = self.device.vtable.QueryInterface(
@@ -138,7 +122,6 @@ fn createDriver(driver: Driver) ?Device {
     }
     assert(device != null);
     assert(context != null);
-    // The runtime returns only a requested level.
     assert(feature_level >= d3d11.D3D_FEATURE_LEVEL_11_0);
     return .{
         .device = device.?,
@@ -148,7 +131,6 @@ fn createDriver(driver: Driver) ?Device {
     };
 }
 
-/// An `HRESULT` as the unsigned value Microsoft's documentation lists.
 pub fn hex(result: d3d11.HRESULT) u32 {
     return @bitCast(result);
 }

@@ -41,9 +41,6 @@ pub const Triangulator = struct {
         self.reflex_vertices = ReflexSet.empty;
     }
 
-    /// Triangulates one polygon; the returned slice points into this
-    /// triangulator's internal buffer and is invalidated by the next
-    /// `triangulate` or `reset`.
     pub fn triangulate(
         self: *Self,
         points: []const Vec2,
@@ -66,9 +63,6 @@ pub const Triangulator = struct {
         return self.indices.slice()[start_idx..];
     }
 
-    /// Ear clipping over an intrusive circular doubly-linked list: O(1)
-    /// vertex removal, and scanning resumes from the clipped ear's previous
-    /// neighbor instead of restarting at vertex 0.
     fn earClipPolygon(
         self: *Self,
         points: []const Vec2,
@@ -80,7 +74,6 @@ pub const Triangulator = struct {
         std.debug.assert(n >= 3);
         std.debug.assert(n <= MAX_PATH_VERTICES);
 
-        // Two u32 arrays × 512 entries = 4 KiB of stack.
         var next_v: [MAX_PATH_VERTICES]u32 = undefined;
         var prev_v: [MAX_PATH_VERTICES]u32 = undefined;
 
@@ -105,7 +98,7 @@ pub const Triangulator = struct {
 
         var remaining: u32 = n;
         var safety_counter: u32 = 0;
-        const max_iterations: u32 = n * n; // O(n²) worst case.
+        const max_iterations: u32 = n * n;
 
         var scan_start: u32 = 0;
 
@@ -147,7 +140,6 @@ pub const Triangulator = struct {
                     active_set.unset(curr);
                     remaining -= 1;
 
-                    // Neighbors may have become convex after removal.
                     if (remaining >= 3) {
                         self.updateReflexLinked(pv, &next_v, &prev_v, poly_points);
                         self.updateReflexLinked(nv, &next_v, &prev_v, poly_points);
@@ -173,7 +165,7 @@ pub const Triangulator = struct {
             const v0 = scan_start;
             const v1 = next_v[v0];
             const v2 = next_v[v1];
-            std.debug.assert(next_v[v2] == v0); // Ring integrity.
+            std.debug.assert(next_v[v2] == v0);
             self.indices.appendAssumeCapacity(polygon.start + v0);
             self.indices.appendAssumeCapacity(polygon.start + v1);
             self.indices.appendAssumeCapacity(polygon.start + v2);
@@ -199,7 +191,6 @@ pub const Triangulator = struct {
     }
 };
 
-/// Positive result means CCW winding.
 pub fn signedArea(points: []const Vec2) f32 {
     std.debug.assert(points.len >= 3);
 
@@ -212,7 +203,6 @@ pub fn signedArea(points: []const Vec2) f32 {
     return area / 2;
 }
 
-/// Winding-aware convexity test
 fn isConvex(p0: Vec2, p1: Vec2, p2: Vec2, is_ccw: bool) bool {
     std.debug.assert(!std.math.isNan(p0.x) and !std.math.isNan(p0.y));
     std.debug.assert(!std.math.isNan(p1.x) and !std.math.isNan(p1.y));
@@ -223,8 +213,6 @@ fn isConvex(p0: Vec2, p1: Vec2, p2: Vec2, is_ccw: bool) bool {
     return if (is_ccw) cross_product > 0 else cross_product < 0;
 }
 
-/// Only reflex (concave) vertices can lie inside an ear, so only they
-/// are checked.
 fn hasPointInsideReflex(
     poly_points: []const Vec2,
     reflex_set: *const ReflexSet,
@@ -263,7 +251,6 @@ fn pointInTriangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) bool {
     return !(has_neg and has_pos);
 }
 
-/// Twice the signed area of the triangle (p1, p2, p3).
 fn sign(p1: Vec2, p2: Vec2, p3: Vec2) f32 {
     return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
 }

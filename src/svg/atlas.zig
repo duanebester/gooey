@@ -1,6 +1,3 @@
-//! Texture cache for rasterized SVG icons. Rasterizations are capped per
-//! frame; the caller checks `hasDeferredWork()` and requests a redraw.
-
 const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
 const Region = @import("../text/atlas.zig").Region;
@@ -13,11 +10,9 @@ const assert = std.debug.assert;
 
 pub const SvgKey = struct {
     path_hash: u64,
-    /// Device pixels; width = height for square icons.
     device_size: u16,
     has_fill: bool,
     has_stroke: bool,
-    /// Stroke width (quantized to 0.25 increments)
     stroke_width_q: u8,
 
     pub fn init(
@@ -40,12 +35,9 @@ pub const SvgKey = struct {
 
 pub const CachedSvg = struct {
     region: Region,
-    /// Offset from logical position (device pixels)
     offset_x: i16,
     offset_y: i16,
-    /// Side of the atlas the region lies in; fixed for the atlas's lifetime.
     atlas_size: u32,
-    /// Atlas shelf holding the pixels; the entry is stale once it is evicted.
     shelf: u16,
     generation: u32,
 
@@ -56,55 +48,24 @@ pub const CachedSvg = struct {
 
 pub const SvgAtlas = struct {
     allocator: std.mem.Allocator,
-    /// RGBA texture atlas, fixed at `AtlasLimits.svg_size`.
     atlas: Atlas,
-    /// Cache map. Capacity is reserved at init and never grows: a full map
-    /// reclaims entries whose shelves were evicted (CLAUDE.md §2).
     cache: std.AutoHashMap(SvgKey, CachedSvg),
-    /// `AtlasLimits.svg_entry_count_max`: icons the map holds.
     entry_count_max: u32,
-    /// `AtlasLimits.svg_rasterization_count_frame_max`: rasterizations one
-    /// frame may perform before the rest wait for the next frame.
     rasterization_count_frame_max: u32,
-    /// Reusable rasterization buffer, `svg_icon_size_max²` RGBA pixels.
     render_buffer: []u8,
     render_buffer_size: u32,
-    /// Arena for the rasterizer's parsed path, flattened polygons, edge
-    /// tables, and stroke buffer. Reserved at init and reset before every
-    /// rasterization, so a cache miss never reaches the heap (CLAUDE.md §2).
     raster_scratch: []u8,
-    /// `AtlasLimits.svg_path_bytes_max` and `svg_path_vertex_count_max`,
-    /// which size `raster_scratch`; an icon past either fails fast.
     raster_budget: rasterizer.RasterBudget,
     scale_factor: f64,
-    /// IO instance for mutex operations. Stored on the struct because lock
-    /// sites run on CVDisplayLink threads that have no access to `*Cx` and
-    /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
-    /// process-lifetime vtable — safe to copy across threads.
     io: std.Io,
-    /// Mutex for thread-safe access in multi-window scenarios.
-    /// Multiple DisplayLink threads may access the atlas concurrently.
-    /// Uses `lockUncancelable` everywhere — none of the atlas call sites
-    /// propagate `std.Io.Cancelable`, and the critical sections are short
-    /// enough that cancelation points would add noise without value.
     mutex: std.Io.Mutex,
 
-    /// Software rasterizations performed this frame, at most
-    /// `rasterization_count_frame_max`.
     rasterizations_this_frame: u32 = 0,
 
-    /// Set when a cache miss was skipped due to budget exhaustion.
     deferred_this_frame: bool = false,
 
     const Self = @This();
 
-    /// Scratch bytes reserved for icons of at most `icon_size_max` pixels
-    /// within `budget`: exactly what the rasterizer reserves for one icon, so
-    /// an icon within the budget never exhausts it. The software rasterizer
-    /// (Linux, Windows) needs the parsed path, the flattened vertices, edge
-    /// tables, and a stroke buffer; CoreGraphics needs only the parsed path
-    /// and the stroke buffer; Canvas2D needs the parsed path and the path
-    /// data it hands the browser.
     pub fn rasterScratchBytes(budget: rasterizer.RasterBudget, icon_size_max: u32) u32 {
         std.debug.assert(icon_size_max > 0);
         std.debug.assert(icon_size_max <= limits.MAX_SVG_ICON_SIZE);
@@ -114,9 +75,6 @@ pub const SvgAtlas = struct {
     }
 
     comptime {
-        // The ceiling's scratch must stay small next to the atlas textures:
-        // 2.2 MiB for the software rasterizer and 2.6 MiB for Canvas2D,
-        // against 144 MiB of ceiling textures.
         const ceiling = limits.AtlasLimits.ceiling;
         const budget = rasterizer.RasterBudget{
             .path_bytes_max = ceiling.svg_path_bytes_max,
@@ -126,22 +84,14 @@ pub const SvgAtlas = struct {
     }
 
     pub const Options = struct {
-        /// `AtlasLimits.svg_size`.
         size: u32,
-        /// `AtlasLimits.svg_icon_size_max`.
         icon_size_max: u32,
-        /// `AtlasLimits.svg_path_bytes_max` and `svg_path_vertex_count_max`.
         raster_budget: rasterizer.RasterBudget,
-        /// `AtlasLimits.svg_entry_count_max`.
         entry_count_max: u32,
-        /// `AtlasLimits.svg_rasterization_count_frame_max`. Each costs 0.5 to
-        /// 2 ms (parse, flatten, fill and stroke), so 4 keep a frame's icon
-        /// work near 2 to 8 ms; the rest fill in over later frames.
         rasterization_count_frame_max: u32,
         uploads: *AtlasUploads,
     };
 
-    /// Initialize in place: `Atlas` is reserved at its final address.
     pub fn initInPlace(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -200,7 +150,6 @@ pub const SvgAtlas = struct {
         }
     }
 
-    /// Call at the start of each frame, before any `getOrRasterize`.
     pub fn resetFrameBudget(self: *Self) void {
         self.rasterizations_this_frame = 0;
         self.deferred_this_frame = false;
@@ -210,11 +159,6 @@ pub const SvgAtlas = struct {
         return self.deferred_this_frame;
     }
 
-    /// Get cached SVG or rasterize and cache it.
-    ///
-    /// If the per-frame rasterization budget or the upload staging is
-    /// exhausted, returns `error.RasterizationDeferred` — the icon won't render
-    /// this frame but will be picked up on the next frame.
     pub fn getOrRasterize(
         self: *Self,
         path_data: []const u8,
@@ -235,7 +179,6 @@ pub const SvgAtlas = struct {
             }
         }
 
-        // Cache miss: defer rather than stall the frame on many uncached icons.
         assert(self.rasterizations_this_frame <= self.rasterization_count_frame_max);
         if (self.rasterizations_this_frame == self.rasterization_count_frame_max) {
             self.deferred_this_frame = true;
@@ -284,18 +227,11 @@ pub const SvgAtlas = struct {
     const RasterizeIntoRenderBufferOptions = struct {
         path_data: []const u8,
         viewbox: f32,
-        /// Side in device pixels, at most `render_buffer_size`.
         device_size: u16,
         has_fill: bool,
-        /// Logical stroke width; null or non-positive disables the stroke.
         stroke_width: ?f32,
     };
 
-    /// Rasterize one icon into `render_buffer`, drawing every rasterizer
-    /// allocation from `raster_scratch`. An icon that flattens to more than
-    /// `svg_path_vertex_count_max` vertices is a capacity-planning error and
-    /// fails fast naming the limit. Exhausting the scratch itself is a
-    /// programmer error: it holds exactly what the rasterizer reserves.
     fn rasterizeIntoRenderBuffer(
         self: *Self,
         options: RasterizeIntoRenderBufferOptions,
@@ -347,7 +283,6 @@ pub const SvgAtlas = struct {
         return rasterized;
     }
 
-    /// Fail fast on an icon path longer than `svg_path_bytes_max`.
     fn failPathBytes(self: *const Self, path_bytes: usize) noreturn {
         std.debug.assert(path_bytes > self.raster_budget.path_bytes_max);
         std.debug.panic(
@@ -357,7 +292,6 @@ pub const SvgAtlas = struct {
         );
     }
 
-    /// Fail fast on an icon that flattens past `svg_path_vertex_count_max`.
     fn failVertexCount(self: *const Self, path_bytes: usize, device_size: u16) noreturn {
         std.debug.assert(path_bytes <= self.raster_budget.path_bytes_max);
         std.debug.assert(device_size <= self.render_buffer_size);
@@ -374,11 +308,6 @@ pub const SvgAtlas = struct {
         );
     }
 
-    /// Ensure `key` can be stored without growing the map: drop entries whose
-    /// shelves were evicted, evicting the least recently used shelf if none
-    /// were. A map full of icons used by an open frame fails fast. Through the
-    /// core it cannot: `ResourceLimits.check` holds the map to at least a
-    /// frame's icons.
     fn makeRoom(self: *Self, key: SvgKey) void {
         if (self.cache.contains(key)) return;
         assert(self.cache.count() <= self.entry_count_max);
@@ -397,7 +326,6 @@ pub const SvgAtlas = struct {
         });
     }
 
-    /// Remove entries whose atlas pixels were evicted. Bounded by the map size.
     fn reclaimStale(self: *Self) u32 {
         var freed: u32 = 0;
         var it = self.cache.iterator();
@@ -417,25 +345,14 @@ pub const SvgAtlas = struct {
         self.atlas.clear();
     }
 
-    /// The atlas the renderers sample. Its pixels reach GPU textures through
-    /// `AtlasUploads`, so renderers read only its fixed size and format here.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
     }
 };
 
-/// Bump allocator over `SvgAtlas.raster_scratch` for one rasterization.
-///
-/// `FixedBufferAllocator.end_index` falls again whenever the newest allocation
-/// is freed or shrunk, so after a rasterization it no longer shows how much
-/// scratch was needed. This wrapper records the high-water mark after every
-/// growth, and the size of the last request it refused so that exhaustion can
-/// report it (CLAUDE.md §2). It adds two integers and never allocates.
 const RasterScratch = struct {
     fixed: std.heap.FixedBufferAllocator,
-    /// Highest `fixed.end_index` reached since `init`, alignment padding included.
     used_bytes_max: u32,
-    /// Bytes asked for by the most recent refused alloc, resize, or remap; 0 if none.
     refused_bytes: u64,
 
     const FixedBufferAllocator = std.heap.FixedBufferAllocator;
@@ -448,15 +365,12 @@ const RasterScratch = struct {
         .free = free,
     };
 
-    /// `buffer` may be empty: the null backend rasterizes nothing and
-    /// reserves no scratch.
     fn init(buffer: []u8) RasterScratch {
         std.debug.assert(buffer.len <= std.math.maxInt(u32));
         if (buffer.len > 0) std.debug.assert(@intFromPtr(buffer.ptr) != 0);
         return .{ .fixed = .init(buffer), .used_bytes_max = 0, .refused_bytes = 0 };
     }
 
-    /// The returned allocator points at `self`, which must not move while it is in use.
     fn allocator(self: *RasterScratch) std.mem.Allocator {
         std.debug.assert(self.fixed.end_index <= self.fixed.buffer.len);
         std.debug.assert(self.fixed.end_index <= self.used_bytes_max);
@@ -520,15 +434,10 @@ const RasterScratch = struct {
     }
 };
 
-/// Whether `rasterizer.zig` selected the pure-Zig software rasterizer. The
-/// struct type is unique to its declaring file, so this is an identity check
-/// on the backend rather than a copy of its platform switch.
 const raster_backend_software =
     rasterizer.RasterizedSvg == @import("backends/cairo.zig").RasterizedSvg;
 
 test "RasterScratch keeps its peak across frees and reports the refused request" {
-    // Fill a 64 B buffer in two steps, free the newest allocation so
-    // `end_index` falls, then fill it exactly and ask for one byte more.
     const testing = std.testing;
     var buffer: [64]u8 = undefined;
     var scratch = RasterScratch.init(&buffer);
@@ -554,7 +463,6 @@ test "RasterScratch keeps its peak across frees and reports the refused request"
     try testing.expectEqual(@as(u32, 64), scratch.used_bytes_max);
 }
 
-/// `loader_pinwheel`, the Lucide icon that flattens to the most vertices.
 const test_loader_pinwheel = "<path d=\"M22 12a1 1 0 0 1-10 0 1 1 0 0 0-10 0\"/>" ++
     "<path d=\"M7 20.7a1 1 0 1 1 5-8.7 1 1 0 1 0 5-8.6\"/>" ++
     "<path d=\"M7 3.3a1 1 0 1 1 5 8.6 1 1 0 1 0 5 8.6\"/>" ++
@@ -568,10 +476,6 @@ fn testRasterBudget(atlas_limits: limits.AtlasLimits) rasterizer.RasterBudget {
 }
 
 test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within its scratch" {
-    // Filling and stroking `loader_pinwheel` at `MAX_SVG_ICON_SIZE` within
-    // the standard profile's budget must fit the scratch that budget sizes,
-    // and must produce coverage in both channels. Only the software
-    // rasterizer flattens from the scratch.
     if (!raster_backend_software) return error.SkipZigTest;
     const testing = std.testing;
     const side = limits.MAX_SVG_ICON_SIZE;
@@ -609,10 +513,6 @@ test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within it
 }
 
 test "an icon past its vertex budget is refused before it exhausts the scratch" {
-    // `loader_pinwheel` flattens to 8,530 vertices at 256 px. With a budget
-    // of 2,048 the software rasterizer must report PathTooComplex, the error
-    // `SvgAtlas` turns into a panic naming `svg_path_vertex_count_max`, and
-    // must not have been refused any scratch on the way.
     if (!raster_backend_software) return error.SkipZigTest;
     const testing = std.testing;
     const side = limits.MAX_SVG_ICON_SIZE;
@@ -639,10 +539,6 @@ test "an icon past its vertex budget is refused before it exhausts the scratch" 
 }
 
 test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
-    // A 64² atlas holds four 30 px icons, two per 32-row shelf. Frames 2-5
-    // rasterize a, b (top shelf) and c, d (bottom shelf); frame 6 touches a
-    // and adds e, which evicts the bottom shelf and lands where c was. Asking
-    // for c again must re-rasterize c's own pixels, not return e's region.
     const testing = std.testing;
     var uploads: AtlasUploads = undefined;
     try uploads.init(
@@ -671,7 +567,6 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
     });
     defer svg_atlas.deinit();
 
-    // Distinct shapes with the same bounding box, so equal sizes but different pixels.
     const paths = [_][]const u8{
         "M0 0L24 0L0 24Z",       "M0 0L24 0L24 24Z", "M0 0L24 24L0 24Z", "M24 0L24 24L0 24Z",
         "M0 0L24 0L24 24L0 24Z",
@@ -727,7 +622,6 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
         original,
         Harness.copy(&svg_atlas.atlas, again.region, &current),
     );
-    // The top shelf was in use when e arrived, so a kept its pixels.
     const a = try Harness.icon(svg_atlas, paths[0]);
     const original_a = saved[0][0 .. @as(usize, placed[0].region.width) *
         placed[0].region.height * 4];
@@ -739,11 +633,6 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
 }
 
 test "SvgAtlas holds exactly its entries and rasterizes exactly its frame budget" {
-    // Goal: `svg_entry_count_max` and `svg_rasterization_count_frame_max` are
-    // exact. Method: an atlas of 8 entries rasterizing 3 per frame. Frame 2
-    // rasterizes 3 icons and defers the 4th; frames 3 and 4 finish the 8, and
-    // every one then hits with its region. (A 9th in the same frame is the
-    // `svg-cache` fail-fast check.)
     const testing = std.testing;
     var uploads: AtlasUploads = undefined;
     try uploads.init(
@@ -797,7 +686,6 @@ test "SvgAtlas holds exactly its entries and rasterizes exactly its frame budget
         if (frame_count < 2) try testing.expectEqual(@as(u32, 3), rasterized);
     }
     try testing.expectEqual(@as(u32, 8), svg_atlas.cache.count());
-    // Hits cost no rasterization, so all 8 resolve in one frame.
     _ = uploads.beginFrame(consumer);
     svg_atlas.resetFrameBudget();
     for (paths, regions) |path, region| {

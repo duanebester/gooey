@@ -3,29 +3,18 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const Dir = std.Io.Dir;
 
-/// Measured noise: across three runs of this gate on identical code, the
-/// largest per-benchmark delta was 0.114% (text/scaling_shape_10ch), and all
-/// but a handful stayed under 0.05%. The residue comes from timing samples,
-/// which the text and accessibility harnesses sort for percentiles. 0.5% is
-/// over four times the worst observed delta, and still far below the ~20%
-/// that wall time on shared runners can resolve.
 const threshold_percent_default: f64 = 0.5;
 
-/// Installed as `<module>-bench` by `bench-ir-build`, in report order.
 const modules = [_][]const u8{ "layout", "core", "text", "accessibility" };
 
-/// Matches `MAX_ENTRIES` in `bench/json_writer.zig`.
 const benchmark_count_max: u32 = 256;
 
-/// Matches `MAX_NAME_LENGTH` in `bench/json_writer.zig`, plus room for the
-/// `#<n>` suffix that keeps repeated names distinct.
 const name_length_max: u32 = 128 + 4;
 
 const path_length_max: u32 = 1024;
 
 const job_count_max: u32 = 64;
 
-/// Largest benchmark JSON a harness writes (256 entries of ~300 bytes).
 const json_bytes_max: u32 = 1024 * 1024;
 
 const Side = enum { base, head };
@@ -51,7 +40,6 @@ const BenchmarkList = struct {
     }
 };
 
-/// Every module on both sides. About 300 KiB, so it is heap-allocated once.
 const Gate = struct {
     lists: [modules.len][2]BenchmarkList,
     present: [modules.len][2]bool,
@@ -153,9 +141,6 @@ fn defaultJobCount() u32 {
     return count;
 }
 
-/// Run every child with ASLR off. Pointer-keyed hashing (the shape cache keys
-/// on the font face's address) otherwise varies Ir from run to run; measured,
-/// ASLR raised the worst per-benchmark spread from 0.16% to 0.79%.
 fn disableAddressRandomization() void {
     if (builtin.os.tag != .linux) return;
     const linux = std.os.linux;
@@ -288,8 +273,9 @@ fn appendName(list: *BenchmarkList, raw_name: []const u8) !void {
     if (occurrence > 99) return error.too_many_repeats;
 
     const slot = &list.names[list.count];
+    std.debug.assert(std.fmt.count("{s}#{d}", .{ raw_name, occurrence }) <= slot.len);
     const written = if (occurrence == 1)
-        std.fmt.bufPrint(slot, "{s}", .{raw_name}) catch unreachable // Length checked above.
+        std.fmt.bufPrint(slot, "{s}", .{raw_name}) catch unreachable
     else
         std.fmt.bufPrint(slot, "{s}#{d}", .{ raw_name, occurrence }) catch unreachable;
     list.name_lengths[list.count] = @intCast(written.len);
@@ -297,7 +283,6 @@ fn appendName(list: *BenchmarkList, raw_name: []const u8) !void {
     list.count += 1;
 }
 
-/// One pending Valgrind run and the buffers its argv borrows.
 const Job = struct {
     side: Side,
     index: u32,
@@ -350,7 +335,10 @@ fn startJob(io: Io, args: *const Args, module: []const u8, side: Side, index: u3
     job.index = index;
     const binary = binaryPath(&job.binary, args, side, module);
     job.binary_length = @intCast(binary.len);
-    const index_text = std.fmt.bufPrint(&job.index_text, "{d}", .{index}) catch unreachable; // u32 fits.
+    comptime std.debug.assert(std.fmt.count("{d}", .{
+        std.math.maxInt(u32),
+    }) <= @sizeOf(@TypeOf(job.index_text)));
+    const index_text = std.fmt.bufPrint(&job.index_text, "{d}", .{index}) catch unreachable;
     const out_file_flag = std.fmt.bufPrint(&job.out_file_flag, "--cachegrind-out-file={s}/{s}/{s}/{d}.cg", .{
         args.work_dir,
         @tagName(side),
@@ -362,7 +350,7 @@ fn startJob(io: Io, args: *const Args, module: []const u8, side: Side, index: u3
     const argv = [_][]const u8{
         "valgrind",
         "--tool=cachegrind",
-        "--instr-at-start=no", // The harness turns instrumentation on for one benchmark.
+        "--instr-at-start=no",
         "--cache-sim=no",
         "--branch-sim=no",
         out_file_flag,
@@ -378,8 +366,6 @@ fn startJob(io: Io, args: *const Args, module: []const u8, side: Side, index: u3
     }) catch |err| fail("cannot run valgrind: {s}", .{@errorName(err)});
 }
 
-/// Wait for one run and return its Ir. Zero would mean the harness never
-/// turned instrumentation on, which no benchmark can legitimately report.
 fn finishJob(io: Io, job: *Job, name: []const u8) u64 {
     const binary = job.binary[0..job.binary_length];
     const term = job.child.wait(io) catch |err| fail("cannot wait for valgrind: {s}", .{@errorName(err)});
@@ -429,7 +415,6 @@ fn deltaPercent(base_ir: u64, head_ir: u64) f64 {
     return (head - base) / base * 100.0;
 }
 
-/// CI appends the Markdown table to the job summary.
 fn report(io: Io, gate: *const Gate, threshold_percent: f64) Totals {
     var buffer: [4096]u8 = undefined;
     var writer = Io.File.stdout().writerStreaming(io, &buffer);
@@ -473,7 +458,7 @@ fn writeRow(out: *Io.Writer, module: []const u8, key: []const u8, base_ir: u64, 
         .ok => "",
         .regressed => "**REGRESSED**",
         .improved => "improved",
-        .added, .removed => unreachable, // Rows with both sides only.
+        .added, .removed => unreachable,
     };
     try out.print("| {s}/{s} | {d} | {d} | {d:.3}% | {s} |\n", .{
         module,
@@ -507,7 +492,7 @@ fn countStatus(totals: *Totals, status: Status) void {
         .ok => {},
         .regressed => totals.regressed += 1,
         .improved => totals.improved += 1,
-        .added, .removed => unreachable, // Counted where they are found.
+        .added, .removed => unreachable,
     }
 }
 

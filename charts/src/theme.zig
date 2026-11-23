@@ -32,48 +32,46 @@ pub const ChartTheme = struct {
 
     label_color: Color,
 
-    /// Based on Catppuccin Latte, with Google light palette.
     pub const light = ChartTheme{
-        .background = Color.rgb(0.937, 0.945, 0.961), // #eff1f5
-        .foreground = Color.rgb(0.298, 0.310, 0.412), // #4c4f69
-        .muted = Color.rgba(0.608, 0.620, 0.694, 0.5), // #9ca0b0 @ 50%
-        .surface = Color.rgb(0.902, 0.914, 0.933), // #e6e9ef
+        .background = Color.rgb(0.937, 0.945, 0.961),
+        .foreground = Color.rgb(0.298, 0.310, 0.412),
+        .muted = Color.rgba(0.608, 0.620, 0.694, 0.5),
+        .surface = Color.rgb(0.902, 0.914, 0.933),
         .border = Color.rgba(0.608, 0.620, 0.694, 0.3),
 
         .palette = google_light_palette,
 
-        .positive = Color.rgb(0.251, 0.627, 0.169), // #40a02b (green)
-        .negative = Color.rgb(0.820, 0.239, 0.239), // #d13c3c (red)
-        .neutral = Color.rgb(0.608, 0.620, 0.694), // #9ca0b0 (gray)
+        .positive = Color.rgb(0.251, 0.627, 0.169),
+        .negative = Color.rgb(0.820, 0.239, 0.239),
+        .neutral = Color.rgb(0.608, 0.620, 0.694),
 
-        .axis_color = Color.rgb(0.424, 0.435, 0.522), // #6c6f85
-        .grid_color = Color.rgba(0.608, 0.620, 0.694, 0.25), // muted @ 25%
-        .tick_color = Color.rgb(0.424, 0.435, 0.522), // #6c6f85
-        .label_color = Color.rgb(0.298, 0.310, 0.412), // #4c4f69
+        .axis_color = Color.rgb(0.424, 0.435, 0.522),
+        .grid_color = Color.rgba(0.608, 0.620, 0.694, 0.25),
+        .tick_color = Color.rgb(0.424, 0.435, 0.522),
+        .label_color = Color.rgb(0.298, 0.310, 0.412),
     };
 
-    /// Based on Catppuccin Macchiato, with Google dark palette.
     pub const dark = ChartTheme{
-        .background = Color.rgb(0.141, 0.153, 0.227), // #24273a
-        .foreground = Color.rgb(0.792, 0.827, 0.961), // #cad3f5
-        .muted = Color.rgba(0.545, 0.584, 0.729, 0.5), // #8b95ba @ 50%
-        .surface = Color.rgb(0.212, 0.227, 0.310), // #363a4f
+        .background = Color.rgb(0.141, 0.153, 0.227),
+        .foreground = Color.rgb(0.792, 0.827, 0.961),
+        .muted = Color.rgba(0.545, 0.584, 0.729, 0.5),
+        .surface = Color.rgb(0.212, 0.227, 0.310),
         .border = Color.rgba(0.545, 0.584, 0.729, 0.3),
 
         .palette = google_dark_palette,
 
-        .positive = Color.rgb(0.651, 0.855, 0.584), // #a6da95 (light green)
-        .negative = Color.rgb(0.929, 0.486, 0.486), // #ed7c7c (light red)
-        .neutral = Color.rgb(0.545, 0.584, 0.729), // #8b95ba (gray)
+        .positive = Color.rgb(0.651, 0.855, 0.584),
+        .negative = Color.rgb(0.929, 0.486, 0.486),
+        .neutral = Color.rgb(0.545, 0.584, 0.729),
 
-        .axis_color = Color.rgb(0.718, 0.757, 0.898), // #b8c0e5
-        .grid_color = Color.rgba(0.545, 0.584, 0.729, 0.2), // muted @ 20%
-        .tick_color = Color.rgb(0.718, 0.757, 0.898), // #b8c0e5
-        .label_color = Color.rgb(0.792, 0.827, 0.961), // #cad3f5
+        .axis_color = Color.rgb(0.718, 0.757, 0.898),
+        .grid_color = Color.rgba(0.545, 0.584, 0.729, 0.2),
+        .tick_color = Color.rgb(0.718, 0.757, 0.898),
+        .label_color = Color.rgb(0.792, 0.827, 0.961),
     };
 
     pub fn fromTheme(theme: *const Theme) ChartTheme {
-        std.debug.assert(theme.bg.a > 0); // Valid theme
+        std.debug.assert(theme.bg.a > 0);
 
         return ChartTheme{
             .background = theme.bg,
@@ -121,77 +119,76 @@ pub const ChartTheme = struct {
 };
 
 pub const google_light_palette = [MAX_PALETTE_COLORS]Color{
-    Color.hex(0x1a73e8), // Google Blue (darker)
-    Color.hex(0xd93025), // Google Red (darker)
-    Color.hex(0xf9ab00), // Google Yellow (darker)
-    Color.hex(0x1e8e3e), // Google Green (darker)
-    Color.hex(0xe65100), // Orange (darker)
-    Color.hex(0x00838f), // Teal (darker)
-    Color.hex(0x6a1b9a), // Purple (darker)
-    Color.hex(0xad1457), // Pink (darker)
-    Color.hex(0x00695c), // Dark Teal
-    Color.hex(0x4e342e), // Brown (darker)
-    Color.hex(0x37474f), // Blue Grey (darker)
-    Color.hex(0xbf360c), // Deep Orange (darker)
+    Color.hex(0x1a73e8),
+    Color.hex(0xd93025),
+    Color.hex(0xf9ab00),
+    Color.hex(0x1e8e3e),
+    Color.hex(0xe65100),
+    Color.hex(0x00838f),
+    Color.hex(0x6a1b9a),
+    Color.hex(0xad1457),
+    Color.hex(0x00695c),
+    Color.hex(0x4e342e),
+    Color.hex(0x37474f),
+    Color.hex(0xbf360c),
 };
 
 pub const google_dark_palette = [MAX_PALETTE_COLORS]Color{
-    Color.hex(0x8ab4f8), // Google Blue (lighter)
-    Color.hex(0xf28b82), // Google Red (lighter)
-    Color.hex(0xfdd663), // Google Yellow (lighter)
-    Color.hex(0x81c995), // Google Green (lighter)
-    Color.hex(0xfcad70), // Orange (lighter)
-    Color.hex(0x78d9ec), // Teal (lighter)
-    Color.hex(0xc58af9), // Purple (lighter)
-    Color.hex(0xf48fb1), // Pink (lighter)
-    Color.hex(0x4db6ac), // Dark Teal (lighter)
-    Color.hex(0xa1887f), // Brown (lighter)
-    Color.hex(0x90a4ae), // Blue Grey (lighter)
-    Color.hex(0xffab91), // Deep Orange (lighter)
+    Color.hex(0x8ab4f8),
+    Color.hex(0xf28b82),
+    Color.hex(0xfdd663),
+    Color.hex(0x81c995),
+    Color.hex(0xfcad70),
+    Color.hex(0x78d9ec),
+    Color.hex(0xc58af9),
+    Color.hex(0xf48fb1),
+    Color.hex(0x4db6ac),
+    Color.hex(0xa1887f),
+    Color.hex(0x90a4ae),
+    Color.hex(0xffab91),
 };
 
 pub const google_palette = [MAX_PALETTE_COLORS]Color{
-    Color.hex(0x4285f4), // Google Blue
-    Color.hex(0xea4335), // Google Red
-    Color.hex(0xfbbc05), // Google Yellow
-    Color.hex(0x34a853), // Google Green
-    Color.hex(0xff6d01), // Orange
-    Color.hex(0x46bdc6), // Teal
-    Color.hex(0x7b1fa2), // Purple
-    Color.hex(0xc2185b), // Pink
-    Color.hex(0x00796b), // Dark Teal
-    Color.hex(0x5d4037), // Brown
-    Color.hex(0x455a64), // Blue Grey
-    Color.hex(0xe65100), // Deep Orange
+    Color.hex(0x4285f4),
+    Color.hex(0xea4335),
+    Color.hex(0xfbbc05),
+    Color.hex(0x34a853),
+    Color.hex(0xff6d01),
+    Color.hex(0x46bdc6),
+    Color.hex(0x7b1fa2),
+    Color.hex(0xc2185b),
+    Color.hex(0x00796b),
+    Color.hex(0x5d4037),
+    Color.hex(0x455a64),
+    Color.hex(0xe65100),
 };
 
-/// This is the single source of truth that chart files should import.
 pub const default_palette = google_light_palette;
 
 pub const colorblind_palette = [MAX_PALETTE_COLORS]Color{
-    Color.hex(0x0077BB), // Blue
-    Color.hex(0xEE7733), // Orange
-    Color.hex(0x009988), // Teal
-    Color.hex(0xCC3311), // Red
-    Color.hex(0x33BBEE), // Cyan
-    Color.hex(0xEE3377), // Magenta
-    Color.hex(0xBBBBBB), // Gray
-    Color.hex(0x000000), // Black
-    Color.hex(0x44AA99), // Teal 2
-    Color.hex(0x882255), // Wine
-    Color.hex(0x999933), // Olive
-    Color.hex(0xDDCC77), // Sand
+    Color.hex(0x0077BB),
+    Color.hex(0xEE7733),
+    Color.hex(0x009988),
+    Color.hex(0xCC3311),
+    Color.hex(0x33BBEE),
+    Color.hex(0xEE3377),
+    Color.hex(0xBBBBBB),
+    Color.hex(0x000000),
+    Color.hex(0x44AA99),
+    Color.hex(0x882255),
+    Color.hex(0x999933),
+    Color.hex(0xDDCC77),
 };
 
 pub const monochrome_blue_palette = [MAX_PALETTE_COLORS]Color{
-    Color.hex(0x08306b), // Darkest
+    Color.hex(0x08306b),
     Color.hex(0x08519c),
     Color.hex(0x2171b5),
     Color.hex(0x4292c6),
     Color.hex(0x6baed6),
     Color.hex(0x9ecae1),
     Color.hex(0xc6dbef),
-    Color.hex(0xdeebf7), // Lightest
+    Color.hex(0xdeebf7),
     Color.hex(0x3182bd),
     Color.hex(0x9ecae1),
     Color.hex(0x6baed6),
@@ -273,6 +270,5 @@ test "default_palette has 12 distinct colors" {
 }
 
 test "ChartTheme struct size is reasonable" {
-    // 12 palette colors + ~16 base colors, 16 bytes each: ~448 bytes max.
     try testing.expect(@sizeOf(ChartTheme) < 512);
 }

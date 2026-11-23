@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Start or stop a headless GNOME Shell (mutter) Wayland session for testing Gooey.
-#
-# Usage: gnome-session start | stop
-#
-# `start` runs a session bus, PipeWire, WirePlumber, and GNOME Shell as supervised orb
-# services, configures IBus with Anthy (Japanese) as a second input source, and writes
-# the client environment to /tmp/gnome-rt/env. Source that file before running a Gooey
-# example or `gnome-input`.
 set -euo pipefail
 
 runtime_dir=/tmp/gnome-rt
@@ -15,8 +7,6 @@ bus_address="unix:path=${runtime_dir}/bus"
 services=(gnome-shell gnome-wireplumber gnome-pipewire gnome-dbus)
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ibus-anthy's engine runs `python3` from PATH and needs the system Python's GObject
-# bindings, so the system bin directories come first in every service's environment.
 service_env="export PATH=/usr/bin:/bin:\$PATH XDG_RUNTIME_DIR=${runtime_dir}"
 service_env+=" DBUS_SESSION_BUS_ADDRESS=${bus_address}"
 
@@ -40,12 +30,9 @@ wait_for_path() {
 }
 
 configure_input() {
-    # Hot corners open the overview whenever the pointer reaches the top left.
     gsettings set org.gnome.desktop.interface enable-hot-corners false
     gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('ibus', 'anthy')]"
-    # Anthy starts in Latin mode (3); hiragana (0) makes romaji compose.
     gsettings set org.freedesktop.ibus.engine.anthy.common input-mode 0
-    # GNOME Shell starts ibus-daemon before this runs, with a stale engine registry.
     rm -f "${HOME}/.cache/ibus/bus/registry"*
     ibus write-cache
     ibus restart
@@ -86,7 +73,6 @@ start_session() {
 --headless --wayland --no-x11 --virtual-monitor 1280x800 --wayland-display ${display_name}" \
         >/dev/null
     wait_for_path "${runtime_dir}/${display_name}" "The GNOME Shell Wayland socket"
-    # The shell finishes starting its D-Bus services after the socket appears.
     sleep 4
 
     cat >"${runtime_dir}/env" <<EOF
@@ -95,10 +81,8 @@ export WAYLAND_DISPLAY=${display_name}
 export DBUS_SESSION_BUS_ADDRESS=${bus_address}
 export PATH=/usr/bin:/bin:\$PATH
 EOF
-    # shellcheck source=/dev/null
     source "${runtime_dir}/env"
     configure_input
-    # GNOME Shell starts in the overview; leave it so new windows show on the desktop.
     "${script_dir}/gnome-input" "key Escape; sleep 0.5"
 
     echo "GNOME Shell $(gnome-shell --version | awk '{print $3}') is running on Wayland."

@@ -1,26 +1,11 @@
-//! Undo and redo for one text engine, in storage reserved by its pool: at
-//! most `undo_depth_max` edits and `bytes_max` bytes of edited text, both
-//! claimed at init. Each edit stores the bytes it deleted and then the bytes
-//! it inserted, packed in recording order, so the oldest edit's bytes are
-//! always at the front; when a bound is reached the oldest edit is dropped.
-//! An edit whose text alone exceeds the byte bound cannot be undone: it
-//! clears the history, an operating limit rather than an error.
-//!
-//! Typing coalesces: an insert that continues the previous insert extends it,
-//! and a backspace that continues the previous deletion extends it at the
-//! front. Whitespace after a word, a caret move, or an undo starts a new edit
-//! (`seal`).
-
 const std = @import("std");
 
 const assert = std.debug.assert;
 
 pub const Edit = struct {
-    /// Byte offset of the edit in the engine's text.
     offset: u32,
     deleted_len: u32,
     inserted_len: u32,
-    /// Where the deleted bytes, then the inserted bytes, start in `bytes`.
     bytes_start: u32,
     cursor_before: u32,
     anchor_before: u32,
@@ -37,11 +22,8 @@ pub const Edit = struct {
 pub const History = struct {
     edits: []Edit,
     bytes: []u8,
-    /// Recorded edits; `edits[0..applied]` are applied and
-    /// `edits[applied..count]` can be redone.
     count: u32,
     applied: u32,
-    /// Whether the newest edit may absorb the next typed run.
     open: bool,
 
     pub fn init(edits: []Edit, bytes: []u8) History {
@@ -57,7 +39,6 @@ pub const History = struct {
         self.open = false;
     }
 
-    /// End the current typing run, so the next edit is undone separately.
     pub fn seal(self: *History) void {
         assert(self.applied <= self.count);
         self.open = false;
@@ -83,13 +64,11 @@ pub const History = struct {
         return self.bytes[edit.bytes_start + edit.deleted_len ..][0..edit.inserted_len];
     }
 
-    /// Record an edit before the engine applies it. `edit.bytes_start` is
-    /// ignored; the history places the bytes.
     pub fn record(self: *History, edit: Edit, deleted: []const u8, inserted: []const u8) void {
         assert(edit.deleted_len == deleted.len);
         assert(edit.inserted_len == inserted.len);
         assert(edit.size() > 0);
-        self.count = self.applied; // A new edit discards what could be redone.
+        self.count = self.applied;
         if (self.open and self.count > 0) {
             if (self.coalesce(&edit, deleted, inserted)) return;
         }
@@ -145,7 +124,6 @@ pub const History = struct {
         }
         const erasing = last.inserted_len == 0 and inserted.len == 0;
         if (erasing and edit.offset + edit.deleted_len == last.offset) {
-            // Shift the run right and put the newly deleted bytes in front.
             const run = self.bytes[last.bytes_start..][0 .. last.deleted_len + deleted.len];
             std.mem.copyBackwards(u8, run[deleted.len..], run[0..last.deleted_len]);
             @memcpy(run[0..deleted.len], deleted);
@@ -198,7 +176,6 @@ test "typing coalesces per word and undo walks back in order" {
     try std.testing.expectEqualStrings("ab", history.insertedText(first));
     try std.testing.expect(history.undo() == null);
     try std.testing.expectEqualStrings("ab", history.insertedText(history.redo().?));
-    // A new edit after an undo discards the redo branch.
     history.record(insertEdit(2, 1), "", "!");
     try std.testing.expect(!history.canRedo());
     try std.testing.expectEqual(@as(u32, 2), history.count);
@@ -208,7 +185,6 @@ test "backspace runs coalesce at the front" {
     var edits: [4]Edit = undefined;
     var bytes: [16]u8 = undefined;
     var history = History.init(&edits, &bytes);
-    // Deleting "xyz" from the end one byte at a time.
     for (0..3) |step| {
         const offset: u32 = @intCast(2 - step);
         const deleted = "xyz"[offset..][0..1];
@@ -241,7 +217,6 @@ test "full depth and full bytes drop the oldest edit; oversized edits clear" {
     try std.testing.expectEqualStrings("bbb", history.insertedText(&history.edits[0]));
     try std.testing.expectEqual(@as(u32, 0), history.edits[0].bytes_start);
     history.seal();
-    // 5 + 2 used; a 4-byte edit forces the 3-byte edit out.
     history.record(insertEdit(8, 4), "", "dddd");
     try std.testing.expectEqualStrings("cc", history.insertedText(&history.edits[0]));
     try std.testing.expectEqualStrings("dddd", history.insertedText(&history.edits[1]));

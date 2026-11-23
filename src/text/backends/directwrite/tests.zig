@@ -1,6 +1,3 @@
-//! Runs only on Windows: loads fonts that ship with every supported Windows
-//! release.
-
 const std = @import("std");
 const testing = std.testing;
 const limits = @import("../../../core/limits.zig");
@@ -111,7 +108,6 @@ test "rasterization covers the glyph, honors subpixel shifts, and bounds size" {
     const same_size = at_half.width == at_zero.width and at_half.height == at_zero.height;
     try testing.expect(!(same_size and std.mem.eql(u8, copy, pixels_half)));
 
-    // Twice the scale doubles the device size and keeps the logical advance.
     const at_double = try render(&face, glyph_h, 2.0, 0, buffer);
     try testing.expect(at_double.height >= at_zero.height * 2 - 2);
     try testing.expectApproxEqAbs(at_zero.advance_x, at_double.advance_x, 0.001);
@@ -193,7 +189,6 @@ test "shaping capacity: exactly full succeeds, one unit more fails" {
         shaper.shape(&face, text[0 .. count_max + 1], testing.allocator),
     );
 
-    // 2047 ASCII units leave one slot; the emoji needs two.
     @memcpy(text[count_max - 1 ..][0..4], "😀");
     try testing.expectError(
         error.TextTooLong,

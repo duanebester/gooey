@@ -32,7 +32,6 @@ pub const FontFace = struct {
         deinit: *const fn (ptr: *anyopaque) void,
     };
 
-    /// Returns 0 (.notdef) for missing glyphs.
     pub inline fn glyphIndex(self: FontFace, codepoint: u21) u16 {
         return self.vtable.glyphIndex(self.ptr, codepoint);
     }

@@ -21,10 +21,6 @@ const Palette = struct {
 
 const ToggleTheme = struct {};
 
-/// Chart capacities sized from the data `fillData` loads, rounded up to a power
-/// of two: 12 months of revenue and target fit 16 points, 5 sales categories
-/// fit 8, 5 traffic sources fit 8 slices, the 2-slice conversion ring fits 2,
-/// and the largest customer segment (Regular, 7 points) fits 8.
 const RevenueChart = charts.LineChart(.{ .point_count_max = 16, .series_count_max = 2 });
 const SalesChart = charts.BarChart(.{ .category_count_max = 8, .series_count_max = 1 });
 const TrafficChart = charts.PieChart(.{ .slice_count_max = 8 });
@@ -38,7 +34,6 @@ pub const State = struct {
     traffic: [5]charts.CategoryPoint = undefined,
     segments: [SegmentChart.series_count_max]SegmentChart.Series = undefined,
 
-    /// The app theme follows too, so the title bar matches the charts.
     pub fn toggleTheme(self: *State, effects: *gooey.Effects) void {
         self.is_dark_theme = !self.is_dark_theme;
         effects.setTheme(if (self.is_dark_theme) &gooey.Theme.dark else &gooey.Theme.light);
@@ -78,7 +73,7 @@ pub const App = gooey.App(State, render, .{
     .width = 1200,
     .height = 800,
     .limits = .standard,
-    .theme = &gooey.Theme.dark, // Matches `is_dark_theme`'s default.
+    .theme = &gooey.Theme.dark,
     .keymap = &.{.{ .keys = "t", .action = ui.action(ToggleTheme) }},
     .on_init = fillData,
 });
@@ -98,8 +93,6 @@ const casual_points = [_][2]f32{
     .{ 0.3, 45 }, .{ 0.5, 62 }, .{ 0.8, 78 }, .{ 0.4, 55 }, .{ 0.6, 68 }, .{ 0.9, 85 },
 };
 
-/// Fill the chart data in place. Each series is sized by its chart's capacity:
-/// a revenue series of 16 points is about 1.3 KiB, and all chart data is 6 KiB.
 fn fillData(state: *State, _: gooey.Init, _: *gooey.Effects) void {
     state.revenue[0].initInPlace("Revenue", Palette.primary);
     state.revenue[1].initInPlace("Target", Palette.neutral_light);
@@ -437,7 +430,6 @@ fn paintConversion(state: *const State, painter: *Painter) void {
     chart.start_angle = -std.math.pi / 2.0;
     chart.render(painter);
 
-    // The ring's centre: the chart is 40 px shorter than its card.
     const center = [2]f32{
         painter.bounds.x + chart.width / 2,
         painter.bounds.y + chart.height / 2,

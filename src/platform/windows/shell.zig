@@ -1,13 +1,3 @@
-//! Hand-written Shell bindings for the Windows file dialogs: the Common Item
-//! Dialog (`IFileOpenDialog`, `IFileSaveDialog`) and the shell items it
-//! returns.
-//!
-//! These are COM interfaces. Each vtable lists every slot of its interface in
-//! the order of `shobjidl_core.h`, because a method is found by its slot index
-//! alone. Slots the backend never calls are typed `Slot`. A derived vtable
-//! embeds its base vtable as the field `base`, which reproduces the C layout
-//! of single inheritance.
-
 const std = @import("std");
 const win32 = @import("win32.zig");
 
@@ -16,20 +6,14 @@ const assert = std.debug.assert;
 pub const HRESULT = i32;
 
 pub const S_OK: HRESULT = 0;
-/// `CoInitializeEx`: COM was already initialized on this thread, same model.
 pub const S_FALSE: HRESULT = 1;
-/// `CoInitializeEx`: COM was already initialized on this thread, other model.
 pub const RPC_E_CHANGED_MODE: HRESULT = @bitCast(@as(u32, 0x8001_0106));
-/// `IModalWindow::Show`: the user closed the dialog without choosing.
-/// `HRESULT_FROM_WIN32(ERROR_CANCELLED)`.
 pub const HRESULT_ERROR_CANCELLED: HRESULT = @bitCast(@as(u32, 0x8007_04C7));
 
-/// `SUCCEEDED`: every non-negative `HRESULT` reports success.
 pub fn succeeded(result: HRESULT) bool {
     return result >= 0;
 }
 
-/// A vtable slot the backend never calls. It only holds its place.
 pub const Slot = *const anyopaque;
 
 pub const GUID = extern struct {
@@ -39,8 +23,6 @@ pub const GUID = extern struct {
     data4: [8]u8,
 };
 
-/// One entry of the file type list: a display name and a `;`-separated list
-/// of wildcard patterns.
 pub const COMDLG_FILTERSPEC = extern struct {
     pszName: win32.LPCWSTR,
     pszSpec: win32.LPCWSTR,
@@ -85,8 +67,6 @@ pub const COINIT_APARTMENTTHREADED: u32 = 0x2;
 pub const COINIT_DISABLE_OLE1DDE: u32 = 0x4;
 pub const CLSCTX_INPROC_SERVER: u32 = 0x1;
 
-/// `SIGDN_FILESYSPATH`: the item's file system path, or failure for items
-/// outside the file system.
 pub const SIGDN_FILESYSPATH: u32 = 0x8005_8000;
 
 pub const FOS_OVERWRITEPROMPT: u32 = 0x0000_0002;
@@ -97,8 +77,6 @@ pub const FOS_ALLOWMULTISELECT: u32 = 0x0000_0200;
 pub const FOS_PATHMUSTEXIST: u32 = 0x0000_0800;
 pub const FOS_FILEMUSTEXIST: u32 = 0x0000_1000;
 
-/// Both dialogs derive from `IFileDialog`, so the backend configures and
-/// shows either through it.
 pub const IFileDialog = extern struct {
     vtable: *const VTable,
 
@@ -106,12 +84,10 @@ pub const IFileDialog = extern struct {
         QueryInterface: Slot,
         AddRef: Slot,
         Release: *const fn (*IFileDialog) callconv(.winapi) u32,
-        // IModalWindow.
         Show: *const fn (*IFileDialog, ?win32.HWND) callconv(.winapi) HRESULT,
-        // IFileDialog.
         SetFileTypes: *const fn (
             *IFileDialog,
-            u32, // cFileTypes
+            u32,
             [*]const COMDLG_FILTERSPEC,
         ) callconv(.winapi) HRESULT,
         SetFileTypeIndex: Slot,
@@ -131,7 +107,6 @@ pub const IFileDialog = extern struct {
         SetFileNameLabel: Slot,
         GetResult: *const fn (*IFileDialog, *?*IShellItem) callconv(.winapi) HRESULT,
         AddPlace: Slot,
-        /// Takes the extension without its leading dot.
         SetDefaultExtension: *const fn (
             *IFileDialog,
             win32.LPCWSTR,
@@ -159,8 +134,6 @@ pub const IFileOpenDialog = extern struct {
         GetSelectedItems: Slot,
     };
 
-    /// COM single inheritance: a derived interface pointer is also a pointer
-    /// to each of its bases, and `base` lays out the base slots first.
     pub fn dialog(self: *IFileOpenDialog) *IFileDialog {
         return @ptrCast(self);
     }
@@ -192,11 +165,9 @@ pub const IShellItem = extern struct {
         Release: *const fn (*IShellItem) callconv(.winapi) u32,
         BindToHandler: Slot,
         GetParent: Slot,
-        /// The name is allocated with `CoTaskMemAlloc`; the caller frees it
-        /// with `CoTaskMemFree`.
         GetDisplayName: *const fn (
             *IShellItem,
-            u32, // SIGDN
+            u32,
             *?[*:0]u16,
         ) callconv(.winapi) HRESULT,
         GetAttributes: Slot,
@@ -222,7 +193,7 @@ pub const IShellItemArray = extern struct {
         GetCount: *const fn (*IShellItemArray, *u32) callconv(.winapi) HRESULT,
         GetItemAt: *const fn (
             *IShellItemArray,
-            u32, // dwIndex
+            u32,
             *?*IShellItem,
         ) callconv(.winapi) HRESULT,
         EnumItems: Slot,
@@ -266,7 +237,6 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // `x86_64-windows` only.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(GUID) == 16);

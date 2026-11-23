@@ -11,13 +11,10 @@ pub const tween_duration_ms_max: u32 = 60_000;
 
 pub const loop_period_ms_max: u32 = 60_000;
 
-/// The longest step a spring integrates; longer gaps are clamped to keep RK4 stable.
 const spring_step_s_max: f32 = 0.064;
 
-/// A spring closer than this to its target, and slower than this, is at rest.
 const spring_rest_threshold: f32 = 0.0005;
 
-/// Easing curves: every curve maps 0 to 0 and 1 to 1; `easeOutBack` overshoots 1 on the way.
 pub const Easing = struct {
     pub fn linear(t: f32) f32 {
         return t;
@@ -52,12 +49,10 @@ pub const Easing = struct {
 
 pub const Tween = struct {
     duration_ms: u32 = 200,
-    /// Time at 0 before the tween moves.
     delay_ms: u32 = 0,
     easing: *const fn (t: f32) f32 = Easing.easeOut,
 };
 
-/// Mass is 1, so stiffness and damping are per unit mass; critical damping is 2·√stiffness.
 pub const Spring = struct {
     stiffness: f32 = 170,
     damping: f32 = 26,
@@ -71,8 +66,6 @@ pub const Spring = struct {
 
 pub const Phase = enum { entering, entered, exiting, exited };
 
-/// `progress` runs 0 → 1 while entering and 1 → 0 while exiting; build the
-/// element only while `visible`.
 pub const Motion = struct {
     progress: f32,
     visible: bool,
@@ -85,7 +78,6 @@ pub const Motion = struct {
 const TweenState = struct {
     start_ns: u64,
     trigger: u64,
-    /// The last build that read this tween, to tell when it returns.
     built_frame: u64,
     started: bool,
     finished: bool,
@@ -127,7 +119,6 @@ const MotionState = struct {
 
 const LoopState = struct {
     start_ns: u64,
-    /// The last build that read this loop, to tell when it returns.
     built_frame: u64,
     started: bool,
 
@@ -142,10 +133,6 @@ comptime {
     assert(@sizeOf(MotionState) <= 64);
 }
 
-/// The phase of the loop keyed `key` under the box being built: time since
-/// its first build, modulo `period_ms`, as a fraction in [0, 1). Every build
-/// that reads it requests a frame; a build that skips it requests none. A
-/// loop that the previous build did not read starts again from 0.
 pub fn loop(cx: *Cx, key: Key, period_ms: u32) f32 {
     assert(period_ms > 0);
     assert(period_ms <= loop_period_ms_max);
@@ -162,7 +149,6 @@ pub fn loop(cx: *Cx, key: Key, period_ms: u32) f32 {
     const period_ns = @as(u64, period_ms) * std.time.ns_per_ms;
     const offset_ns = (now_ns - state.start_ns) % period_ns;
     const phase: f64 = @as(f64, @floatFromInt(offset_ns)) / @as(f64, @floatFromInt(period_ns));
-    // An offset within one f32 step of the period rounds to 1: that is the wrap.
     const phase_f32: f32 = @floatCast(phase);
     const result: f32 = if (phase_f32 < 1) phase_f32 else 0;
     assert(result >= 0);
@@ -171,10 +157,6 @@ pub fn loop(cx: *Cx, key: Key, period_ms: u32) f32 {
     return result;
 }
 
-/// The eased progress of the tween keyed `key` under the box being built: 0
-/// from its first build through `delay_ms`, then along `easing` to 1 after
-/// `duration_ms`. A finished tween that the previous build did not read
-/// plays again, so an element that leaves and returns replays its entrance.
 pub fn tween(cx: *Cx, key: Key, options: Tween) f32 {
     checkTween(options);
     const window = cx_mod.windowOf(cx);
@@ -189,8 +171,6 @@ pub fn tween(cx: *Cx, key: Key, options: Tween) f32 {
     return advance(cx, state, options);
 }
 
-/// The eased progress of a tween that starts finished, at 1, and plays from
-/// 0 again in each build whose `trigger` differs from the last one's.
 pub fn tweenOn(cx: *Cx, key: Key, trigger: u64, options: Tween) f32 {
     checkTween(options);
     const window = cx_mod.windowOf(cx);
@@ -222,9 +202,8 @@ fn advance(cx: *Cx, state: *TweenState, options: Tween) f32 {
     const elapsed_ns = now_ns - state.start_ns;
     const delay_ns = @as(u64, options.delay_ms) * std.time.ns_per_ms;
     if (elapsed_ns < delay_ns) {
-        // Nothing moves until the delay ends, so no frame is due before it.
         const remaining_ms = std.math.divCeil(u64, delay_ns - elapsed_ns, std.time.ns_per_ms) catch
-            unreachable; // The divisor is a nonzero constant.
+            unreachable;
         assert(remaining_ms <= options.delay_ms);
         cx.requestRenderAfter(@intCast(remaining_ms));
         return 0;
@@ -241,9 +220,6 @@ fn advance(cx: *Cx, state: *TweenState, options: Tween) f32 {
     return options.easing(t);
 }
 
-/// An interruptible enter and exit for the element keyed `key`: a spring
-/// toward 1 while `show` and toward 0 otherwise, keeping its velocity when
-/// `show` flips mid-flight. Shown at the first build, it enters from 0.
 pub fn motion(cx: *Cx, key: Key, show: bool, spring: Spring) Motion {
     assert(spring.stiffness > 0);
     assert(spring.damping >= 0);
@@ -252,8 +228,6 @@ pub fn motion(cx: *Cx, key: Key, show: bool, spring: Spring) Motion {
     const target: f32 = if (show) 1 else 0;
     if (state.target != target) {
         state.target = target;
-        // A spring at rest skips the step, so a new target wakes it; one in
-        // flight keeps its velocity and clock.
         if (state.at_rest) {
             state.at_rest = false;
             state.stepped_ns = now_ns;
@@ -272,8 +246,6 @@ pub fn motion(cx: *Cx, key: Key, show: bool, spring: Spring) Motion {
     };
 }
 
-/// Advance the spring to `now_ns` and settle it on its target once it is
-/// within the rest threshold in both position and speed.
 fn stepMotion(state: *MotionState, spring: Spring, now_ns: u64) void {
     assert(!state.at_rest);
     assert(now_ns >= state.stepped_ns);
@@ -295,7 +267,6 @@ fn stepMotion(state: *MotionState, spring: Spring, now_ns: u64) void {
 
 const Body = struct { position: f32, velocity: f32 };
 
-/// One RK4 step of a unit-mass damped spring over `dt_s` seconds.
 fn stepSpring(body: Body, target: f32, spring: Spring, dt_s: f32) Body {
     assert(dt_s >= 0);
     assert(dt_s <= spring_step_s_max);

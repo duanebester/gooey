@@ -82,7 +82,7 @@ pub const kCTFontTraitMonoSpace: CTFontSymbolicTraits = 1 << 10;
 pub const kCTFontTraitColorGlyphs: CTFontSymbolicTraits = 1 << 13;
 
 pub const CTFontUIFontType = u32;
-pub const kCTFontUIFontUserFixedPitch: CTFontUIFontType = 1; // System monospace
+pub const kCTFontUIFontUserFixedPitch: CTFontUIFontType = 1;
 
 pub extern "c" fn CTFontCreateUIFontForLanguage(uiType: CTFontUIFontType, size: CGFloat, language: ?CFStringRef) ?CTFontRef;
 
@@ -98,7 +98,6 @@ pub extern "c" fn CFStringCreateWithCString(
 pub extern "c" fn CFStringGetLength(theString: CFStringRef) CFIndex;
 pub extern "c" fn CFEqual(cf1: CFTypeRef, cf2: CFTypeRef) bool;
 
-// CFNumberType values used to build font trait dictionaries.
 pub const CFNumberType = CFIndex;
 pub const kCFNumberSInt32Type: CFNumberType = 3;
 pub const kCFNumberSInt64Type: CFNumberType = 4;
@@ -110,7 +109,6 @@ pub extern "c" fn CFNumberCreate(
     valuePtr: *const anyopaque,
 ) ?CFNumberRef;
 
-/// Returns false when the conversion to `theType` is lossy (CF `Boolean`).
 pub extern "c" fn CFNumberGetValue(
     number: CFNumberRef,
     theType: CFNumberType,
@@ -194,7 +192,6 @@ pub extern "c" fn CTFontCreateWithName(
     matrix: ?*const CGAffineTransform,
 ) ?CTFontRef;
 
-// Attributes for matching a weight and slant within a family.
 pub extern "c" var kCTFontFamilyNameAttribute: CFStringRef;
 pub extern "c" var kCTFontTraitsAttribute: CFStringRef;
 pub extern "c" var kCTFontWeightTrait: CFStringRef;
@@ -215,8 +212,6 @@ pub extern "c" fn CTFontDescriptorCreateCopyWithAttributes(
     original: CTFontDescriptorRef,
     attributes: CFDictionaryRef,
 ) CTFontDescriptorRef;
-/// Every installed face matching `descriptor`; with only a family name set
-/// and a null `mandatoryAttributes`, that is the family's face list.
 pub extern "c" fn CTFontDescriptorCreateMatchingFontDescriptors(
     descriptor: CTFontDescriptorRef,
     mandatoryAttributes: ?*anyopaque,
@@ -317,7 +312,6 @@ pub extern "c" fn CTFontCreateCopyWithAttributes(
     attributes: ?CTFontDescriptorRef,
 ) ?CTFontRef;
 
-/// `str` must be comptime-known; a null terminator is appended.
 pub fn createCFString(comptime str: []const u8) ?CFStringRef {
     const terminated = str ++ [_]u8{0};
     return CFStringCreateWithCString(null, terminated[0 .. terminated.len - 1 :0], kCFStringEncodingUTF8);

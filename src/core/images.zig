@@ -1,26 +1,3 @@
-//! The image decode worker behind `Painter.image`.
-//!
-//! A file read has no time bound and a PNG or JPEG decode takes milliseconds,
-//! so neither runs on the main thread. One worker, started at init, reads and
-//! decodes into staging reserved at init: emit misses the atlas and calls
-//! `request`; the worker takes the oldest request once the staging is free,
-//! reads the file into the staging's front and decodes the RGBA pixels behind
-//! it, then pushes an `ImageDecoded` onto the completion ring; the next emit
-//! uploads it into the atlas (`land`), frees the entry, and hands the staging
-//! back to the worker. Until then the image paints nothing, so its box's own
-//! background shows.
-//!
-//! Capacity: `AtlasLimits.image_request_count_max` entries hold images that
-//! wait for the worker and images whose decode failed, which stay failed for
-//! the session so a missing file is not re-read every frame. One more fails
-//! fast. Each entry reserves `image_path_bytes_max` path bytes; a longer path
-//! fails fast. `image_decode_bytes_max` bounds one image's file and pixels.
-//!
-//! `Mode.stepped` starts no worker: a deterministic simulation (the VOPR)
-//! plays it, taking the oldest request with `takeStepped` once the staging
-//! is free and pushing a decode it made up onto the completion ring. The
-//! main-thread side, from `request` to `land`, is the same in both modes.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const events = @import("events.zig");
@@ -33,22 +10,15 @@ const assert = std.debug.assert;
 const ImageAtlas = image_mod.ImageAtlas;
 const ImageKey = image_mod.ImageKey;
 
-/// The web has no worker threads; it keeps the browser's image path.
 pub const supported = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
 
-/// The worker's stack. Decoders are opaque platform code (libpng,
-/// ImageIO, WIC), so it matches a common main-thread default.
 const worker_stack_bytes: usize = 8 * 1024 * 1024;
 
-/// Wakes the host's main loop from the worker, so a landed decode is drawn
-/// without waiting for input. Bound per backend beside `FileDialogService`.
 pub const WakeService = struct {
     context: *anyopaque,
     wake: *const fn (context: *anyopaque) void,
 };
 
-/// The atlas key of the image file at `path`. Pixels are cached at their
-/// decoded size and scaled when drawn, so the size is not part of the key.
 pub fn keyFor(path: []const u8) ImageKey {
     assert(path.len > 0);
     const key = ImageKey.initFromPath(path, null, null, 1);
@@ -60,7 +30,6 @@ const Entry = struct {
     state: State,
     source_hash: u64,
     path_len: u32,
-    /// `AtlasLimits.image_path_bytes_max` bytes of `Loader.path_bytes`.
     path: []u8,
 
     const State = enum(u8) { free, pending, failed };
@@ -72,52 +41,31 @@ const Entry = struct {
     }
 };
 
-/// What `land` did, so emit knows whether to render again.
 pub const Land = enum { none, landed, deferred };
 
-/// Who decodes: the worker thread, or a simulation that steps the worker's
-/// turns itself on the main thread (`Loader.takeStepped`).
 pub const Mode = enum { worker, stepped };
 
 pub const Loader = struct {
     io: std.Io,
     mode: Mode,
-    /// `.stepped` only: a request was taken and its staging is not yet
-    /// released by `land`. The worker's `staging_free` permit plays this
-    /// part in `.worker`.
     stepped_staging_held: bool,
-    /// Main thread only, except that the worker reads a pending entry's path.
     entries: []Entry,
-    /// Every entry's path, `image_path_bytes_max` bytes each.
     path_bytes: []u8,
-    /// Indexes of entries waiting for the worker, a power-of-two ring at
-    /// least as long as `entries`; every queued index holds a pending entry,
-    /// so the ring cannot overflow. The main thread writes `request_head`,
-    /// the worker `request_tail`.
     requests: []u32,
     request_head: std.atomic.Value(u32),
     request_tail: std.atomic.Value(u32),
-    /// One permit per queued request, plus one at stop.
     request_ready: std.Io.Semaphore,
-    /// One permit while the staging is free for the next decode.
     staging_free: std.Io.Semaphore,
     staging: []u8,
-    /// The staging's high-water mark, zeroed on release.
-    /// Written by the worker; read after it is joined.
     staging_used_max: usize,
     completions: *events.CompletionRing,
-    /// The decode the drain took from the completion ring, until `land`.
     landed: ?events.ImageDecoded,
     wake_mutex: std.Io.Mutex,
     wake: ?WakeService,
     stopping: std.atomic.Value(bool),
-    /// The worker; `void` where there are no threads (the web).
     thread: if (supported) std.Thread else void,
-    /// Decodes landed, for tests and the lifecycle guard's checks.
     landed_count: u32,
 
-    /// Reserve every entry and the staging, then start the worker unless
-    /// `mode` is `.stepped`.
     pub fn initInPlace(
         self: *Loader,
         gpa: std.mem.Allocator,
@@ -129,7 +77,6 @@ pub const Loader = struct {
         assert(limits.image_request_count_max > 0);
         assert(limits.image_decode_bytes_max > 0);
         assert(limits.image_path_bytes_max > 0);
-        // A simulation steps the native worker; the web has none to step.
         if (mode == .stepped) assert(supported);
         self.io = io;
         self.mode = mode;
@@ -151,7 +98,6 @@ pub const Loader = struct {
         self.request_tail = .init(0);
         self.request_ready = .{ .permits = 0 };
         self.staging_free = .{ .permits = 1 };
-        // The web never decodes here, so it reserves no staging.
         self.staging = if (supported)
             try reservation.reserve(u8, limits.image_decode_bytes_max)
         else
@@ -173,8 +119,6 @@ pub const Loader = struct {
         assert(self.requests.len >= self.entries.len);
     }
 
-    /// Stop the worker and wait for it, then free what init reserved. A
-    /// decode in progress finishes first; queued requests are dropped.
     pub fn deinit(self: *Loader, gpa: std.mem.Allocator) void {
         self.stopping.store(true, .release);
         if (supported and self.mode == .worker) {
@@ -190,8 +134,6 @@ pub const Loader = struct {
         self.* = undefined;
     }
 
-    /// Bind or unbind the host's wake. The worker calls it under the same
-    /// lock, so a host may unbind while a decode is in flight.
     pub fn bindWake(self: *Loader, service: ?WakeService) void {
         self.wake_mutex.lockUncancelable(self.io);
         defer self.wake_mutex.unlock(self.io);
@@ -199,8 +141,6 @@ pub const Loader = struct {
         self.wake = service;
     }
 
-    /// Queue a decode of `path` unless it is already queued or failed. Main
-    /// thread, from emit. Fails fast when every entry is held.
     pub fn request(self: *Loader, path: []const u8, key: ImageKey, frame_number: u64) void {
         assert(path.len > 0);
         assert(self.requests.len >= self.entries.len);
@@ -231,15 +171,9 @@ pub const Loader = struct {
         assert(head -% self.request_tail.load(.acquire) < self.entries.len);
         self.requests[head & (@as(u32, @intCast(self.requests.len)) - 1)] = index;
         self.request_head.store(head +% 1, .release);
-        // In `.stepped` nothing waits, and a permit per request ever made
-        // would count without bound.
         if (self.mode == .worker) self.request_ready.post(self.io);
     }
 
-    /// `.stepped` only: take the oldest request, as the worker's turn does,
-    /// once the staging is free. Returns its entry, which stays pending
-    /// until the decode the caller pushes for it lands; null when no request
-    /// is queued or the last decode has not landed yet.
     pub fn takeStepped(self: *Loader) ?u32 {
         assert(self.mode == .stepped);
         assert(self.requests.len >= self.entries.len);
@@ -252,9 +186,6 @@ pub const Loader = struct {
         return index;
     }
 
-    /// `.stepped` only: the front `pixel_bytes` of the staging, for the
-    /// decode of the request `takeStepped` returned, at `pixel_offset` 0.
-    /// Raises the high-water mark, so `deinit` zeroes what was written.
     pub fn stagingStepped(self: *Loader, pixel_bytes: u32) []u8 {
         assert(self.mode == .stepped);
         assert(self.stepped_staging_held);
@@ -264,9 +195,6 @@ pub const Loader = struct {
         return self.staging[0..pixel_bytes];
     }
 
-    /// Upload the landed decode, if any, into `atlas` and free its entry and
-    /// the staging. A decode this frame's upload staging cannot take stays
-    /// landed for the next frame. Main thread, at the start of emit.
     pub fn land(self: *Loader, atlas: *ImageAtlas) Land {
         const decoded = self.landed orelse return .none;
         assert(decoded.entry < self.entries.len);
@@ -279,7 +207,6 @@ pub const Loader = struct {
         const pixel_bytes = @as(usize, decoded.width) * decoded.height * 4;
         assert(decoded.pixel_offset <= self.staging.len);
         assert(pixel_bytes <= self.staging.len - decoded.pixel_offset);
-        // The 1 px border on each side must fit too.
         const side_max = atlas.atlas.size - 2;
         if (decoded.width > side_max or decoded.height > side_max) {
             panicTooLarge(entry, decoded, atlas.atlas.size);
@@ -299,9 +226,6 @@ pub const Loader = struct {
         return .landed;
     }
 
-    /// A missing or undecodable file is an operating error: it is logged
-    /// once and the entry stays failed. Staging too small for the file is a
-    /// capacity-planning error.
     fn landFailure(self: *Loader, entry: *Entry, failure: anyerror) void {
         assert(entry.state == .pending);
         if (failure == error.StagingExhausted) {
@@ -319,7 +243,6 @@ pub const Loader = struct {
         self.release();
     }
 
-    /// Hand the staging back to the worker.
     fn release(self: *Loader) void {
         assert(self.landed != null);
         self.landed = null;
@@ -350,7 +273,6 @@ pub const Loader = struct {
 
     fn workerMain(self: *Loader) void {
         assert(supported);
-        // Each turn decodes one request, so the loop ends at stop.
         while (true) {
             self.request_ready.waitUncancelable(self.io);
             if (self.stopping.load(.acquire)) return;
@@ -363,7 +285,6 @@ pub const Loader = struct {
         }
     }
 
-    /// Dequeue the oldest request: the worker's, or a stepped turn's.
     fn takeRequest(self: *Loader) u32 {
         const tail = self.request_tail.load(.monotonic);
         assert(tail != self.request_head.load(.acquire));
@@ -379,7 +300,6 @@ pub const Loader = struct {
         if (self.wake) |service| service.wake(service.context);
     }
 
-    /// Worker side: read and decode the entry's file into the staging.
     fn decode(self: *Loader, index: u32) events.ImageDecoded {
         const entry = &self.entries[index];
         assert(entry.state == .pending);
@@ -408,8 +328,6 @@ pub const Loader = struct {
 
 const Decoded = struct { width: u32, height: u32, pixels: []const u8 };
 
-/// Read `path` into the front of `staging` and decode its RGBA pixels into
-/// the rest. Either part not fitting is `error.StagingExhausted`.
 fn decodeInto(io: std.Io, path: []const u8, staging: []u8, peak: *PeakAllocator) !Decoded {
     var file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
@@ -428,11 +346,8 @@ fn decodeInto(io: std.Io, path: []const u8, staging: []u8, peak: *PeakAllocator)
     return .{ .width = image.width, .height = image.height, .pixels = image.pixels };
 }
 
-/// A fixed buffer allocator that remembers its high-water mark: decoders
-/// free scratch such as libpng's row table, and release must still zero it.
 const PeakAllocator = struct {
     fixed: std.heap.FixedBufferAllocator,
-    /// Staging bytes before the fixed buffer (the file).
     base: usize = 0,
     peak: usize,
 

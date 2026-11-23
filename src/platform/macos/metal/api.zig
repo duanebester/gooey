@@ -71,7 +71,6 @@ pub const MTLVertexFormat = enum(c_ulong) {
     uint4 = 39,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlvertexstepfunction
 pub const MTLVertexStepFunction = enum(c_ulong) {
     constant = 0,
     per_vertex = 1,
@@ -261,10 +260,10 @@ pub const MTLRegion = extern struct {
 };
 
 pub const MTLStorageMode = enum(c_ulong) {
-    shared = 0, // CPU + GPU (unified memory)
-    managed = 1, // CPU + GPU with sync (discrete GPUs)
-    private = 2, // GPU only
-    memoryless = 3, // Tile memory only (Apple GPUs, render targets)
+    shared = 0,
+    managed = 1,
+    private = 2,
+    memoryless = 3,
 };
 
 pub const CGSize = extern struct {

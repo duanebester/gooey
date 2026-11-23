@@ -1,7 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-/// Wayland fixed-point number (24.8 format)
 pub const Fixed = i32;
 
 pub fn fixedToDouble(f: Fixed) f64 {
@@ -93,9 +92,6 @@ pub const CallbackListener = extern struct {
     ) callconv(.c) void = null,
 };
 
-/// `wp_fractional_scale_v1.preferred_scale`: the scale the compositor wants
-/// the surface's buffers drawn at, in 120ths (180 is 1.5), which the integer
-/// `wl_surface.preferred_buffer_scale` cannot express.
 pub const FractionalScaleListener = extern struct {
     preferred_scale: ?*const fn (
         data: ?*anyopaque,
@@ -104,7 +100,6 @@ pub const FractionalScaleListener = extern struct {
     ) callconv(.c) void = null,
 };
 
-/// `wl_buffer.release`: the compositor no longer reads the buffer's memory.
 pub const BufferListener = extern struct {
     release: ?*const fn (data: ?*anyopaque, buffer: *Buffer) callconv(.c) void = null,
 };
@@ -236,7 +231,7 @@ pub const KeyboardListener = extern struct {
         keyboard: *Keyboard,
         serial: u32,
         surface: *Surface,
-        keys: *anyopaque, // wl_array*
+        keys: *anyopaque,
     ) callconv(.c) void = null,
     leave: ?*const fn (
         data: ?*anyopaque,
@@ -392,7 +387,7 @@ pub const XdgToplevelListener = extern struct {
         xdg_toplevel: *XdgToplevel,
         width: i32,
         height: i32,
-        states: *anyopaque, // wl_array*
+        states: *anyopaque,
     ) callconv(.c) void = null,
     close: ?*const fn (
         data: ?*anyopaque,
@@ -407,7 +402,7 @@ pub const XdgToplevelListener = extern struct {
     wm_capabilities: ?*const fn (
         data: ?*anyopaque,
         xdg_toplevel: *XdgToplevel,
-        capabilities: *anyopaque, // wl_array*
+        capabilities: *anyopaque,
     ) callconv(.c) void = null,
 };
 
@@ -485,17 +480,9 @@ pub extern "wayland-client" fn wl_display_connect(name: ?[*:0]const u8) ?*Displa
 pub extern "wayland-client" fn wl_display_disconnect(display: *Display) void;
 pub extern "wayland-client" fn wl_display_dispatch_pending(display: *Display) c_int;
 
-/// `wl_display_dispatch_pending_single` (libwayland 1.25): dispatch at most one
-/// event of the default queue; returns 1, 0 when the queue is empty, or -1.
 pub const DispatchPendingSingle = *const fn (display: *Display) callconv(.c) c_int;
 
-/// Look `wl_display_dispatch_pending_single` up in the loaded libwayland, or
-/// null before 1.25. A runtime lookup, because a weak extern cannot say "absent"
-/// here: Zig 0.17's linker binds it to a PLT stub that is never null, and the
-/// self-hosted linker refuses to link it at all. Call during initialization.
 pub fn lookupDispatchPendingSingle() ?DispatchPendingSingle {
-    // Null is glibc's and musl's RTLD_DEFAULT: every object already loaded,
-    // libwayland-client included, since this file links it.
     const symbol = std.c.dlsym(null, "wl_display_dispatch_pending_single") orelse return null;
     const single: DispatchPendingSingle = @ptrCast(@alignCast(symbol));
     std.debug.assert(@intFromPtr(single) != 0);
@@ -506,8 +493,6 @@ pub extern "wayland-client" fn wl_display_roundtrip(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_flush(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_get_fd(display: *Display) c_int;
 
-// Multi-threaded reading (a second thread with its own event queue). Every
-// thread that waits on the display fd must prepare, then read or cancel.
 pub const EventQueue = opaque {};
 pub extern "wayland-client" fn wl_display_create_queue(display: *Display) ?*EventQueue;
 pub extern "wayland-client" fn wl_event_queue_destroy(queue: *EventQueue) void;
@@ -526,9 +511,7 @@ pub extern "wayland-client" fn wl_proxy_create_wrapper(proxy: *anyopaque) ?*anyo
 pub extern "wayland-client" fn wl_proxy_wrapper_destroy(wrapper: *anyopaque) void;
 pub extern "wayland-client" fn wl_proxy_set_queue(proxy: *anyopaque, queue: ?*EventQueue) void;
 
-// wl_display_get_registry is an inline function in wayland-client, we implement it here
 pub fn wl_display_get_registry(display: *Display) ?*Registry {
-    // wl_display::get_registry is opcode 1
     const WL_DISPLAY_GET_REGISTRY: u32 = 1;
     return @ptrCast(wl_proxy_marshal_flags(
         @ptrCast(display),
@@ -561,15 +544,11 @@ pub extern "wayland-client" var wl_shm_interface: Interface;
 pub extern "wayland-client" var wl_shm_pool_interface: Interface;
 pub extern "wayland-client" var wl_buffer_interface: Interface;
 
-// XDG shell interfaces (defined manually since they come from wayland-protocols, not wayland-client)
-// These need proper message signatures for wl_proxy_marshal_flags to work correctly.
-
 const xdg_surface_interface_ptr: ?*const Interface = &xdg_surface_interface;
 const xdg_toplevel_interface_ptr: ?*const Interface = &xdg_toplevel_interface;
 const xdg_positioner_interface_ptr: ?*const Interface = &xdg_positioner_interface;
 const zxdg_toplevel_decoration_v1_interface_ptr: ?*const Interface = &zxdg_toplevel_decoration_v1_interface;
 
-// Type arrays for messages with object/new_id arguments
 const xdg_wm_base_create_positioner_types = [_]?*const Interface{xdg_positioner_interface_ptr};
 const xdg_wm_base_get_xdg_surface_types = [_]?*const Interface{ xdg_surface_interface_ptr, &wl_surface_interface };
 const xdg_surface_get_toplevel_types = [_]?*const Interface{xdg_toplevel_interface_ptr};
@@ -589,7 +568,6 @@ const wp_fractional_scale_manager_v1_get_fractional_scale_types = [_]?*const Int
     &wl_surface_interface,
 };
 
-// Type arrays for text input v3 events with object arguments
 const zwp_text_input_v3_enter_types = [_]?*const Interface{&wl_surface_interface};
 const zwp_text_input_v3_leave_types = [_]?*const Interface{&wl_surface_interface};
 
@@ -620,7 +598,7 @@ const xdg_surface_events = [_]Message{
 const xdg_surface_methods = [_]Message{
     .{ .name = "destroy", .signature = "", .types = null },
     .{ .name = "get_toplevel", .signature = "n", .types = @ptrCast(&xdg_surface_get_toplevel_types) },
-    .{ .name = "get_popup", .signature = "noo", .types = null }, // simplified
+    .{ .name = "get_popup", .signature = "noo", .types = null },
     .{ .name = "set_window_geometry", .signature = "iiii", .types = null },
     .{ .name = "ack_configure", .signature = "u", .types = null },
 };
@@ -764,45 +742,28 @@ pub fn registryAddListener(registry: *Registry, listener: *const RegistryListene
     return wl_proxy_add_listener(@ptrCast(registry), @ptrCast(listener), data) == 0;
 }
 
-/// The versions `bindVersion` chooses between, named so that the two cannot be swapped.
 pub const BindVersion = struct {
-    /// The version the compositor advertised in `wl_registry.global`.
     advertised: u32,
-    /// The highest version whose events Gooey's listeners handle and whose requests it sends.
     supported_max: u32,
 };
 
-/// The highest `wl_compositor` version Gooey binds. Version 6 adds the `wl_surface` events
-/// `preferred_buffer_scale` and `preferred_buffer_transform`, which complete the four that
-/// `SurfaceListener` handles.
 pub const compositor_version_max: u32 = 6;
 
-/// The highest `wl_seat` version Gooey binds. At version 8 `wl_pointer` has ten events, the
-/// last `axis_value120`; `PointerListener` handles those and version 9's eleventh.
 pub const seat_version_max: u32 = 8;
 
 comptime {
     assert(@typeInfo(SurfaceListener).@"struct".field_names.len == 4);
     assert(@typeInfo(PointerListener).@"struct".field_names.len >= 10);
-    // wl_keyboard has six events from version 4 on; wl_touch has seven from version 6 on.
     assert(@typeInfo(KeyboardListener).@"struct".field_names.len == 6);
     assert(@typeInfo(TouchListener).@"struct".field_names.len == 7);
 }
 
-/// The version of an interface table: the newest version whose events libwayland can
-/// demarshal with it. For the core interfaces the table is the linked libwayland's, so this
-/// is known only at run time: libwayland 1.21's `wl_surface` is version 5.
 pub fn tableVersion(interface: *const Interface) u32 {
     assert(interface.version >= 1);
     assert(interface.event_count >= 0);
     return @intCast(interface.version);
 }
 
-/// The version to bind a global at: the highest that the compositor advertises, Gooey
-/// supports, and `interface` describes. libwayland demarshals each event with the table of
-/// the object it arrives on, and an event past the table ends the connection ("wl_surface
-/// has no event 2"), so the linked library's tables cap the version as much as Gooey does.
-/// Zero only when the compositor advertised version zero, which the protocol forbids.
 pub fn bindVersion(interface: *const Interface, version: BindVersion) u32 {
     assert(version.supported_max >= 1);
     const bound = @min(version.advertised, version.supported_max, tableVersion(interface));
@@ -812,8 +773,6 @@ pub fn bindVersion(interface: *const Interface, version: BindVersion) u32 {
     return bound;
 }
 
-/// Bind a global at `bindVersion`. Null when the compositor advertised version zero or
-/// libwayland cannot create the proxy; every caller treats the global as absent.
 pub fn registryBind(
     registry: *Registry,
     name: u32,
@@ -829,7 +788,7 @@ pub fn registryBind(
     }
     const proxy = wl_proxy_marshal_flags(
         @ptrCast(registry),
-        0, // WL_REGISTRY_BIND
+        0,
         interface,
         bound,
         0,
@@ -842,9 +801,7 @@ pub fn registryBind(
     return proxy;
 }
 
-test "bindVersion is capped by the linked interface table" {
-    // Pins the libwayland 1.21 crash: a compositor advertising wl_compositor
-    // 6 to a client whose table is version 5 must bind 5.
+test "bindVersion caps at the table version: libwayland 1.21 crash, compositor 6 > table 5" {
     var table = Interface{
         .name = "wl_test",
         .version = 5,
@@ -868,7 +825,7 @@ pub fn registryDestroy(registry: *Registry) void {
 pub fn compositorCreateSurface(compositor: *Compositor) ?*Surface {
     const result = wl_proxy_marshal_flags(
         @ptrCast(compositor),
-        0, // WL_COMPOSITOR_CREATE_SURFACE
+        0,
         &wl_surface_interface,
         wl_proxy_get_version(@ptrCast(compositor)),
         0,
@@ -881,10 +838,6 @@ pub fn compositorDestroy(compositor: *Compositor) void {
     wl_proxy_destroy(@ptrCast(compositor));
 }
 
-/// wl_surface request opcodes in protocol declaration order. A request's opcode is its
-/// index in the protocol XML, so a bare literal silently names a different request when it
-/// is off by one: `set_buffer_scale` written as 6 would marshal `commit`. Field names match the
-/// protocol's request names so a test can check every opcode against libwayland's table.
 const SurfaceRequest = enum(u32) {
     destroy = 0,
     attach = 1,
@@ -936,7 +889,6 @@ pub fn surfaceFrame(surface: *Surface) ?*Callback {
 }
 
 pub fn surfaceSetBufferScale(surface: *Surface, scale: i32) void {
-    // The compositor raises the fatal `invalid_scale` protocol error for a scale below one.
     std.debug.assert(scale >= 1);
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
@@ -949,9 +901,6 @@ pub fn surfaceSetBufferScale(surface: *Surface, scale: i32) void {
 }
 
 test "wl_surface request opcodes match libwayland's protocol table" {
-    // The libwayland-client `wl_surface_interface` table is generated from
-    // the protocol XML and indexed by opcode, so each `SurfaceRequest` name
-    // must equal the name at its opcode.
     const names = @typeInfo(SurfaceRequest).@"enum".field_names;
     const values = @typeInfo(SurfaceRequest).@"enum".field_values;
     const method_count: usize = @intCast(wl_surface_interface.method_count);
@@ -974,7 +923,7 @@ pub fn bindViewporter(registry: *Registry, name: u32, version: u32) ?*WpViewport
 pub fn viewporterGetViewport(viewporter: *WpViewporter, surface: *Surface) ?*WpViewport {
     const result = wl_proxy_marshal_flags(
         @ptrCast(viewporter),
-        1, // WP_VIEWPORTER_GET_VIEWPORT
+        1,
         &wp_viewport_interface,
         wl_proxy_get_version(@ptrCast(viewporter)),
         0,
@@ -987,7 +936,7 @@ pub fn viewporterGetViewport(viewporter: *WpViewporter, surface: *Surface) ?*WpV
 pub fn viewportSetDestination(viewport: *WpViewport, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(viewport),
-        2, // WP_VIEWPORT_SET_DESTINATION
+        2,
         null,
         wl_proxy_get_version(@ptrCast(viewport)),
         0,
@@ -999,7 +948,7 @@ pub fn viewportSetDestination(viewport: *WpViewport, width: i32, height: i32) vo
 pub fn viewportDestroy(viewport: *WpViewport) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(viewport),
-        0, // WP_VIEWPORT_DESTROY
+        0,
         null,
         wl_proxy_get_version(@ptrCast(viewport)),
         0,
@@ -1007,15 +956,11 @@ pub fn viewportDestroy(viewport: *WpViewport) void {
     wl_proxy_destroy(@ptrCast(viewport));
 }
 
-/// wp_fractional_scale_manager_v1 request opcodes in protocol declaration order. See
-/// `SurfaceRequest` for why opcodes are named instead of written as literals.
 const FractionalScaleManagerRequest = enum(u32) {
     destroy = 0,
     get_fractional_scale = 1,
 };
 
-/// wp_fractional_scale_v1 request opcodes in protocol declaration order; see
-/// `SurfaceRequest` for why.
 const FractionalScaleRequest = enum(u32) {
     destroy = 0,
 };
@@ -1033,10 +978,6 @@ pub fn bindFractionalScaleManager(
     )));
 }
 
-/// Create the surface's wp_fractional_scale_v1. The scale it reports applies only
-/// through wp_viewporter: the buffer is drawn at the logical size times the scale and
-/// the viewport's destination maps it back to the logical size, so a caller binds it
-/// only when the surface has a viewport.
 pub fn fractionalScaleManagerGetFractionalScale(
     manager: *WpFractionalScaleManagerV1,
     surface: *Surface,
@@ -1082,8 +1023,6 @@ pub fn fractionalScaleDestroy(fractional_scale: *WpFractionalScaleV1) void {
 }
 
 test "wp_fractional_scale opcodes and events match the protocol tables" {
-    // Catches the request enums and the hand-written wire tables drifting
-    // apart, which would marshal the wrong request.
     const manager_names = @typeInfo(FractionalScaleManagerRequest).@"enum".field_names;
     const manager_values = @typeInfo(FractionalScaleManagerRequest).@"enum".field_values;
     try std.testing.expectEqual(manager_names.len, wp_fractional_scale_manager_v1_methods.len);
@@ -1112,8 +1051,6 @@ pub fn callbackDestroy(callback: *Callback) void {
     wl_proxy_destroy(@ptrCast(callback));
 }
 
-/// `WL_SHM_FORMAT_XRGB8888`: 32-bit little-endian B, G, R, X. Every compositor
-/// must support it, so the CPU renderer needs no format negotiation.
 pub const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 
 pub fn bindShm(registry: *Registry, name: u32, version: u32) ?*Shm {
@@ -1128,7 +1065,7 @@ pub fn bindShm(registry: *Registry, name: u32, version: u32) ?*Shm {
 pub fn shmCreatePool(shm: *Shm, fd: i32, size: i32) ?*ShmPool {
     const result = wl_proxy_marshal_flags(
         @ptrCast(shm),
-        0, // WL_SHM_CREATE_POOL
+        0,
         &wl_shm_pool_interface,
         wl_proxy_get_version(@ptrCast(shm)),
         0,
@@ -1153,7 +1090,7 @@ pub fn shmPoolCreateBuffer(
 ) ?*Buffer {
     const result = wl_proxy_marshal_flags(
         @ptrCast(pool),
-        0, // WL_SHM_POOL_CREATE_BUFFER
+        0,
         &wl_buffer_interface,
         wl_proxy_get_version(@ptrCast(pool)),
         0,
@@ -1170,7 +1107,7 @@ pub fn shmPoolCreateBuffer(
 pub fn shmPoolDestroy(pool: *ShmPool) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(pool),
-        1, // WL_SHM_POOL_DESTROY
+        1,
         null,
         wl_proxy_get_version(@ptrCast(pool)),
         MARSHAL_FLAG_DESTROY,
@@ -1184,7 +1121,7 @@ pub fn bufferAddListener(buffer: *Buffer, listener: *const BufferListener, data:
 pub fn bufferDestroy(buffer: *Buffer) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(buffer),
-        0, // WL_BUFFER_DESTROY
+        0,
         null,
         wl_proxy_get_version(@ptrCast(buffer)),
         MARSHAL_FLAG_DESTROY,
@@ -1194,7 +1131,7 @@ pub fn bufferDestroy(buffer: *Buffer) void {
 pub fn surfaceAttach(surface: *Surface, buffer: ?*Buffer, x: i32, y: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        1, // WL_SURFACE_ATTACH
+        1,
         null,
         wl_proxy_get_version(@ptrCast(surface)),
         0,
@@ -1204,11 +1141,10 @@ pub fn surfaceAttach(surface: *Surface, buffer: ?*Buffer, x: i32, y: i32) void {
     );
 }
 
-/// Requires `wl_surface` version 4; the compositor is bound at up to 6.
 pub fn surfaceDamageBuffer(surface: *Surface, x: i32, y: i32, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        9, // WL_SURFACE_DAMAGE_BUFFER
+        9,
         null,
         wl_proxy_get_version(@ptrCast(surface)),
         0,
@@ -1226,7 +1162,7 @@ pub fn seatAddListener(seat: *Seat, listener: *const SeatListener, data: ?*anyop
 pub fn seatGetPointer(seat: *Seat) ?*Pointer {
     const result = wl_proxy_marshal_flags(
         @ptrCast(seat),
-        0, // WL_SEAT_GET_POINTER
+        0,
         &wl_pointer_interface,
         wl_proxy_get_version(@ptrCast(seat)),
         0,
@@ -1238,7 +1174,7 @@ pub fn seatGetPointer(seat: *Seat) ?*Pointer {
 pub fn seatGetKeyboard(seat: *Seat) ?*Keyboard {
     const result = wl_proxy_marshal_flags(
         @ptrCast(seat),
-        1, // WL_SEAT_GET_KEYBOARD
+        1,
         &wl_keyboard_interface,
         wl_proxy_get_version(@ptrCast(seat)),
         0,
@@ -1256,18 +1192,14 @@ pub fn pointerAddListener(pointer: *Pointer, listener: *const PointerListener, d
 }
 
 pub fn pointerDestroy(pointer: *Pointer) void {
-    // wl_proxy_destroy instead of the release request: it needs wl_seat 3+.
     wl_proxy_destroy(@ptrCast(pointer));
 }
 
-/// wl_pointer request opcodes in protocol declaration order.
 const PointerRequest = enum(u32) {
     set_cursor = 0,
     release = 1,
 };
 
-/// Show `surface` as the pointer image, or hide the pointer when it is null. `serial` must be
-/// the serial of the latest `wl_pointer.enter`; the compositor ignores any other.
 pub fn pointer_set_cursor(
     pointer: *Pointer,
     serial: u32,
@@ -1290,8 +1222,6 @@ pub fn pointer_set_cursor(
 }
 
 test "wl_pointer request opcodes match libwayland's protocol table" {
-    // As in the wl_surface test: each `PointerRequest` name must equal the
-    // name at its opcode.
     const names = @typeInfo(PointerRequest).@"enum".field_names;
     const values = @typeInfo(PointerRequest).@"enum".field_values;
     const method_count: usize = @intCast(wl_pointer_interface.method_count);
@@ -1305,7 +1235,6 @@ test "wl_pointer request opcodes match libwayland's protocol table" {
 
 pub const CursorTheme = opaque {};
 
-/// `struct wl_cursor_image`: one frame of a cursor, in buffer pixels.
 pub const CursorImage = extern struct {
     width: u32,
     height: u32,
@@ -1314,34 +1243,28 @@ pub const CursorImage = extern struct {
     delay: u32,
 };
 
-/// `struct wl_cursor`: the frames of one named cursor.
 pub const Cursor = extern struct {
     image_count: c_uint,
     images: [*]*CursorImage,
     name: [*:0]u8,
 };
 
-/// Loads every cursor of the theme into one shared-memory pool. A null `name` loads the
-/// "default" theme; a theme with no cursors falls back to libwayland-cursor's built-in set.
 pub extern "wayland-cursor" fn wl_cursor_theme_load(
     name: ?[*:0]const u8,
     size: c_int,
     shm: *Shm,
 ) ?*CursorTheme;
 pub extern "wayland-cursor" fn wl_cursor_theme_destroy(theme: *CursorTheme) void;
-/// A lookup in the already-loaded table: it never loads or allocates.
 pub extern "wayland-cursor" fn wl_cursor_theme_get_cursor(
     theme: *CursorTheme,
     name: [*:0]const u8,
 ) ?*Cursor;
-/// Creates the image's `wl_buffer` on the first call and returns the same buffer afterwards.
-/// The theme owns the buffer and destroys it in `wl_cursor_theme_destroy`.
 pub extern "wayland-cursor" fn wl_cursor_image_get_buffer(image: *CursorImage) ?*Buffer;
 
 pub fn cursorShapeManagerGetPointer(manager: *WpCursorShapeManagerV1, pointer: *Pointer) ?*WpCursorShapeDeviceV1 {
     const result = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        1, // get_pointer
+        1,
         &wp_cursor_shape_device_v1_interface,
         wl_proxy_get_version(@ptrCast(manager)),
         0,
@@ -1354,7 +1277,7 @@ pub fn cursorShapeManagerGetPointer(manager: *WpCursorShapeManagerV1, pointer: *
 pub fn cursorShapeManagerDestroy(manager: *WpCursorShapeManagerV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        0, // destroy
+        0,
         null,
         wl_proxy_get_version(@ptrCast(manager)),
         MARSHAL_FLAG_DESTROY,
@@ -1364,7 +1287,7 @@ pub fn cursorShapeManagerDestroy(manager: *WpCursorShapeManagerV1) void {
 pub fn cursorShapeDeviceSetShape(device: *WpCursorShapeDeviceV1, serial: u32, shape: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(device),
-        1, // set_shape
+        1,
         null,
         wl_proxy_get_version(@ptrCast(device)),
         0,
@@ -1376,7 +1299,7 @@ pub fn cursorShapeDeviceSetShape(device: *WpCursorShapeDeviceV1, serial: u32, sh
 pub fn cursorShapeDeviceDestroy(device: *WpCursorShapeDeviceV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(device),
-        0, // destroy
+        0,
         null,
         wl_proxy_get_version(@ptrCast(device)),
         MARSHAL_FLAG_DESTROY,
@@ -1388,14 +1311,13 @@ pub fn keyboardAddListener(keyboard: *Keyboard, listener: *const KeyboardListene
 }
 
 pub fn keyboardDestroy(keyboard: *Keyboard) void {
-    // wl_proxy_destroy instead of the release request: it needs wl_seat 3+.
     wl_proxy_destroy(@ptrCast(keyboard));
 }
 
 pub fn seatGetTouch(seat: *Seat) ?*Touch {
     const result = wl_proxy_marshal_flags(
         @ptrCast(seat),
-        2, // WL_SEAT_GET_TOUCH
+        2,
         &wl_touch_interface,
         wl_proxy_get_version(@ptrCast(seat)),
         0,
@@ -1427,7 +1349,7 @@ pub fn xdgWmBaseAddListener(wm_base: *XdgWmBase, listener: *const XdgWmBaseListe
 pub fn xdgWmBasePong(wm_base: *XdgWmBase, serial: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(wm_base),
-        3, // XDG_WM_BASE_PONG (destroy=0, create_positioner=1, get_xdg_surface=2, pong=3)
+        3,
         null,
         wl_proxy_get_version(@ptrCast(wm_base)),
         0,
@@ -1438,7 +1360,7 @@ pub fn xdgWmBasePong(wm_base: *XdgWmBase, serial: u32) void {
 pub fn xdgWmBaseGetXdgSurface(wm_base: *XdgWmBase, surface: *Surface) ?*XdgSurface {
     const result = wl_proxy_marshal_flags(
         @ptrCast(wm_base),
-        2, // XDG_WM_BASE_GET_XDG_SURFACE
+        2,
         &xdg_surface_interface,
         wl_proxy_get_version(@ptrCast(wm_base)),
         0,
@@ -1451,7 +1373,7 @@ pub fn xdgWmBaseGetXdgSurface(wm_base: *XdgWmBase, surface: *Surface) ?*XdgSurfa
 pub fn xdgWmBaseDestroy(wm_base: *XdgWmBase) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(wm_base),
-        0, // XDG_WM_BASE_DESTROY
+        0,
         null,
         wl_proxy_get_version(@ptrCast(wm_base)),
         MARSHAL_FLAG_DESTROY,
@@ -1465,7 +1387,7 @@ pub fn xdgSurfaceAddListener(xdg_surface: *XdgSurface, listener: *const XdgSurfa
 pub fn xdgSurfaceGetToplevel(xdg_surface: *XdgSurface) ?*XdgToplevel {
     const result = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        1, // XDG_SURFACE_GET_TOPLEVEL
+        1,
         &xdg_toplevel_interface,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         0,
@@ -1477,7 +1399,7 @@ pub fn xdgSurfaceGetToplevel(xdg_surface: *XdgSurface) ?*XdgToplevel {
 pub fn xdgSurfaceAckConfigure(xdg_surface: *XdgSurface, serial: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        4, // XDG_SURFACE_ACK_CONFIGURE
+        4,
         null,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         0,
@@ -1488,7 +1410,7 @@ pub fn xdgSurfaceAckConfigure(xdg_surface: *XdgSurface, serial: u32) void {
 pub fn xdgSurfaceSetWindowGeometry(xdg_surface: *XdgSurface, x: i32, y: i32, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        3, // XDG_SURFACE_SET_WINDOW_GEOMETRY
+        3,
         null,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         0,
@@ -1502,18 +1424,13 @@ pub fn xdgSurfaceSetWindowGeometry(xdg_surface: *XdgSurface, x: i32, y: i32, wid
 pub fn xdgSurfaceDestroy(xdg_surface: *XdgSurface) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        0, // XDG_SURFACE_DESTROY
+        0,
         null,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         MARSHAL_FLAG_DESTROY,
     );
 }
 
-/// xdg_toplevel request opcodes in protocol declaration order. A request's opcode is its
-/// index in the protocol XML, and xdg-shell declares `set_max_size` before `set_min_size`:
-/// the size helpers once marshaled each other's opcode, so the compositor received the min
-/// size as the max size. Field names match `xdg_toplevel_methods` so a test can check every
-/// opcode against that table.
 const XdgToplevelRequest = enum(u32) {
     destroy = 0,
     set_parent = 1,
@@ -1558,7 +1475,6 @@ pub fn xdgToplevelSetAppId(toplevel: *XdgToplevel, app_id: [*:0]const u8) void {
 }
 
 pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
-    // Zero means unconstrained; the compositor raises the fatal `invalid_size` error below it.
     std.debug.assert(width >= 0);
     std.debug.assert(height >= 0);
     _ = wl_proxy_marshal_flags(
@@ -1573,7 +1489,6 @@ pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) vo
 }
 
 pub fn xdgToplevelSetMaxSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
-    // Zero means unconstrained; the compositor raises the fatal `invalid_size` error below it.
     std.debug.assert(width >= 0);
     std.debug.assert(height >= 0);
     _ = wl_proxy_marshal_flags(
@@ -1635,9 +1550,6 @@ pub fn xdgToplevelDestroy(toplevel: *XdgToplevel) void {
 }
 
 test "xdg_toplevel request opcodes match the xdg_toplevel request table" {
-    // `xdg_toplevel_methods` is the wire table passed to libwayland and is
-    // indexed by opcode, so each `XdgToplevelRequest` name must equal the
-    // name at its opcode; set_min_size and set_max_size were once swapped.
     const names = @typeInfo(XdgToplevelRequest).@"enum".field_names;
     const values = @typeInfo(XdgToplevelRequest).@"enum".field_values;
     const method_count: usize = @intCast(xdg_toplevel_interface.method_count);
@@ -1657,7 +1569,7 @@ pub fn zxdgDecorationManagerV1GetToplevelDecoration(
 ) ?*ZxdgToplevelDecorationV1 {
     const result = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        1, // ZXDG_DECORATION_MANAGER_V1_GET_TOPLEVEL_DECORATION
+        1,
         &zxdg_toplevel_decoration_v1_interface,
         wl_proxy_get_version(@ptrCast(manager)),
         0,
@@ -1670,7 +1582,7 @@ pub fn zxdgDecorationManagerV1GetToplevelDecoration(
 pub fn zxdgDecorationManagerV1Destroy(manager: *ZxdgDecorationManagerV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        0, // ZXDG_DECORATION_MANAGER_V1_DESTROY
+        0,
         null,
         wl_proxy_get_version(@ptrCast(manager)),
         MARSHAL_FLAG_DESTROY,
@@ -1688,7 +1600,7 @@ pub fn zxdgToplevelDecorationV1AddListener(
 pub fn zxdgToplevelDecorationV1SetMode(decoration: *ZxdgToplevelDecorationV1, mode: ZxdgToplevelDecorationV1Mode) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(decoration),
-        1, // ZXDG_TOPLEVEL_DECORATION_V1_SET_MODE
+        1,
         null,
         wl_proxy_get_version(@ptrCast(decoration)),
         0,
@@ -1699,7 +1611,7 @@ pub fn zxdgToplevelDecorationV1SetMode(decoration: *ZxdgToplevelDecorationV1, mo
 pub fn zxdgToplevelDecorationV1Destroy(decoration: *ZxdgToplevelDecorationV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(decoration),
-        0, // destroy
+        0,
         null,
         wl_proxy_get_version(@ptrCast(decoration)),
         MARSHAL_FLAG_DESTROY,
@@ -1709,11 +1621,11 @@ pub fn zxdgToplevelDecorationV1Destroy(decoration: *ZxdgToplevelDecorationV1) vo
 pub fn zwpTextInputManagerV3GetTextInput(manager: *ZwpTextInputManagerV3, seat: *Seat) ?*ZwpTextInputV3 {
     return @ptrCast(wl_proxy_marshal_flags(
         @ptrCast(manager),
-        1, // get_text_input
+        1,
         &zwp_text_input_v3_interface,
         wl_proxy_get_version(@ptrCast(manager)),
         0,
-        @as(?*anyopaque, null), // new_id placeholder
+        @as(?*anyopaque, null),
         seat,
     ));
 }
@@ -1721,7 +1633,7 @@ pub fn zwpTextInputManagerV3GetTextInput(manager: *ZwpTextInputManagerV3, seat: 
 pub fn zwpTextInputManagerV3Destroy(manager: *ZwpTextInputManagerV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        0, // destroy
+        0,
         null,
         wl_proxy_get_version(@ptrCast(manager)),
         MARSHAL_FLAG_DESTROY,
@@ -1735,7 +1647,7 @@ pub fn zwpTextInputV3AddListener(text_input: *ZwpTextInputV3, listener: *const Z
 pub fn zwpTextInputV3Destroy(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        0, // destroy
+        0,
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         MARSHAL_FLAG_DESTROY,
@@ -1745,7 +1657,7 @@ pub fn zwpTextInputV3Destroy(text_input: *ZwpTextInputV3) void {
 pub fn zwpTextInputV3Enable(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        1, // enable
+        1,
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1755,7 +1667,7 @@ pub fn zwpTextInputV3Enable(text_input: *ZwpTextInputV3) void {
 pub fn zwpTextInputV3Disable(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        2, // disable
+        2,
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1765,7 +1677,7 @@ pub fn zwpTextInputV3Disable(text_input: *ZwpTextInputV3) void {
 pub fn zwpTextInputV3SetCursorRectangle(text_input: *ZwpTextInputV3, x: i32, y: i32, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        6, // set_cursor_rectangle
+        6,
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1779,14 +1691,13 @@ pub fn zwpTextInputV3SetCursorRectangle(text_input: *ZwpTextInputV3, x: i32, y: 
 pub fn zwpTextInputV3Commit(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        7, // commit
+        7,
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
     );
 }
 
-/// Linux button codes (from linux/input-event-codes.h)
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
 pub const BTN_MIDDLE: u32 = 0x112;
@@ -1834,8 +1745,6 @@ pub const wp_fractional_scale_manager_v1_interface: Interface = .{
     .events = null,
 };
 
-// Events: preferred_scale, the compositor's preferred scale in 120ths
-// (180 is 1.5).
 const wp_fractional_scale_v1_methods = [_]Message{
     .{ .name = "destroy", .signature = "", .types = null },
 };
@@ -1884,8 +1793,8 @@ pub const wp_cursor_shape_device_v1_interface: Interface = .{
 
 const wp_viewport_methods = [_]Message{
     .{ .name = "destroy", .signature = "", .types = null },
-    .{ .name = "set_source", .signature = "ffff", .types = null }, // wl_fixed x, y, width, height
-    .{ .name = "set_destination", .signature = "ii", .types = null }, // int32 width, height
+    .{ .name = "set_source", .signature = "ffff", .types = null },
+    .{ .name = "set_destination", .signature = "ii", .types = null },
 };
 
 pub const wp_viewport_interface: Interface = .{

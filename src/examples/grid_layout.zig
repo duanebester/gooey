@@ -1,8 +1,3 @@
-//! Grid layout (`Style.grid`, decision 28): a form whose labels line up in a
-//! fit column, a table whose keyed, hoverable rows keep their cells under the
-//! header's, and a 12-column dashboard whose cards span 3, 4, 6, or 8 columns
-//! and stretch to their row's height.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -70,7 +65,6 @@ fn label(text: []const u8) ui.Text.Element {
     return ui.text(text, .{ .size = 13, .color = .{ .rgba = ink } });
 }
 
-/// Labels in a `.fit` column as wide as the widest, fields filling the rest.
 const FormPanel = struct {
     const columns = [_]ui.Track{ .fit, .grow(1) };
 
@@ -112,8 +106,6 @@ const Field = struct {
     }
 };
 
-/// A header of plain cells and keyed row boxes on one grid: the name column
-/// grows twice as fast as the team column, and the amounts are right-aligned.
 const TablePanel = struct {
     const columns = [_]ui.Track{
         .fit,
@@ -204,8 +196,6 @@ const tickets = "37 open, 5 of them waiting on a reply for more than a day";
 const span_eight = "A wide card on 8 of the 12 column lines.";
 const span_four = "Its edges sit on the same lines as the cards above.";
 
-/// Twelve equal columns; cards span 3, 4, 6, or 8 of them, and each row's
-/// cards stretch to its tallest.
 const DashboardPanel = struct {
     const twelve: [12]ui.Track = @splat(.grow(1));
 

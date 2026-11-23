@@ -1,18 +1,7 @@
-//! Entity pools: one fixed pool per entity type, reserved at init.
-//!
-//! `Effects.remove` only marks the slot: handlers later in the same drain
-//! were built from a frame that still names it, so they still reach the
-//! value. `freeRemoved` runs after the drain and before the build, bumping
-//! each slot's generation and zeroing its bytes, so a handle kept past
-//! removal is stale. The pool is not generic: values are `stride` bytes
-//! apart and the typed side (`Effects`, `Cx.get`) casts.
-
 const std = @import("std");
 
 const assert = std.debug.assert;
 
-/// The alignment of every pool's value storage; a type that needs more is a
-/// compile error in `App`.
 pub const value_alignment = 16;
 
 pub const SlotState = enum(u8) { free, live, removed };
@@ -25,10 +14,8 @@ pub const Pool = struct {
     bytes: []align(value_alignment) u8,
     generations: []u32,
     states: []SlotState,
-    /// Free slots, used as a stack.
     free: []u32,
     free_count: u32,
-    /// Slots marked by `remove` since the last `freeRemoved`.
     removed: []u32,
     removed_count: u32,
 
@@ -54,11 +41,8 @@ pub const Pool = struct {
 
         self.name = name;
         self.stride = stride;
-        // Values are not zeroed here: `create` writes each one whole, and
-        // `freeRemoved` zeroes what it releases.
         @memset(self.generations, 0);
         @memset(self.states, .free);
-        // Slot 0 on top, so slots are claimed in order.
         for (self.free, 0..) |*slot, index| slot.* = count - 1 - @as(u32, @intCast(index));
         self.free_count = count;
         self.removed_count = 0;
@@ -89,7 +73,6 @@ pub const Pool = struct {
         return slot;
     }
 
-    /// A removed-but-not-freed slot still resolves.
     pub fn check(self: *const Pool, slot: u32, generation: u32) ?HandleProblem {
         if (slot >= self.capacity()) return .out_of_range;
         if (self.generations[slot] != generation) return .stale;
@@ -97,7 +80,6 @@ pub const Pool = struct {
         return null;
     }
 
-    /// Returns false when the slot is already removed this drain.
     pub fn markRemoved(self: *Pool, slot: u32) bool {
         assert(slot < self.capacity());
         assert(self.states[slot] != .free);
@@ -109,17 +91,12 @@ pub const Pool = struct {
         return true;
     }
 
-    /// Zero each marked slot, bump its generation, and return it to the
-    /// free stack. Runs between the drain and the build, when no handler
-    /// or build reads entity values.
     pub fn freeRemoved(self: *Pool) void {
         assert(self.removed_count <= self.capacity());
         for (self.removed[0..self.removed_count]) |slot| {
             assert(self.states[slot] == .removed);
             assert(self.free_count < self.capacity());
             @memset(self.valueBytes(slot), 0);
-            // Wraps after 2^32 reuses of one slot; a handle that old is
-            // beyond any realistic lifetime.
             self.generations[slot] +%= 1;
             self.states[slot] = .free;
             self.free[self.free_count] = slot;
@@ -155,7 +132,6 @@ test "a pool fills exactly, refuses one more, and reuses a freed slot one genera
 
     try std.testing.expect(pool.markRemoved(1));
     try std.testing.expect(!pool.markRemoved(1));
-    // Removed but not yet freed: a handler later in the drain still reaches it.
     try std.testing.expectEqual(@as(?HandleProblem, null), pool.check(1, 0));
     try std.testing.expectEqual(@as(?u32, null), pool.claim());
 

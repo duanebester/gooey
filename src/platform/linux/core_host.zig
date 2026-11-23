@@ -1,23 +1,3 @@
-//! Runs a 0.4.0 core app in a Wayland window, drawn by Vulkan
-//! (`wayland_vulkan`) or by the CPU renderer into `wl_shm` buffers
-//! (`wayland_cpu`); only the presenter and atlas binding differ.
-//!
-//! Two threads, one owner each: the main thread runs the Wayland loop
-//! (`runLoop`), at most one tick per turn between dispatches, and the
-//! render thread presents the frame in flight, paced by the compositor's
-//! `wl_surface.frame` callback (or `frame_callback_timeout_ms`: a hidden
-//! surface's callback can be withheld indefinitely) and at least
-//! `present_interval_ns` apart. SER9 (mutter 46) showed a compositor waking
-//! from idle answering a burst's first callbacks early; the first present
-//! after idle still goes out at once. They meet only at `frame_in_flight`
-//! and two eventfds; both threads wait on the display fd with libwayland's
-//! prepare/read protocol, so either can read events for the other's queue.
-//! The CPU renderer samples the core's atlases in place while it draws; the
-//! tick never builds while a frame is in flight, and only the render thread
-//! touches its slots. IME: text-input-v3 has no synchronous rect query, so
-//! the client pushes it; `syncIme` keeps it the one the core's `Query`
-//! answers.
-
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
@@ -44,48 +24,24 @@ const LinuxPlatform = platform_mod.LinuxPlatform;
 const PlatformWindow = window_mod.Window;
 const Outcome = core_events.Completion.Outcome;
 
-/// The longest the render thread waits for a frame callback before it
-/// presents anyway: the 20 Hz cadence the 0.3.1 loop uses for hidden windows.
 const frame_callback_timeout_ms: u32 = 50;
 
-/// The output refresh rates pacing honours, in millihertz as `wl_output`
-/// reports them; a mode outside is clamped. 20 Hz keeps the interval under
-/// the callback timeout.
 const refresh_rate_mhz_min: i32 = 20_000;
 const refresh_rate_mhz_max: i32 = 1_000_000;
 
-/// Bound on dispatch rounds before a thread may prepare to read. Each round
-/// empties the queue; more arrive only if another thread reads in between.
 const prepare_read_rounds_max: u32 = 1024;
 
-/// The most core events one Wayland event pushes: a key press queues its
-/// key_down and its character, a pointer leave mid-drag its pointer_cancelled
-/// and mouse_exited, and a text-input-v3 `done` its commit and its preedit.
-/// Every other handler pushes at most one.
 pub const dispatch_event_count_max: u32 = 2;
 
-/// The most core events the host pushes between two drains outside dispatch:
-/// a file dialog's completion (`pollDialog`, before the dispatch) and a key
-/// repeat's key_down and character (`fireKeyRepeat`, after it).
 pub const host_event_count_max: u32 = 3;
 
-/// Free queue slots the loop needs before it dispatches one Wayland event
-/// with libwayland 1.25's `wl_display_dispatch_pending_single`: a hard bound.
 pub const input_room_count_single: u32 = dispatch_event_count_max + host_event_count_max;
 
-/// Free queue slots the loop needs before it dispatches all pending events,
-/// the fallback before libwayland 1.25: 4 KiB of libwayland's read buffer at
-/// 16 B per queued event. It is a soft bound: a 24 B key press queues two
-/// events, and the render thread's reads add to what one dispatch delivers.
-/// Past it the queue fails fast naming `ResourceLimits.events`.
 pub const input_room_count_min: u32 = 4096 / 16;
 
-/// Bound on single dispatches per call. A 4 KiB read holds at most 512 of the
-/// smallest (8 B) Wayland messages; past this the loop yields to a tick.
 const dispatch_single_count_max: u32 = 4096 / 8;
 
 comptime {
-    // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
     assert(input_room_count_min <= core_limits.input_burst_count_max);
     assert(input_room_count_single <= input_room_count_min);
     assert(input_room_count_single == 5);
@@ -93,19 +49,15 @@ comptime {
 
 const frame_callback_listener = wayland.CallbackListener{ .done = frameCallbackDone };
 
-/// The window draws with the CPU renderer (`wayland_cpu`) rather than Vulkan.
 const cpu_renderer = linux_backend.uses_cpu_renderer;
 
 comptime {
-    // The fbdev and eve backends have no Wayland; each has its own core host.
     switch (linux_backend.selected) {
         .wayland_cpu, .wayland_vulkan => {},
         .fbdev, .eve => @compileError("this backend runs core apps on its own host"),
     }
 }
 
-/// Run `App` until its window closes. Everything is reserved before
-/// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
     app.beginInit(backing);
     const gpa = app.guard.allocator();
@@ -142,8 +94,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     defer host.deinit();
 
     app.finishInit();
-    // Deferred last, so it runs first: the guard leaves `running` before the
-    // deferred teardown above frees the host, the window, and the platform.
     defer app.stop();
     assert(app.guard.lifecycle == .running);
     host.scheduleTick();
@@ -162,52 +112,30 @@ pub const Host = struct {
     query: core_router.Query,
     display: *wayland.Display,
     display_fd: posix.fd_t,
-    /// libwayland 1.25's single dispatch, or null on older libwayland, where
-    /// the loop dispatches everything pending behind `input_room_count_min`.
     dispatch_single: ?wayland.DispatchPendingSingle,
-    /// Wakes the main loop: `scheduleTick` from either thread.
     main_wake_fd: posix.fd_t,
-    /// Wakes the render thread: a published frame, or `deinit`.
     render_wake_fd: posix.fd_t,
-    /// The render thread's queue; the frame callbacks are its only proxies.
     render_queue: *wayland.EventQueue,
-    /// The window's surface, with requests' new proxies on `render_queue`.
     surface_wrapper: *wayland.Surface,
     thread: ?std.Thread,
     tick_scheduled: std.atomic.Value(bool),
     stopping: std.atomic.Value(bool),
-    /// The shortest gap between presents, from the output's refresh rate.
-    /// The main thread, which receives `wl_output` modes, refreshes it.
     present_interval_ns: std.atomic.Value(u64),
 
-    // Main thread only.
     quit: bool,
     ime_enabled: bool,
-    /// The IME rect last sent to the compositor, while enabled.
     ime_rect: ?records.Rect,
-    /// The text field the IME composed for at the last `syncIme`.
     ime_owner: ?core_window.ElementId,
     cursor: core_element.CursorShape,
-    /// The portal dialog that is open, at most one (`openDialog`).
     dialog: ?PendingDialog,
-    /// A save request's terminated folder and name while `openDialog` sends
-    /// the call, then the Response's paths, decoded here before the queue
-    /// copies them: `file_dialog.requestBytes` of
-    /// `limits.events.dialog_path_bytes_max`, reserved at init.
     dialog_paths: []u8,
 
-    // Render thread only.
     frame_callback: ?*wayland.Callback,
     frame_callback_deadline_ns: u64,
-    /// When the last frame was presented; null before the first.
     presented_ns: ?u64,
-    /// The logical size and scale the swapchain and viewport were last set to.
     surface_width: u32,
     surface_height: u32,
     surface_scale: f32,
-    /// The framebuffer the renderer was last sized to, fitted to the window
-    /// budget, and whether that fit lowered the scale (logged once per
-    /// transition).
     viewport: backend.Viewport,
     downscaled: bool,
 
@@ -221,8 +149,6 @@ pub const Host = struct {
         io: std.Io,
     };
 
-    /// Bind the window, the presenter, and the dialog service, then start
-    /// the render thread. The host must stay at this address.
     pub fn initInPlace(self: *Host, options: Options) !void {
         assert(options.core.presenter == null);
         assert(options.window.configured);
@@ -322,9 +248,7 @@ pub const Host = struct {
             .read = clipboardRead,
             .write = clipboardWrite,
         };
-        // `syncIme` alone enables text-input-v3, while a field is focused.
         self.core.bindScreenReader(null, null);
-        // A tiling compositor's first configure may not match the app's size.
         self.core.bindViewport(.{
             .width = @floatCast(self.window.size.width),
             .height = @floatCast(self.window.size.height),
@@ -333,9 +257,6 @@ pub const Host = struct {
         assert(self.window.core != null);
     }
 
-    /// The renderer consumes the upload journal as this window: `draw` feeds
-    /// it this consumer's records before each frame. The CPU renderer's
-    /// buffer releases also move to the render queue before the first frame.
     fn bindAtlases(self: *Host) void {
         const resources = self.core.resources;
         const key = @intFromPtr(self.window);
@@ -345,11 +266,8 @@ pub const Host = struct {
         assert(self.core.atlas_consumer_key != 0);
     }
 
-    /// Stop the render thread and wait for it, then unbind what `bindWindow`
-    /// bound and release the Wayland objects the thread used. No draw can
-    /// start afterwards.
     pub fn deinit(self: *Host) void {
-        // The app is leaving: close its open dialog rather than orphan it.
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         if (self.dialog) |*pending| pending.request.close();
         self.dialog = null;
         if (self.thread) |thread| {
@@ -366,12 +284,8 @@ pub const Host = struct {
         assert(self.dialog == null);
     }
 
-    /// Undo `bindWindow` once the render thread, the atlas consumer, has
-    /// stopped: the shared upload journal requires every consumer to leave
-    /// before it is freed.
     fn unbindWindow(self: *Host) void {
         assert(self.thread == null);
-        // The render queue is destroyed next; the buffers outlive it.
         if (cpu_renderer) self.window.renderer.setEventQueue(null);
         assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
@@ -382,7 +296,6 @@ pub const Host = struct {
         self.core.unbindScreenReader();
     }
 
-    /// Schedule one main tick unless one is already scheduled. Any thread.
     pub fn scheduleTick(self: *Host) void {
         if (self.tick_scheduled.swap(true, .acq_rel)) return;
         signal(self.main_wake_fd);
@@ -400,16 +313,10 @@ pub const Host = struct {
         return @intCast(ns);
     }
 
-    // Main thread only.
-
-    /// The event loop. Each turn runs at most one tick, syncs the IME, reads
-    /// an open dialog's connection, and waits for and dispatches one batch of
-    /// events, so every turn is bounded; the loop ends when the window closes
-    /// or the app quits.
     fn runLoop(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(self.thread != null);
         while (!self.quit) {
-            // Before the tick, so the repeat's events reach this turn's drain.
             self.platform.fireKeyRepeat();
             if (self.tick_scheduled.swap(false, .acq_rel)) self.mainTick();
             if (self.quit) break;
@@ -423,8 +330,6 @@ pub const Host = struct {
         assert(self.core.phase == .idle);
     }
 
-    /// One main-side tick, then either hand the published frame to the
-    /// render thread or keep ticking while work is pending.
     fn mainTick(self: *Host) void {
         assert(self.core.phase == .idle);
         self.tick_main(self.app, self.nowNs());
@@ -436,21 +341,13 @@ pub const Host = struct {
             self.quit = true;
             return;
         }
-        // A render requested while a frame is in flight waits for the
-        // render thread, which schedules a tick after it presents.
         const in_flight = self.core.frame_in_flight.load(.acquire);
         if (in_flight) signal(self.render_wake_fd);
         const pending = self.core.render_requested or self.core.queue.count > 0;
         if (pending and !in_flight) self.scheduleTick();
     }
 
-    /// Wait for the display or the wake fd, then dispatch the main queue
-    /// while the core queue has room (`dispatchMain`). Returns false when the
-    /// connection failed.
     fn waitForEvents(self: *Host) bool {
-        // A queue without room for a dispatch's events dispatches nothing
-        // until a tick drains it; what arrives meanwhile waits in the socket
-        // or in libwayland's queue.
         if (self.core.queue.room() < self.inputRoomCountMin()) {
             assert(self.core.queue.count > 0);
             self.scheduleTick();
@@ -462,21 +359,15 @@ pub const Host = struct {
             switch (self.dispatchMain()) {
                 .failed => return false,
                 .drained => {},
-                // Events wait in libwayland's queue for a tick to make room.
                 .held => return true,
             }
         }
-        // A passed render deadline schedules a tick here; a due key repeat
-        // makes the poll return at once.
         const timeout_ms = self.deadlineTimeoutMs();
-        // Dispatched events may have scheduled a tick or closed the window.
         if (self.tick_scheduled.load(.acquire) or self.quit) {
             wayland.wl_display_cancel_read(self.display);
             return true;
         }
         _ = wayland.wl_display_flush(self.display);
-        // An open dialog's connection wakes the loop for `pollDialog`; poll
-        // skips a negative fd.
         const dialog_fd: posix.fd_t = if (self.dialog) |pending| pending.fd else -1;
         var fds = [_]posix.pollfd{
             .{ .fd = self.display_fd, .events = posix.POLL.IN, .revents = 0 },
@@ -497,7 +388,6 @@ pub const Host = struct {
         return true;
     }
 
-    /// Free queue slots one `dispatchMain` call needs before it may start.
     fn inputRoomCountMin(self: *const Host) u32 {
         const single = self.dispatch_single != null;
         const room = if (single) input_room_count_single else input_room_count_min;
@@ -508,15 +398,8 @@ pub const Host = struct {
 
     const Dispatch = enum { drained, held, failed };
 
-    /// Dispatch the main queue. With libwayland 1.25, one event at a time
-    /// while the core queue keeps `input_room_count_single` free slots, so no
-    /// burst can overflow it: `held` means events still wait in libwayland's
-    /// queue and a tick is scheduled to make room. Before 1.25, everything
-    /// pending at once, behind the soft `input_room_count_min`.
     fn dispatchMain(self: *Host) Dispatch {
         const single = self.dispatch_single orelse {
-            // As before 1.25 support: a round of `waitForEvents`' prepare
-            // loop may dispatch again below the room it checked once.
             if (wayland.wl_display_dispatch_pending(self.display) < 0) return .failed;
             return .drained;
         };
@@ -528,15 +411,11 @@ pub const Host = struct {
             if (count == 0) return .drained;
             assert(count == 1);
         }
-        // The queue is short of room, or this call dispatched its bound.
         assert(self.core.queue.count > 0 or dispatched == dispatch_single_count_max);
         self.scheduleTick();
         return .held;
     }
 
-    /// Read the open dialog's connection without blocking and, once its
-    /// Response has arrived, end the request and queue the outcome under the
-    /// core's request id for the next tick. Main thread, between ticks.
     fn pollDialog(self: *Host) void {
         assert(self.core.phase == .idle);
         const pending = if (self.dialog) |*pending| pending else return;
@@ -544,8 +423,6 @@ pub const Host = struct {
         const polled = pending.request.poll(self.dialog_paths);
         const outcome: Outcome = if (polled) |status| switch (status) {
             .open => return,
-            // Messages wait past this turn's bound and the fd will not
-            // announce them again, so turn again soon.
             .open_more => return self.scheduleTick(),
             .cancelled => .cancelled,
             .selected => |selection| self.selectedOutcome(pending.many, selection),
@@ -557,7 +434,6 @@ pub const Host = struct {
         pending.request.end();
         self.dialog = null;
         self.core.queue.push(.{ .completion = .{ .request_id = request_id, .outcome = outcome } });
-        // The queue copied the paths; zero what they used.
         switch (outcome) {
             .file_selected => |paths| @memset(self.dialog_paths[0..paths.bytes.len], 0),
             .cancelled, .failed => {},
@@ -566,12 +442,8 @@ pub const Host = struct {
         assert(self.dialog == null);
     }
 
-    /// Check a Response's selection against the app's limits, which fails
-    /// fast past them, and wrap the paths decoded into `dialog_paths`.
     fn selectedOutcome(self: *const Host, many: bool, selection: file_dialog.Selection) Outcome {
         core_tick.checkSelection(self.core, many, selection.count, selection.bytes_len);
-        // The buffer holds more than `dialog_path_bytes_max` bytes, so a
-        // selection within the limits was written whole.
         assert(selection.bytes_len <= self.core.limits.events.dialog_path_bytes_max);
         assert(selection.bytes_len < self.dialog_paths.len);
         const bytes = self.dialog_paths[0..@intCast(selection.bytes_len)];
@@ -579,9 +451,6 @@ pub const Host = struct {
         return .{ .file_selected = .{ .bytes = bytes, .count = selection.count } };
     }
 
-    /// How long the main loop may sleep: until the next key repeat or the
-    /// last build's render deadline, whichever is sooner, or -1 without
-    /// either. The next turn fires a due repeat (`runLoop`).
     fn deadlineTimeoutMs(self: *Host) i32 {
         const render_ms = self.renderDeadlineTimeoutMs();
         const repeat_ms = self.platform.keyRepeatTimeoutMs() orelse return render_ms;
@@ -590,9 +459,6 @@ pub const Host = struct {
         return @min(render_ms, @as(i32, @intCast(repeat_ms)));
     }
 
-    /// How long the main loop may sleep before the last build's render
-    /// deadline (`cx.requestRenderAfter`, caret blink), or -1 without one.
-    /// A passed deadline schedules the tick that fires it.
     fn renderDeadlineTimeoutMs(self: *Host) i32 {
         const deadline = self.core.renderDeadlineNs() orelse return -1;
         const now_ns = self.nowNs();
@@ -601,13 +467,11 @@ pub const Host = struct {
             return 0;
         }
         const remaining_ms = std.math.divCeil(u64, deadline - now_ns, std.time.ns_per_ms) catch
-            unreachable; // The divisor is a nonzero constant.
+            unreachable;
         assert(remaining_ms > 0);
         return @intCast(@min(remaining_ms, std.math.maxInt(i32)));
     }
 
-    /// Set the cursor the tick resolved from the hovered record, only when it
-    /// changed, so an idle pointer sends the compositor nothing.
     fn applyCursor(self: *Host) void {
         assert(self.core.phase == .idle);
         if (self.core.cursor == self.cursor) return;
@@ -616,9 +480,6 @@ pub const Host = struct {
         assert(self.cursor == self.core.cursor);
     }
 
-    /// Send the rendered frame's IME state to text-input-v3: enabled while a
-    /// text input is focused and the compositor has entered the surface, with
-    /// the caret rect the core's `Query` answers.
     fn syncIme(self: *Host) void {
         self.endStaleComposition();
         const rect = self.query.imeCursorRect();
@@ -641,15 +502,6 @@ pub const Host = struct {
         self.ime_rect = caret;
     }
 
-    /// One text-input-v3 object serves every text field, so the input method
-    /// never sees Gooey's focus move. When the focused field changes with a
-    /// composition left, disable and enable again, as a toolkit does between
-    /// widgets, so the input method resets instead of composing into the next
-    /// field. The core has already committed the preedit into the old field
-    /// (`Engine.commitPreedit`), so it lands there before the disable. A
-    /// click needs none of this on GNOME, whose compositor resets the input
-    /// method on a press (committing or clearing, as the engine chooses),
-    /// but an app's `effects.focus` does.
     fn endStaleComposition(self: *Host) void {
         const owner = self.query.imeOwner();
         if (std.meta.eql(owner, self.ime_owner)) return;
@@ -660,15 +512,9 @@ pub const Host = struct {
         if (!self.ime_enabled) return;
         self.window.disableIme();
         self.window.enableIme();
-        // A re-enabled text input has no caret rect until one is sent.
         self.ime_rect = null;
     }
 
-    // Render thread only.
-
-    /// A frame is in flight, the compositor is ready for it, and the last
-    /// present is at least `present_interval_ns` old. The CPU renderer also
-    /// needs a buffer the compositor has released.
     fn presentDue(self: *const Host) bool {
         if (!self.core.frame_in_flight.load(.acquire)) return false;
         if (cpu_renderer and !self.window.renderer.hasFreeSlot()) return false;
@@ -678,7 +524,6 @@ pub const Host = struct {
         return now_ns >= self.frame_callback_deadline_ns;
     }
 
-    /// The earliest time the next present may go out.
     fn pacedNs(self: *const Host) u64 {
         const presented_ns = self.presented_ns orelse return 0;
         const interval_ns = self.present_interval_ns.load(.acquire);
@@ -686,12 +531,8 @@ pub const Host = struct {
         return presented_ns + interval_ns;
     }
 
-    /// Present the frame in flight with a frame callback on the same commit,
-    /// then let the main thread make it `rendered` and build the next.
     fn presentFrame(self: *Host) void {
         assert(self.core.frame_in_flight.load(.acquire));
-        // A callback past its deadline is abandoned; its event, if it ever
-        // arrives, is dropped with the proxy.
         if (self.frame_callback) |callback| wayland.callbackDestroy(callback);
         self.frame_callback = wayland.surfaceFrame(self.surface_wrapper);
         if (self.frame_callback) |callback| {
@@ -701,15 +542,11 @@ pub const Host = struct {
         const now_ns = self.nowNs();
         self.frame_callback_deadline_ns = now_ns + timeout_ns;
         self.presented_ns = now_ns;
-        // The present commits the surface, and the callback with it.
         core_tick.presentBuilt(self.core);
         assert(!self.core.frame_in_flight.load(.acquire));
         self.scheduleTick();
     }
 
-    /// Wait for a published frame, a frame callback, the callback deadline,
-    /// or `deinit`, then dispatch the render queue. Returns false when the
-    /// connection failed.
     fn renderWait(self: *Host) bool {
         var rounds: u32 = 0;
         while (wayland.wl_display_prepare_read_queue(self.display, self.render_queue) != 0) {
@@ -746,10 +583,6 @@ pub const Host = struct {
         return true;
     }
 
-    /// While a frame waits, sleep until it may present: the pacing time,
-    /// or the callback deadline when a callback is outstanding (its arrival
-    /// wakes the poll sooner). Without a frame, or without a released CPU
-    /// buffer, whose release event wakes it, sleep until woken.
     fn renderTimeoutMs(self: *const Host) i32 {
         if (!self.core.frame_in_flight.load(.acquire)) return -1;
         if (cpu_renderer and !self.window.renderer.hasFreeSlot()) return -1;
@@ -758,14 +591,11 @@ pub const Host = struct {
         const now_ns = self.nowNs();
         if (now_ns >= wake_ns) return 0;
         const remaining_ms = std.math.divCeil(u64, wake_ns - now_ns, std.time.ns_per_ms) catch
-            unreachable; // The divisor is a non-zero constant.
+            unreachable;
         assert(remaining_ms <= frame_callback_timeout_ms);
         return @intCast(remaining_ms);
     }
 
-    /// Bring the swapchain and the surface's viewport and window geometry to
-    /// the frame's viewport before drawing it, so both reach the compositor
-    /// in the present's commit.
     fn applyViewport(self: *Host, frame: *const records.Frame) void {
         assert(frame.viewport_width >= 1);
         assert(frame.viewport_height >= 1);
@@ -786,10 +616,6 @@ pub const Host = struct {
         self.fitViewport(width, height, frame.scale_factor);
     }
 
-    /// Size the framebuffer for a window of `width` x `height` logical
-    /// pixels: at `scale_factor`, or lower when that would pass the window
-    /// budget (or the renderer's highest scale), and the compositor scales
-    /// the smaller buffer up through the surface's viewport.
     fn fitViewport(self: *Host, width: u32, height: u32, scale_factor: f32) void {
         assert(width > 0);
         assert(height > 0);
@@ -823,20 +649,13 @@ pub const Host = struct {
     }
 };
 
-/// The file dialog the main loop is waiting on: the portal request, the
-/// core's handler slot for its outcome, and the connection's fd it polls.
 const PendingDialog = struct {
     request: file_dialog.PortalRequest,
     request_id: u32,
     fd: posix.fd_t,
-    /// The request may select more than one path (`Open Files`).
     many: bool,
 };
 
-/// Three quarters of the refresh period of an output refreshing at
-/// `refresh_rate_mhz`. A compositor that paces callbacks to its refresh
-/// answers each about one period after the last present, so this floor never
-/// delays it; it only spreads callbacks answered early.
 fn presentIntervalNs(refresh_rate_mhz: i32) u64 {
     assert(refresh_rate_mhz > 0);
     const rate_mhz = std.math.clamp(refresh_rate_mhz, refresh_rate_mhz_min, refresh_rate_mhz_max);
@@ -860,8 +679,6 @@ fn renderThreadMain(host: *Host) void {
     host.frame_callback = null;
 }
 
-/// The frame callback, on the render thread: the compositor is ready for
-/// the next frame.
 fn frameCallbackDone(
     data: ?*anyopaque,
     callback: *wayland.Callback,
@@ -874,7 +691,6 @@ fn frameCallbackDone(
     host.frame_callback = null;
 }
 
-/// The core's presenter, on the render thread.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,
@@ -888,19 +704,14 @@ fn draw(
     const uploads = host.core.resources.atlas_uploads;
     backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
     backend.checkCapabilities(renderer.capabilities(), packed_frame);
-    // CPU: `presentDue` waited for a released buffer; only this thread takes one.
     if (cpu_renderer) assert(renderer.hasFreeSlot());
     renderer.draw(packed_frame, host.viewport, clear);
-    // Vulkan: an out-of-date swapchain skips the frame and is recreated by
-    // the next draw; draw this frame again rather than leave a stale one.
     if (!cpu_renderer and renderer.swapchain_needs_recreate) {
         renderer.draw(packed_frame, host.viewport, clear);
     }
     assert(host.core.render_phase == .draw);
 }
 
-/// The window's close callback, on the main thread during dispatch: leave
-/// the loop once the dispatch unwinds. The app has one window.
 fn onClose(window: *PlatformWindow) bool {
     const host = window.getUserData(Host).?;
     assert(host.window == window);
@@ -908,12 +719,6 @@ fn onClose(window: *PlatformWindow) bool {
     return true;
 }
 
-/// The core's file dialog service, on the main thread during the drain. It
-/// sends the portal call and returns null: the dialog stays open while the
-/// loop keeps turning, and `pollDialog` queues the outcome once the Response
-/// arrives. A call that fails arrives as `failed` with its error, never as
-/// `cancelled`. One dialog is open at a time: a second request while one is
-/// open fails at once and leaves the first open.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
@@ -921,7 +726,7 @@ fn openDialog(
     request: core_handler.FileDialogRequest,
 ) ?Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
-    _ = scratch; // The Response's paths are decoded into `dialog_paths`.
+    _ = scratch;
     assert(host.core.phase == .drain);
     assert(request_id < host.core.dialog_handlers.len);
     if (host.dialog) |open| {
@@ -943,7 +748,6 @@ fn openDialog(
         .open => |*options| pending.request.begin(.{ .open = options }, strings),
         .save => |*options| pending.request.begin(.{ .save = options }, strings),
     };
-    // The call holds its own copy; the buffer next holds the Response's paths.
     @memset(strings, 0);
     begun catch |err| {
         host.dialog = null;
@@ -966,8 +770,6 @@ fn eventFd() !posix.fd_t {
     return fd;
 }
 
-/// Add one to the eventfd's counter. The counter cannot overflow (it is
-/// drained every turn), so the write cannot fail.
 fn signal(fd: posix.fd_t) void {
     assert(fd >= 0);
     const one: u64 = 1;
@@ -975,7 +777,6 @@ fn signal(fd: posix.fd_t) void {
     assert(written == @sizeOf(u64));
 }
 
-/// Reset the eventfd's counter. A spurious wake reads nothing.
 fn drain(fd: posix.fd_t) void {
     assert(fd >= 0);
     var count: u64 = 0;
@@ -986,7 +787,6 @@ fn drain(fd: posix.fd_t) void {
     assert(read_bytes == @sizeOf(u64));
 }
 
-/// The text engines' clipboard on the platform's 0.3.1 path, main thread.
 fn clipboardRead(_: *anyopaque, out: []u8) u32 {
     return clipboard.readText(out);
 }

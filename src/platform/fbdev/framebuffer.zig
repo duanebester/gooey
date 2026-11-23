@@ -1,14 +1,3 @@
-//! Linux framebuffer device output (`/dev/fb0`) for the fbdev backend,
-//! opened and mapped once during initialization. Frames render into a RAM
-//! back buffer and copy here row by row: framebuffer memory is often
-//! uncached or write-combined and the renderer's read-modify-write blending
-//! would be slow on it. The copy converts to the panel's pixel format (32 bpp
-//! XRGB/ARGB is a plain copy; other 16/32 bpp layouts with channels of at
-//! most 8 bits convert per pixel). When the driver supports
-//! `FBIO_WAITFORVSYNC`, each copy starts at vertical blank to reduce tearing;
-//! there is no page flipping, since a full 800x480 copy (~1.5 MB) finishes
-//! well within one refresh.
-
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
@@ -17,14 +6,10 @@ const limits = @import("../../core/limits.zig");
 
 const assert = std.debug.assert;
 
-// `ioctl` requests from <linux/fb.h>.
 const FBIOGET_VSCREENINFO: u32 = 0x4600;
 const FBIOGET_FSCREENINFO: u32 = 0x4602;
-/// `_IOW('F', 0x20, __u32)`.
 const FBIO_WAITFORVSYNC: u32 = 0x4004_4620;
 
-// The framework's framebuffer ceiling; the window checks the panel against
-// the app's own budget.
 const width_max = limits.MAX_FRAMEBUFFER_WIDTH;
 const height_max = limits.MAX_FRAMEBUFFER_HEIGHT;
 
@@ -34,7 +19,6 @@ pub const Bitfield = extern struct {
     msb_right: u32,
 };
 
-/// `struct fb_var_screeninfo`.
 pub const VarScreenInfo = extern struct {
     xres: u32,
     yres: u32,
@@ -67,7 +51,6 @@ pub const VarScreenInfo = extern struct {
     reserved: [4]u32,
 };
 
-/// `struct fb_fix_screeninfo`. `unsigned long` fields follow the target ABI.
 pub const FixScreenInfo = extern struct {
     id: [16]u8,
     smem_start: c_ulong,
@@ -87,8 +70,6 @@ pub const FixScreenInfo = extern struct {
 };
 
 comptime {
-    // Sizes are fixed by the kernel ABI; a mismatch would make the `ioctl`
-    // write past the struct.
     assert(@sizeOf(VarScreenInfo) == 160);
     assert(@sizeOf(FixScreenInfo) == if (@sizeOf(c_ulong) == 8) 80 else 68);
 }
@@ -103,10 +84,8 @@ pub const PixelLayout = struct {
     red: Channel,
     green: Channel,
     blue: Channel,
-    /// Alpha bits, set to all ones, or null when the format has none.
     alpha: ?Channel,
 
-    /// The renderer's own `0xAARRGGBB` format, presented with a plain copy.
     pub fn isNative(self: PixelLayout) bool {
         assert(self.bytes_per_pixel == 2 or self.bytes_per_pixel == 4);
         return self.bytes_per_pixel == 4 and
@@ -121,7 +100,6 @@ pub const PixelLayout = struct {
         if (info.bits_per_pixel != 16 and info.bits_per_pixel != 32) {
             return error.UnsupportedPixelFormat;
         }
-        // Grayscale and FOURCC (`grayscale > 1`) panels have no RGB fields.
         if (info.grayscale != 0) return error.UnsupportedPixelFormat;
         const layout = PixelLayout{
             .bytes_per_pixel = @intCast(info.bits_per_pixel / 8),
@@ -139,8 +117,6 @@ pub const PixelLayout = struct {
 
     fn channel(field: Bitfield, bits_per_pixel: u32) error{UnsupportedPixelFormat}!Channel {
         assert(bits_per_pixel == 16 or bits_per_pixel == 32);
-        // `msb_right` panels store channel bits reversed; none are in use on
-        // current drivers, so reject them rather than draw garbage.
         if (field.msb_right != 0) return error.UnsupportedPixelFormat;
         if (field.length == 0 or field.length > 8) return error.UnsupportedPixelFormat;
         if (field.offset + field.length > bits_per_pixel) return error.UnsupportedPixelFormat;
@@ -148,8 +124,6 @@ pub const PixelLayout = struct {
     }
 };
 
-/// Convert one `0xAARRGGBB` pixel to the device layout, truncating each
-/// channel to its width.
 pub fn convertPixel(pixel: u32, layout: PixelLayout) u32 {
     assert(layout.red.length >= 1);
     assert(layout.red.length <= 8);
@@ -190,11 +164,9 @@ pub fn convertRow(source: []const u32, target: []u8, layout: PixelLayout) void {
 pub const Framebuffer = struct {
     fd: posix.fd_t = -1,
     memory: []align(std.heap.page_size_min) u8 = &.{},
-    /// Visible resolution in pixels.
     width: u32 = 0,
     height: u32 = 0,
     line_length: u32 = 0,
-    /// Byte offset of the visible area's first pixel within `memory`.
     visible_offset: usize = 0,
     layout: PixelLayout = undefined,
     vsync_supported: bool = true,
@@ -268,8 +240,6 @@ pub const Framebuffer = struct {
         if (!self.vsync_supported) return;
         var screen: u32 = 0;
         const rc = linux.ioctl(self.fd, FBIO_WAITFORVSYNC, @intFromPtr(&screen));
-        // Most fbdev drivers, including DRM's fbdev emulation, do not
-        // implement it; stop asking after the first refusal.
         if (linux.errno(rc) != .SUCCESS) self.vsync_supported = false;
     }
 };

@@ -20,8 +20,6 @@ comptime {
     assert(@backingInt(Column.modified) + 1 == column_count);
 }
 const column_names = [column_count][]const u8{ "ID", "Name", "Status", "Size", "Modified" };
-/// Every column's width; Name's is its minimum, since it grows into the
-/// width the fixed columns leave.
 const column_widths = [column_count]f32{ 80, 200, 100, 120, 150 };
 const column_grow: Column = .name;
 const table_width: f32 = blk: {
@@ -60,12 +58,10 @@ pub const SortDirection = enum {
 
 pub const State = struct {
     rows: [row_count]RowData = undefined,
-    /// Display row to data row.
     order: [row_count]u32 = undefined,
     sort_column: ?Column = null,
     sort_direction: SortDirection = .none,
 
-    /// Rows from the seeded generator, so the table is deterministic.
     fn init(self: *State, _: gooey.Init, _: *Effects) void {
         var seed: u64 = 12345;
         for (&self.rows, &self.order, 0..) |*row, *order, index| {
@@ -107,8 +103,6 @@ fn nextRandom(seed: *u64) u64 {
     return seed.* >> 33;
 }
 
-/// Heap sort, kept so equal keys land in the same order: it sorts the
-/// current order in place, in O(n log n) with no allocation.
 fn heapSort(
     order: *[row_count]u32,
     rows: *const [row_count]RowData,
@@ -134,7 +128,6 @@ fn siftDown(order: *[row_count]u32, rows: *const [row_count]RowData, sift: Sift)
     assert(sift.start < sift.end);
     assert(sift.end <= row_count);
     var root = sift.start;
-    // Each step moves the root down one level of a heap of 10,000.
     var depth: u32 = 0;
     while (depth < 32) : (depth += 1) {
         const left = 2 * root + 1;
@@ -150,8 +143,6 @@ fn siftDown(order: *[row_count]u32, rows: *const [row_count]RowData, sift: Sift)
     unreachable;
 }
 
-/// Whether `child` belongs above `parent` in the heap: larger keys rise when
-/// sorting up, smaller ones when sorting down.
 fn before(rows: *const [row_count]RowData, sift: Sift, parent: u32, child: u32) bool {
     const order = compare(&rows[child], &rows[parent], sift.column);
     return if (sift.up) order == .gt else order == .lt;
@@ -210,8 +201,13 @@ const SortStatus = struct {
     pub fn render(_: SortStatus, cx: *Cx) void {
         const s = cx.state(State);
         var buffer: [64]u8 = undefined;
+        if (s.sort_column) |column| {
+            assert(std.fmt.count("Sort: {s} {s}", .{
+                column_names[@backingInt(column)],
+                "↑",
+            }) <= buffer.len);
+        }
         const text = if (s.sort_column) |column|
-            // 64 bytes hold "Sort: ", the longest name, and an arrow.
             std.fmt.bufPrint(&buffer, "Sort: {s} {s}", .{
                 column_names[@backingInt(column)],
                 if (s.sort_direction == .ascending) "↑" else "↓",
@@ -269,8 +265,6 @@ fn cell_style(column: u32, height: f32) ui.Style {
     const width = column_widths[column];
     const grows = column == @backingInt(column_grow);
     return .{
-        // The only grow cell in its row takes all the free width, whatever
-        // its text, so header and row cells line up.
         .width = if (grows) .{ .grow = 1 } else .{ .fixed = width },
         .width_min = if (grows) width else null,
         .height = .{ .fixed = height },
@@ -295,8 +289,8 @@ const TableRow = struct {
         var id_buffer: [16]u8 = undefined;
         var size_buffer: [32]u8 = undefined;
         var modified_buffer: [32]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u32)}) <= id_buffer.len);
         const cells = [column_count][]const u8{
-            // 16 bytes hold any u32.
             std.fmt.bufPrint(&id_buffer, "{d}", .{row.id}) catch unreachable,
             names[row.name_index],
             statuses[row.status_index],
@@ -325,9 +319,11 @@ const RowCells = struct {
     }
 };
 
-/// Human-readable size; 32 bytes hold every case.
 fn formatSize(buffer: *[32]u8, bytes: u64) []const u8 {
     const value: f64 = @floatFromInt(bytes);
+    comptime assert(std.fmt.count("{d:.2} GB", .{
+        @as(f64, @floatFromInt(std.math.maxInt(u64))) / (1024.0 * 1024.0 * 1024.0),
+    }) <= buffer.len);
     if (bytes < 1024) return std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch unreachable;
     if (bytes < 1024 * 1024) {
         return std.fmt.bufPrint(buffer, "{d:.1} KB", .{value / 1024.0}) catch unreachable;
@@ -340,8 +336,8 @@ fn formatSize(buffer: *[32]u8, bytes: u64) []const u8 {
     return std.fmt.bufPrint(buffer, "{d:.2} GB", .{gigabytes}) catch unreachable;
 }
 
-/// Age in days, weeks, or months; 32 bytes hold every case.
 fn formatModified(buffer: *[32]u8, days_ago: u16) []const u8 {
+    comptime assert(std.fmt.count("{d} months ago", .{std.math.maxInt(u16)}) <= buffer.len);
     if (days_ago == 0) return "Today";
     if (days_ago == 1) return "Yesterday";
     if (days_ago < 7) {

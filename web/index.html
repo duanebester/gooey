@@ -68,16 +68,10 @@
     <script type="module">
       const canvas = document.getElementById("canvas");
 
-      // The core host sizes the drawing buffer (`setCanvasSize`): it reads
-      // the canvas's CSS size and `devicePixelRatio` every frame and fits the
-      // buffer to the app's framebuffer budget, so a canvas past the budget
-      // renders at a lower scale and CSS scales it up.
 
-      // WebGPU state
       let device, queue, context, format;
       let wasmInstance;
 
-      // Resource handle management (JS owns the actual GPU objects)
       const handles = {
         shaderModules: new Map(),
         pipelines: new Map(),
@@ -95,7 +89,6 @@
         return id;
       }
 
-      // Text encoder for string conversion
       const textDecoder = new TextDecoder();
 
       function getString(ptr, len) {
@@ -103,15 +96,7 @@
         return textDecoder.decode(new Uint8Array(memory.buffer, ptr, len));
       }
 
-      // =========================================================
-      // Input rings shared with WASM (src/platform/web/event_ring.zig)
-      // =========================================================
 
-      // A ring header is four u32 words: write head, read head, capacity
-      // (events, a power of two, from ResourceLimits.events.queue_count_max)
-      // and the address of the events. Returns the byte offset of the slot
-      // to write, or -1 when the ring is full; the caller then advances the
-      // write head with ringCommit.
       function ringSlot(ringPtr, eventBytes, name) {
         const header = new Uint32Array(wasmInstance.exports.memory.buffer, ringPtr, 4);
         const capacity = header[2];
@@ -130,28 +115,20 @@
         header[0] = (header[0] + 1) >>> 0;
       }
 
-      // =========================================================
-      // Mouse Input System (Shared Memory Ring Buffer)
-      // =========================================================
 
       let mouseRingPtr = 0;
 
-      // Pressed buttons, for drag detection
       let mouseButtons = 0;
 
-      // Multi-click detection state
       let lastClickTime = 0;
       let lastClickX = 0;
       let lastClickY = 0;
       let clickCount = 0;
-      const DOUBLE_CLICK_TIME = 400; // ms
-      const DOUBLE_CLICK_RADIUS = 5; // pixels
+      const DOUBLE_CLICK_TIME = 400;
+      const DOUBLE_CLICK_RADIUS = 5;
 
-      // Current modifier state (tracked from keyboard events)
       let currentModifiers = 0;
 
-      // Buttons down as the last pointer event reported them, and the last
-      // pointer position in canvas pixels, for a cancellation.
       let pointerButtons = 0;
       let lastPointerX = 0;
       let lastPointerY = 0;
@@ -160,23 +137,19 @@
         if (mouseButtons === 0 && pointerButtons === 0) return;
         mouseButtons = 0;
         pointerButtons = 0;
-        pushMouseEvent(6, 0, lastPointerX, lastPointerY, 0, currentModifiers); // 6 = pointer_cancelled
+        pushMouseEvent(6, 0, lastPointerX, lastPointerY, 0, currentModifiers);
       }
 
       function initMouse() {
         mouseRingPtr = wasmInstance.exports.getMouseRingPtr();
         console.log("[Gooey] Mouse initialized, mouseRingPtr:", mouseRingPtr);
 
-        // Mouse button events
         canvas.addEventListener("mousedown", handleMouseDown);
         canvas.addEventListener("mouseup", handleMouseUp);
         canvas.addEventListener("mousemove", handleMouseMove);
         canvas.addEventListener("mouseenter", handleMouseEnter);
         canvas.addEventListener("mouseleave", handleMouseLeave);
 
-        // Pointer capture keeps a drag's moves and its release on the canvas
-        // when the pointer leaves it (mouse events follow the capture), as
-        // native windows do. Mouse only: touch and pen behave as before.
         canvas.addEventListener("pointerdown", (e) => {
           if (e.pointerType !== "mouse") return;
           canvas.setPointerCapture(e.pointerId);
@@ -185,24 +158,18 @@
         canvas.addEventListener("pointerup", (e) => {
           if (e.pointerType === "mouse") pointerButtons = e.buttons;
         });
-        // A gesture the page takes away cancels: a drag must not drop or
-        // commit where the pointer happened to be.
         canvas.addEventListener("pointercancel", (e) => {
           if (e.pointerType === "mouse") cancelPointer();
         });
         canvas.addEventListener("lostpointercapture", (e) => {
-          // The capture is released after the last button's pointerup too;
-          // only a loss with a button still down is a cancellation.
           if (e.pointerType === "mouse" && pointerButtons !== 0) cancelPointer();
         });
         window.addEventListener("blur", () => {
           if (mouseButtons !== 0) cancelPointer();
         });
 
-        // Prevent context menu on right-click
         canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-        // Track modifiers from keyboard
         window.addEventListener("keydown", updateModifiers);
         window.addEventListener("keyup", updateModifiers);
       }
@@ -234,7 +201,7 @@
           timeDelta < DOUBLE_CLICK_TIME &&
           distSq < DOUBLE_CLICK_RADIUS * DOUBLE_CLICK_RADIUS
         ) {
-          clickCount = Math.min(clickCount + 1, 3); // Cap at triple-click
+          clickCount = Math.min(clickCount + 1, 3);
         } else {
           clickCount = 1;
         }
@@ -257,7 +224,7 @@
         const modifiers = getModifiersFromEvent(e);
         currentModifiers = modifiers;
 
-        pushMouseEvent(0, e.button, x, y, count, modifiers); // 0 = mouse_down
+        pushMouseEvent(0, e.button, x, y, count, modifiers);
       }
 
       function handleMouseUp(e) {
@@ -270,7 +237,7 @@
         const modifiers = getModifiersFromEvent(e);
         currentModifiers = modifiers;
 
-        pushMouseEvent(1, e.button, x, y, clickCount, modifiers); // 1 = mouse_up
+        pushMouseEvent(1, e.button, x, y, clickCount, modifiers);
       }
 
       function handleMouseMove(e) {
@@ -284,10 +251,8 @@
         lastPointerX = x;
         lastPointerY = y;
 
-        // Determine if this is a drag (any button pressed) or just a move
-        const eventType = mouseButtons !== 0 ? 3 : 2; // 3 = mouse_dragged, 2 = mouse_moved
 
-        // For drags, use the primary button that's pressed
+        const eventType = mouseButtons !== 0 ? 3 : 2;
         const button =
           mouseButtons & 1
             ? 0
@@ -307,7 +272,7 @@
 
         const modifiers = getModifiersFromEvent(e);
 
-        pushMouseEvent(4, 0, x, y, 0, modifiers); // 4 = mouse_entered
+        pushMouseEvent(4, 0, x, y, 0, modifiers);
       }
 
       function handleMouseLeave(e) {
@@ -315,13 +280,11 @@
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-        // Under pointer capture a drag reports no leave until its release,
-        // so the buttons are already up here.
         mouseButtons = 0;
 
         const modifiers = getModifiersFromEvent(e);
 
-        pushMouseEvent(5, 0, x, y, 0, modifiers); // 5 = mouse_exited
+        pushMouseEvent(5, 0, x, y, 0, modifiers);
       }
 
       function pushMouseEvent(
@@ -339,20 +302,17 @@
         if (eventOffset < 0) return;
 
         const view = new DataView(mem, eventOffset, 24);
-        view.setFloat64(0, posX, true); // position_x
-        view.setFloat64(8, posY, true); // position_y
-        view.setUint8(16, eventType); // event_type
-        view.setUint8(17, button); // button (0=left, 1=right, 2=middle)
-        view.setUint8(18, clickCount); // click_count
-        view.setUint8(19, modifiers); // modifiers
-        view.setUint32(20, 0, true); // reserved
+        view.setFloat64(0, posX, true);
+        view.setFloat64(8, posY, true);
+        view.setUint8(16, eventType);
+        view.setUint8(17, button);
+        view.setUint8(18, clickCount);
+        view.setUint8(19, modifiers);
+        view.setUint32(20, 0, true);
 
         ringCommit(mouseRingPtr);
       }
 
-      // =========================================================
-      // Scroll/Wheel Input System (Shared Memory Ring Buffer)
-      // =========================================================
 
       let scrollRingPtr = 0;
 
@@ -367,7 +327,7 @@
       }
 
       function handleWheel(e) {
-        e.preventDefault(); // Prevent page scrolling
+        e.preventDefault();
 
         if (!scrollRingPtr) return;
 
@@ -375,13 +335,11 @@
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-        // deltaMode: 0 = pixels, 1 = lines, 2 = pages
         let deltaX = e.deltaX;
         let deltaY = e.deltaY;
 
-        // Normalize line/page deltas to pixels
         if (e.deltaMode === 1) {
-          deltaX *= 20; // ~1 line = 20px
+          deltaX *= 20;
           deltaY *= 20;
         } else if (e.deltaMode === 2) {
           deltaX *= canvas.clientHeight;
@@ -397,22 +355,16 @@
         if (eventOffset < 0) return;
 
         const view = new DataView(mem, eventOffset, 24);
-        view.setFloat64(0, posX, true); // position_x
-        view.setFloat64(8, posY, true); // position_y
-        view.setFloat32(16, deltaX, true); // delta_x
-        view.setFloat32(20, deltaY, true); // delta_y
+        view.setFloat64(0, posX, true);
+        view.setFloat64(8, posY, true);
+        view.setFloat32(16, deltaX, true);
+        view.setFloat32(20, deltaY, true);
 
         ringCommit(scrollRingPtr);
       }
 
-      // =========================================================
-      // Keyboard Input System (Shared Memory Ring Buffers)
-      // =========================================================
 
-      // Map browser key codes to macOS virtual key codes
-      // Used by Gooey's KeyCode enum
       const KEY_CODE_MAP = {
-        // Letters (QWERTY layout, macOS keycodes)
         KeyA: 0x00,
         KeyS: 0x01,
         KeyD: 0x02,
@@ -440,7 +392,6 @@
         KeyN: 0x2d,
         KeyM: 0x2e,
 
-        // Numbers
         Digit1: 0x12,
         Digit2: 0x13,
         Digit3: 0x14,
@@ -452,15 +403,13 @@
         Digit9: 0x19,
         Digit0: 0x1d,
 
-        // Special keys
         Enter: 0x24,
         Tab: 0x30,
         Space: 0x31,
         Backspace: 0x33,
         Escape: 0x35,
-        Delete: 0x75, // Forward delete
+        Delete: 0x75,
 
-        // Modifiers (for flagsChanged-style events)
         MetaLeft: 0x37,
         MetaRight: 0x36,
         ShiftLeft: 0x38,
@@ -471,19 +420,16 @@
         ControlLeft: 0x3b,
         ControlRight: 0x3e,
 
-        // Arrow keys
         ArrowLeft: 0x7b,
         ArrowRight: 0x7c,
         ArrowDown: 0x7d,
         ArrowUp: 0x7e,
 
-        // Navigation
         Home: 0x73,
         End: 0x77,
         PageUp: 0x74,
         PageDown: 0x79,
 
-        // Function keys
         F1: 0x7a,
         F2: 0x78,
         F3: 0x63,
@@ -504,19 +450,15 @@
       let textBufferPtr = 0;
 
       function initKeyboard() {
-        // Get buffer pointers from WASM
         keyRingPtr = wasmInstance.exports.getKeyRingPtr();
         textBufferPtr = wasmInstance.exports.getTextBufferPtr();
 
         const hiddenInput = document.getElementById("hiddenInput");
 
-        // Make canvas focusable for key events
         canvas.tabIndex = 0;
         canvas.style.outline = "none";
 
-        // Key events on canvas (physical keys for navigation/shortcuts)
         canvas.addEventListener("keydown", (e) => {
-          // Forward focus to hidden input for text entry
           if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
             hiddenInput.focus();
           }
@@ -524,27 +466,22 @@
         });
         canvas.addEventListener("keyup", handleKeyUp);
 
-        // Text input via hidden input element
         hiddenInput.addEventListener("input", (e) => {
-          // Composition commits are queued by compositionend exactly once.
           if (e.isComposing) return;
           if (hiddenInput.value) {
             appendText(hiddenInput.value);
-            hiddenInput.value = ""; // Clear after capturing
+            hiddenInput.value = "";
           }
         });
 
-        // Handle composition start
         hiddenInput.addEventListener("compositionstart", (e) => {
           startComposition();
         });
 
-        // Handle composition updates (preedit text)
         hiddenInput.addEventListener("compositionupdate", (e) => {
           updateCompositionText(e.data || "");
         });
 
-        // Handle composition end
         hiddenInput.addEventListener("compositionend", (e) => {
           finishComposition();
           if (e.data) {
@@ -553,7 +490,6 @@
           }
         });
 
-        // Handle paste events - capture clipboard text synchronously
         hiddenInput.addEventListener("paste", (e) => {
           e.preventDefault();
           const text = e.clipboardData?.getData("text");
@@ -562,10 +498,8 @@
           }
         });
 
-        // Forward key events from hidden input to canvas logic
         hiddenInput.addEventListener("keydown", (e) => {
           handleKeyDown(e);
-          // Return focus to canvas for non-printable keys
           if (shouldPreventDefault(e)) {
             e.preventDefault();
             canvas.focus();
@@ -573,9 +507,7 @@
         });
         hiddenInput.addEventListener("keyup", handleKeyUp);
 
-        // Keep hidden input in sync when canvas is focused
         canvas.addEventListener("focus", () => {
-          // Small delay to let click processing complete
           setTimeout(() => {
             if (document.activeElement === canvas) {
               hiddenInput.focus();
@@ -583,12 +515,10 @@
           }, 10);
         });
 
-        // Click on canvas focuses the hidden input
         canvas.addEventListener("click", () => {
           hiddenInput.focus();
         });
 
-        // Initial focus
         hiddenInput.focus();
 
         console.log(
@@ -601,27 +531,23 @@
 
       function handleKeyDown(e) {
         if (isImeOwnedKey(e)) return;
-        // Prevent browser defaults for keys we handle
         if (shouldPreventDefault(e)) {
           e.preventDefault();
         }
-        pushKeyEvent(0, e); // 0 = key_down
-        console.log("[Gooey] keydown:", e.code, e.key); // Debug
+        pushKeyEvent(0, e);
+        console.log("[Gooey] keydown:", e.code, e.key);
       }
 
       function handleKeyUp(e) {
         if (isImeOwnedKey(e)) return;
-        pushKeyEvent(1, e); // 1 = key_up
+        pushKeyEvent(1, e);
       }
 
       function isImeOwnedKey(e) {
-        // Safari can report candidate confirmation as keyCode 229 after
-        // compositionend, when isComposing has already changed to false.
         return e.isComposing || e.keyCode === 229;
       }
 
       function handleBeforeInput(e) {
-        // Captures: typing, paste, emoji picker, autocorrect
         if (e.data) {
           e.preventDefault();
           appendText(e.data);
@@ -629,7 +555,6 @@
       }
 
       function handleCompositionEnd(e) {
-        // Captures: IME completion (CJK, etc.)
         if (e.data) {
           appendText(e.data);
         }
@@ -637,7 +562,6 @@
 
       function shouldPreventDefault(e) {
         if (isImeOwnedKey(e)) return false;
-        // Prevent defaults for navigation and common shortcuts
         const dominated = [
           "Tab",
           "Enter",
@@ -656,10 +580,9 @@
 
         if (dominated.includes(e.code)) return true;
 
-        // Allow Cmd/Ctrl+V through so browser paste event fires
         if ((e.metaKey || e.ctrlKey) && e.code === "KeyV") return false;
 
-        if (e.metaKey || e.ctrlKey) return true; // Other shortcuts
+        if (e.metaKey || e.ctrlKey) return true;
 
         return false;
       }
@@ -674,14 +597,13 @@
         const bytes = new Uint8Array(mem, eventOffset, 8);
         const view = new DataView(mem, eventOffset, 8);
 
-        // Write event (8 bytes)
-        bytes[0] = eventType; // event_type
-        view.setUint16(1, KEY_CODE_MAP[e.code] ?? UNKNOWN_KEY, true); // key_code (little-endian)
-        bytes[3] = packModifiers(e); // modifiers
-        bytes[4] = (e.repeat ? 1 : 0) | (e.isComposing ? 2 : 0); // flags
-        bytes[5] = 0; // reserved
-        bytes[6] = 0; // reserved
-        bytes[7] = 0; // reserved
+        bytes[0] = eventType;
+        view.setUint16(1, KEY_CODE_MAP[e.code] ?? UNKNOWN_KEY, true);
+        bytes[3] = packModifiers(e);
+        bytes[4] = (e.repeat ? 1 : 0) | (e.isComposing ? 2 : 0);
+        bytes[5] = 0;
+        bytes[6] = 0;
+        bytes[7] = 0;
 
         ringCommit(keyRingPtr);
       }
@@ -695,8 +617,6 @@
         );
       }
 
-      // Length of the longest prefix of UTF-8 `bytes` that fits in `limit`
-      // without splitting a codepoint; continuation bytes are 0b10xxxxxx.
       function utf8PrefixLength(bytes, limit) {
         if (bytes.length <= limit) return bytes.length;
         let n = limit;
@@ -707,8 +627,6 @@
       function appendText(text) {
         if (!textBufferPtr) return;
 
-        // Header: length, capacity (ResourceLimits.events.text_bytes_max)
-        // and the address of the bytes (src/platform/web/text_buffer.zig).
         const mem = wasmInstance.exports.memory.buffer;
         const header = new Uint32Array(mem, textBufferPtr, 3);
         const capacity = header[1];
@@ -740,8 +658,8 @@
         const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
         const view = new DataView(wasmInstance.exports.memory.buffer);
         view.setUint32(compositionBufferPtr, 0, true);
-        mem[compositionBufferPtr + 4] = 1; // active
-        mem[compositionBufferPtr + 5] = 0; // wait for first preedit update
+        mem[compositionBufferPtr + 4] = 1;
+        mem[compositionBufferPtr + 5] = 0;
       }
 
       function finishComposition() {
@@ -749,16 +667,14 @@
         const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
         const view = new DataView(wasmInstance.exports.memory.buffer);
         view.setUint32(compositionBufferPtr, 0, true);
-        mem[compositionBufferPtr + 4] = 0; // inactive
-        mem[compositionBufferPtr + 5] = 1; // pending clear event
+        mem[compositionBufferPtr + 4] = 0;
+        mem[compositionBufferPtr + 5] = 1;
       }
 
       function updateCompositionText(text) {
         if (!compositionBufferPtr) return;
         const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
         const view = new DataView(wasmInstance.exports.memory.buffer);
-        // Capacity (ResourceLimits.text.preedit_bytes_max) at offset 8 and
-        // the address of the bytes at 12 (composition_buffer.zig).
         const capacity = view.getUint32(compositionBufferPtr + 8, true);
         const dataPtr = view.getUint32(compositionBufferPtr + 12, true);
 
@@ -771,34 +687,21 @@
           );
         }
 
-        // Write text
         for (let i = 0; i < writeLen; i++) {
           mem[dataPtr + i] = encoded[i];
         }
 
-        // Write length
         view.setUint32(compositionBufferPtr, writeLen, true);
-        // Mark as active
         mem[compositionBufferPtr + 4] = 1;
-        // Queue this update exactly once.
         mem[compositionBufferPtr + 5] = 1;
       }
 
-      // Text rendering helper
       const textCanvas = new OffscreenCanvas(256, 256);
       const textCtx = textCanvas.getContext("2d", { willReadFrequently: true });
 
-      // SVG rasterization helper
       const svgCanvas = new OffscreenCanvas(256, 256);
       const svgCtx = svgCanvas.getContext("2d", { willReadFrequently: true });
 
-      /**
-       * Rasterize SVG path data into `out`, a deviceSize x deviceSize RGBA
-       * square in WASM memory, with two-channel encoding:
-       * R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke).
-       * The viewbox scales to the square, and a stroke past its edge is
-       * clipped, as CoreGraphics and Cairo rasterize it.
-       */
       function rasterizeSvgPathJS(
         pathData,
         deviceSize,
@@ -810,19 +713,15 @@
         if (out.length !== deviceSize * deviceSize * 4) {
           throw new Error(`SVG buffer of ${out.length} B for a ${deviceSize} px icon`);
         }
-        // Calculate scale from viewbox to device pixels
         const scale = deviceSize / viewbox;
 
-        // Resize canvas if needed
         if (svgCanvas.width < deviceSize || svgCanvas.height < deviceSize) {
           svgCanvas.width = deviceSize;
           svgCanvas.height = deviceSize;
         }
 
-        // Parse the SVG path
         const path = new Path2D(pathData);
 
-        // Render fill (if enabled)
         let fillData = null;
         if (hasFill) {
           svgCtx.clearRect(0, 0, deviceSize, deviceSize);
@@ -834,14 +733,13 @@
           fillData = svgCtx.getImageData(0, 0, deviceSize, deviceSize).data;
         }
 
-        // Render stroke (if enabled)
         let strokeData = null;
         if (strokeWidth > 0) {
           svgCtx.clearRect(0, 0, deviceSize, deviceSize);
           svgCtx.save();
           svgCtx.scale(scale, scale);
           svgCtx.strokeStyle = "white";
-          svgCtx.lineWidth = strokeWidth / scale; // Convert back to viewbox units
+          svgCtx.lineWidth = strokeWidth / scale;
           svgCtx.lineCap = "round";
           svgCtx.lineJoin = "round";
           svgCtx.stroke(path);
@@ -849,45 +747,35 @@
           strokeData = svgCtx.getImageData(0, 0, deviceSize, deviceSize).data;
         }
 
-        // Combine into RG channels (matching CoreGraphics output format)
         for (let i = 0; i < deviceSize * deviceSize; i++) {
           const fillAlpha = fillData ? fillData[i * 4 + 3] : 0;
           const strokeAlpha = strokeData ? strokeData[i * 4 + 3] : 0;
-          out[i * 4 + 0] = fillAlpha; // R = fill alpha
-          out[i * 4 + 1] = strokeAlpha; // G = stroke alpha
-          out[i * 4 + 2] = 0; // B = unused
-          out[i * 4 + 3] = Math.max(fillAlpha, strokeAlpha); // A = combined
+          out[i * 4 + 0] = fillAlpha;
+          out[i * 4 + 1] = strokeAlpha;
+          out[i * 4 + 2] = 0;
+          out[i * 4 + 3] = Math.max(fillAlpha, strokeAlpha);
         }
       }
 
-      // The font spec is "<style> <weight> <family>" (see WebFontFace.init).
-      // CSS `font` puts the size between weight and family; style and weight
-      // never contain spaces, so the second space ends the weight.
       function getFont(fontPtr, fontLen, size) {
         const spec = getString(fontPtr, fontLen);
         const weightEnd = spec.indexOf(" ", spec.indexOf(" ") + 1);
         return `${spec.slice(0, weightEnd)} ${size}px ${spec.slice(weightEnd + 1)}`;
       }
 
-      // =========================================================================
-      // Accessibility (A11Y) - Shadow DOM + ARIA for Screen Readers
-      // =========================================================================
 
       let a11yContainer = null;
-      const a11yElementPool = new Map(); // id -> HTMLElement
+      const a11yElementPool = new Map();
       let a11yNextId = 1;
       let a11yBatchDepth = 0;
 
-      // Accessibility functions provided to WASM
       const a11y = {
-        // Create the hidden accessibility container
         js_createContainer: () => {
           a11yContainer = document.createElement("div");
           a11yContainer.id = "gooey-a11y-root";
           a11yContainer.setAttribute("role", "application");
           a11yContainer.setAttribute("aria-label", "Gooey Application");
 
-          // Visually hidden but accessible to screen readers
           Object.assign(a11yContainer.style, {
             position: "absolute",
             width: "1px",
@@ -901,10 +789,9 @@
           });
 
           document.body.appendChild(a11yContainer);
-          return 0; // Container ID (0 is special)
+          return 0;
         },
 
-        // Create a DOM element with ARIA role
         js_createElement: (rolePtr, roleLen) => {
           const role = getString(rolePtr, roleLen);
           const id = a11yNextId++;
@@ -916,7 +803,6 @@
           return id;
         },
 
-        // Remove a DOM element
         js_removeElement: (id) => {
           const el = a11yElementPool.get(id);
           if (el && el.parentNode) {
@@ -925,7 +811,6 @@
           a11yElementPool.delete(id);
         },
 
-        // Set parent-child relationship
         js_setParent: (childId, parentId) => {
           const child = a11yElementPool.get(childId);
           const parent =
@@ -935,7 +820,6 @@
           }
         },
 
-        // Set an attribute on element
         js_setAttribute: (id, attrPtr, attrLen, valPtr, valLen) => {
           const el = a11yElementPool.get(id);
           if (el) {
@@ -945,7 +829,6 @@
           }
         },
 
-        // Remove an attribute from element
         js_removeAttribute: (id, attrPtr, attrLen) => {
           const el = a11yElementPool.get(id);
           if (el) {
@@ -954,7 +837,6 @@
           }
         },
 
-        // Set bounds (stored as data attribute for touch exploration)
         js_setBounds: (id, x, y, w, h) => {
           const el = a11yElementPool.get(id);
           if (el) {
@@ -962,26 +844,18 @@
           }
         },
 
-        // Focus an element
-        // No-op: Don't programmatically focus hidden a11y elements.
-        // Focus should stay on canvas/hiddenInput for keyboard events.
-        // Screen readers discover elements through DOM traversal, not focus.
         js_focus: (id) => {
-          // Intentionally empty - focusing hidden elements breaks keyboard input
           void id;
         },
 
-        // Announce a message via live region
         js_announce: (msgPtr, msgLen, assertive) => {
           const message = getString(msgPtr, msgLen);
 
-          // Create a temporary live region for the announcement
           const el = document.createElement("div");
           el.setAttribute("role", "status");
           el.setAttribute("aria-live", assertive ? "assertive" : "polite");
           el.setAttribute("aria-atomic", "true");
 
-          // Visually hidden
           Object.assign(el.style, {
             position: "absolute",
             width: "1px",
@@ -992,40 +866,29 @@
 
           document.body.appendChild(el);
 
-          // Delay to ensure screen reader picks up the change
           requestAnimationFrame(() => {
             el.textContent = message;
-            // Remove after screen reader has time to read
             setTimeout(() => el.remove(), 1000);
           });
         },
 
-        // Heuristic check for screen reader presence
         js_isScreenReaderHinted: () => {
-          // Can't reliably detect screen readers, use heuristics:
-          // 1. prefers-reduced-motion often correlates with accessibility needs
-          // 2. Some screen readers add class or modify userAgent
-          // 3. Default to true to be accessible by default
           return (
             window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
             document.body.classList.contains("sr-mode") ||
-            true // Always assume active for maximum accessibility
+            true
           );
         },
 
-        // Begin batching DOM operations (for future optimization)
         js_beginBatch: () => {
           a11yBatchDepth++;
         },
 
-        // End batching
         js_endBatch: () => {
           a11yBatchDepth--;
-          // Future: could use DocumentFragment or requestAnimationFrame batching
         },
       };
 
-      // Environment functions provided to WASM
       const env = {
         consoleLog: (ptr, len) => console.log("[WASM]", getString(ptr, len)),
         consoleError: (ptr, len) =>
@@ -1036,7 +899,6 @@
         getCanvasWidth: () => canvas.clientWidth,
         getCanvasHeight: () => canvas.clientHeight,
         getDevicePixelRatio: () => window.devicePixelRatio || 1,
-        // Resizing clears the canvas; the caller draws a frame afterwards.
         setCanvasSize: (w, h) => {
           canvas.width = w;
           canvas.height = h;
@@ -1045,21 +907,17 @@
         setDocumentTitle: (ptr, len) => {
           document.title = getString(ptr, len);
         },
-        // `interface.CursorShape` order: default, text, pointer,
-        // resize_left_right, resize_up_down.
         setCanvasCursor: (shape) => {
           canvas.style.cursor = ["default", "text", "pointer", "col-resize", "row-resize"][shape];
         },
         setImeCursorPosition(x, y, width, height) {
           const hiddenInput = document.getElementById("hiddenInput");
           const dpr = window.devicePixelRatio || 1;
-          // Convert from logical to CSS pixels and position near cursor
           hiddenInput.style.left = `${x}px`;
-          hiddenInput.style.top = `${y + height}px`; // Below the cursor line
+          hiddenInput.style.top = `${y + height}px`;
           hiddenInput.style.width = `${Math.max(width, 1)}px`;
           hiddenInput.style.height = `${height}px`;
         },
-        // WebGPU: the packed-frame renderer (src/platform/web/renderer.zig).
         createShaderModule: (codePtr, codeLen) => {
           const code = getString(codePtr, codeLen);
           const module = device.createShaderModule({ code });
@@ -1091,8 +949,6 @@
         deviceMaxStorageBufferBindingSize: () =>
           Math.min(device.limits.maxStorageBufferBindingSize, 0xffffffff),
 
-        // Bindings 0-4 storage buffers and 5 the viewport uniform (vertex),
-        // 6-8 the glyph, SVG, and image atlases and 9 the sampler (fragment).
         createPackedLayout: () => {
           const vertex = GPUShaderStage.VERTEX;
           const fragment = GPUShaderStage.FRAGMENT;
@@ -1112,8 +968,6 @@
           return allocHandle(handles.layouts, { bindGroupLayout, pipelineLayout });
         },
 
-        // One sample, triangle lists, colours blended in gamma space into the
-        // canvas's UNORM format. `premultiplied` shaders multiply by alpha.
         createPackedPipeline: (
           layoutHandle,
           shaderHandle,
@@ -1187,7 +1041,6 @@
           return allocHandle(handles.bindGroups, bindGroup);
         },
 
-        // The frame being encoded, from beginFrame to endFrame.
         currentEncoder: null,
         currentPass: null,
 
@@ -1254,8 +1107,6 @@
         ) => {
           const font = getFont(fontPtr, fontLen, size);
           textCtx.font = font;
-          // Measure characters with ascenders (bdfhkl) and descenders (gyp) for accurate metrics
-          // This gives us ascender height (not just cap height from "Hg") matching CoreText behavior
           const metrics = textCtx.measureText("bdfhklgyp");
           const ascent = metrics.actualBoundingBoxAscent;
           const descent = metrics.actualBoundingBoxDescent;
@@ -1294,32 +1145,26 @@
           textCtx.textBaseline = "alphabetic";
           const metrics = textCtx.measureText(char);
 
-          // These are distances from the origin point (where we draw)
-          const left = Math.ceil(metrics.actualBoundingBoxLeft); // extends LEFT of origin
-          const right = Math.ceil(metrics.actualBoundingBoxRight); // extends RIGHT of origin
-          const ascent = Math.ceil(metrics.actualBoundingBoxAscent); // extends ABOVE baseline
-          const descent = Math.ceil(metrics.actualBoundingBoxDescent); // extends BELOW baseline
+          const left = Math.ceil(metrics.actualBoundingBoxLeft);
+          const right = Math.ceil(metrics.actualBoundingBoxRight);
+          const ascent = Math.ceil(metrics.actualBoundingBoxAscent);
+          const descent = Math.ceil(metrics.actualBoundingBoxDescent);
 
           const padding = 2;
           const width = left + right + padding;
           const height = ascent + descent + padding;
           const advance = metrics.width;
 
-          // Resize canvas if needed
           if (textCanvas.width < width) textCanvas.width = Math.max(256, width);
           if (textCanvas.height < height)
             textCanvas.height = Math.max(256, height);
 
-          // Clear and draw - position so glyph is fully visible
-          // Draw at x=left+1 so left edge is at x=1
-          // Draw at y=ascent+1 so top edge is at y=1
           textCtx.clearRect(0, 0, width, height);
           textCtx.font = font;
           textCtx.fillStyle = "white";
           textCtx.textBaseline = "alphabetic";
           textCtx.fillText(char, left + 1, ascent + 1);
 
-          // Extract alpha channel
           const imageData = textCtx.getImageData(0, 0, width, height);
           const mem = new Uint8Array(
             wasmInstance.exports.memory.buffer,
@@ -1330,20 +1175,13 @@
             mem[i] = imageData.data[i * 4 + 3];
           }
 
-          // Output values:
-          // - bearingX: how far RIGHT of cursor the glyph bitmap starts (negative = starts left of cursor)
-          // - bearingY: how far DOWN from cursor the glyph bitmap starts (negative = starts above cursor)
-          // For alphabetic baseline: bitmap top is at cursor_y - ascent
           const view = new DataView(wasmInstance.exports.memory.buffer);
           view.setUint32(outWidth, width, true);
           view.setUint32(outHeight, height, true);
-          view.setFloat32(outBearingX, -(left + 1), true); // Offset from cursor to bitmap left edge
-          view.setFloat32(outBearingY, -(ascent - 1), true); // Offset from baseline to bitmap top edge
+          view.setFloat32(outBearingX, -(left + 1), true);
+          view.setFloat32(outBearingY, -(ascent - 1), true);
           view.setFloat32(outAdvance, advance, true);
 
-          // console.log(
-          //   `Rasterized '${char}': ${width}x${height}, bearing=(${-(left + 1)}, ${-(ascent + 1)}), advance=${advance}`,
-          // );
         },
         rasterizeGlyphSubpixel: (
           fontPtr,
@@ -1373,7 +1211,6 @@
           const descent = Math.ceil(metrics.actualBoundingBoxDescent);
 
           const padding = 2;
-          // Add extra pixel when subpixel variant is non-zero (matches native CoreText)
           let width = left + right + padding;
           let height = ascent + descent + padding;
           if (subpixelX > 0) width += 1;
@@ -1384,7 +1221,6 @@
           if (textCanvas.height < height)
             textCanvas.height = Math.max(256, height);
 
-          // Apply subpixel offset when drawing
           textCtx.clearRect(0, 0, width, height);
           textCtx.font = font;
           textCtx.fillStyle = "white";
@@ -1408,8 +1244,6 @@
           view.setFloat32(outBearingY, -(ascent - 1), true);
           view.setFloat32(outAdvance, advance, true);
         },
-        // Atlas textures are created once at their budget size. WebGPU
-        // zero-initializes them; pixels arrive through writeAtlasRegion.
         createAtlasTexture: (width, height, bytesPerPixel) => {
           const texture = device.createTexture({
             size: { width, height },
@@ -1460,12 +1294,7 @@
           return allocHandle(handles.samplers, sampler);
         },
 
-        // =====================================================================
-        // SVG Rasterization Support
-        // =====================================================================
 
-        // Rasterize SVG path data into a device-size RGBA square in WASM
-        // memory using Path2D/Canvas2D.
         rasterizeSvgPath: (
           pathPtr,
           pathLen,
@@ -1485,21 +1314,18 @@
               strokeWidth,
               new Uint8Array(wasmInstance.exports.memory.buffer, outBuffer, bufferSize),
             );
-            return true; // success
+            return true;
           } catch (e) {
             console.error("rasterizeSvgPath failed:", e);
             return false;
           }
         },
 
-        // Text-field edit commands use Cmd on Apple platforms, Ctrl elsewhere.
-        // iPadOS Safari reports "MacIntel", which is the right answer for it.
         isApplePlatform: () =>
           /Mac|iPhone|iPad|iPod/.test(
             navigator.userAgentData?.platform ?? navigator.platform,
           ),
 
-        // Clipboard - write text (fire and forget, async in JS)
         clipboardWriteText: (ptr, len) => {
           const text = getString(ptr, len);
           navigator.clipboard.writeText(text).catch((err) => {
@@ -1509,13 +1335,11 @@
       };
 
       async function init() {
-        // Check WebGPU support
         if (!navigator.gpu) {
           console.error("WebGPU not supported in this browser");
           return;
         }
 
-        // Request adapter and device
         const adapter = await navigator.gpu.requestAdapter();
         if (!adapter) {
           console.error("Failed to get WebGPU adapter");
@@ -1528,12 +1352,10 @@
           console.error("[Gooey] WebGPU:", event.error.message);
         });
 
-        // Configure canvas context
         context = canvas.getContext("webgpu");
         format = navigator.gpu.getPreferredCanvasFormat();
         context.configure({ device, format, alphaMode: "premultiplied" });
 
-        // Load WASM
         const response = await fetch("app.wasm");
         if (!response.ok) {
           throw new Error(
@@ -1548,7 +1370,6 @@
         });
         wasmInstance = instance;
 
-        // Initialize and start
         console.log("[JS] About to call wasmInstance.exports.init()...");
         console.log(
           "[JS] WASM memory size:",
@@ -1563,7 +1384,6 @@
           throw e;
         }
 
-        // Initialize after WASM is ready
         initKeyboard();
         initScroll();
         initMouse();

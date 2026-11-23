@@ -33,7 +33,6 @@ fn ensureLibraryInit() !ft.FT_Library {
     return lib;
 }
 
-/// Maximum glyph ID for advance cache (covers most fonts)
 const ADVANCE_CACHE_SIZE: usize = 4096;
 const ADVANCE_UNCACHED: f32 = -1.0;
 
@@ -42,19 +41,12 @@ pub const FreeTypeFace = struct {
     hb_font: *ft.hb_font_t,
     metrics: Metrics,
     point_size: f32,
-    /// Font file path (for debugging)
     font_path_buf: [512]u8,
     font_path_len: usize,
-    /// Glyph advance cache - avoids expensive FT_Load_Glyph calls during measurement
-    /// Index by glyph_id, stores advance_x. ADVANCE_UNCACHED means not yet loaded.
     advance_cache: [ADVANCE_CACHE_SIZE]f32,
 
     const Self = @This();
 
-    /// Fontconfig resolves `name` to an installed family; `font_match.select`
-    /// picks one of the family's faces by the CSS matching rule. Nothing is
-    /// synthesized; a family without the requested weight or slant renders
-    /// with the face matching picks, and `warnInexactFace` logs.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
@@ -65,7 +57,6 @@ pub const FreeTypeFace = struct {
         return initFromPath(library, &font_path, size);
     }
 
-    /// Load one variant of a system family, with the same policy as `init`.
     pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
@@ -91,8 +82,6 @@ pub const FreeTypeFace = struct {
     const FontPathResult = struct {
         path_buf: [512]u8,
         path_len: usize,
-        /// Face index within the file: a collection member, or a named
-        /// instance of a variable font (Fontconfig encodes both in `FC_INDEX`).
         face_index: c_int,
 
         pub fn pathSlice(self: *const FontPathResult) [:0]const u8 {
@@ -100,10 +89,6 @@ pub const FreeTypeFace = struct {
         }
     };
 
-    /// Resolve `family` to an installed family, then pick the variant's face
-    /// from that family's face list. Falls back to Fontconfig's own match only
-    /// when the list is empty, which a family Fontconfig just matched cannot
-    /// normally produce.
     fn findFontPath(family: []const u8, spacing: ?c_int, variant: FontVariant) !?FontPathResult {
         std.debug.assert(family.len > 0);
 
@@ -115,7 +100,6 @@ pub const FreeTypeFace = struct {
             resolved_family = null;
         }
 
-        // Keep the resolved face's width, so a condensed family stays condensed.
         const matched_candidate = faceCandidate(matched);
         const stretch = if (matched_candidate) |c| c.stretch else font_match.stretch_normal;
 
@@ -134,8 +118,6 @@ pub const FreeTypeFace = struct {
         return result;
     }
 
-    /// Fontconfig's best match for the family alone (weight and slant left at
-    /// their defaults), which resolves generic names like "sans-serif".
     fn matchFamily(family: []const u8, spacing: ?c_int) !?*ft.FcPattern {
         const pattern = ft.FcPatternCreate() orelse return error.FontconfigError;
         defer ft.FcPatternDestroy(pattern);
@@ -163,9 +145,6 @@ pub const FreeTypeFace = struct {
         return matched;
     }
 
-    /// Every scalable face of one family, with the properties selection needs.
-    /// Listing bypasses Fontconfig's synthetic-style rules, so each face
-    /// reports its real weight and slant. The caller destroys the set.
     fn listFamilyFaces(family: [*:0]const ft.FcChar8, spacing: ?c_int) !*ft.FcFontSet {
         const pattern = ft.FcPatternCreate() orelse return error.FontconfigError;
         defer ft.FcPatternDestroy(pattern);
@@ -202,8 +181,6 @@ pub const FreeTypeFace = struct {
         candidate: font_match.Candidate,
     };
 
-    /// The face of `font_set` CSS matching picks for `variant`, or null when
-    /// no listed face has a usable weight and slant.
     fn selectFace(
         font_set: *const ft.FcFontSet,
         variant: FontVariant,
@@ -222,8 +199,6 @@ pub const FreeTypeFace = struct {
         var patterns: [font_match.candidate_count_max]*ft.FcPattern = undefined;
         var candidate_count: u32 = 0;
         for (font_set.fonts[0..considered_count]) |pattern| {
-            // A variable font's default instance reports a weight range; its
-            // named instances are listed separately with single weights.
             const candidate = faceCandidate(pattern) orelse continue;
             candidates[candidate_count] = candidate;
             patterns[candidate_count] = pattern;
@@ -239,8 +214,6 @@ pub const FreeTypeFace = struct {
         return .{ .path = path, .candidate = candidates[index] };
     }
 
-    /// A face's CSS weight, slant, and width, or null when the weight or slant
-    /// is missing or a range. A missing or ranged width counts as normal.
     fn faceCandidate(pattern: *ft.FcPattern) ?font_match.Candidate {
         var fc_weight: c_int = 0;
         if (ft.FcPatternGetInteger(pattern, ft.FC_WEIGHT, 0, &fc_weight) != .FcResultMatch) {
@@ -251,7 +224,6 @@ pub const FreeTypeFace = struct {
             return null;
         }
 
-        // Fontconfig widths are already CSS `font-stretch` percentages.
         var fc_width: c_int = font_match.stretch_normal;
         if (ft.FcPatternGetInteger(pattern, ft.FC_WIDTH, 0, &fc_width) != .FcResultMatch) {
             fc_width = font_match.stretch_normal;
@@ -274,7 +246,6 @@ pub const FreeTypeFace = struct {
         return candidate;
     }
 
-    /// Copy a pattern's file path and face index out before it is destroyed.
     fn copyFontPath(pattern: *ft.FcPattern) !?FontPathResult {
         var file_path: ?[*:0]const ft.FcChar8 = null;
         const path_result = ft.FcPatternGetString(pattern, ft.FC_FILE, 0, &file_path);
@@ -302,8 +273,6 @@ pub const FreeTypeFace = struct {
         return font_result;
     }
 
-    /// Log when the chosen face's weight class or slant differs from the
-    /// request, so a family without that face does not fall back silently.
     fn warnInexactFace(
         family: []const u8,
         variant: FontVariant,
@@ -340,8 +309,6 @@ pub const FreeTypeFace = struct {
         }
         errdefer _ = ft.FT_Done_Face(ft_face);
 
-        // Set character size (in 1/64th points at 72 DPI for 1:1 point-to-pixel)
-        // Using 96 DPI is more common on Linux
         const size_f26d6 = ft.floatToF26dot6(size);
         const size_err = ft.FT_Set_Char_Size(ft_face, 0, size_f26d6, 96, 96);
         if (size_err != 0) {
@@ -397,7 +364,6 @@ pub const FreeTypeFace = struct {
             }
         }
 
-        // Minimal load: no hinting, no bitmap.
         const err = ft.FT_Load_Glyph(self.ft_face, glyph_id, ft.FT_LOAD_NO_HINTING | ft.FT_LOAD_NO_BITMAP);
         if (err != 0) {
             return 0;
@@ -406,7 +372,6 @@ pub const FreeTypeFace = struct {
         const advance = ft.f26dot6ToFloat(self.ft_face.glyph.metrics.horiAdvance);
 
         if (glyph_id < ADVANCE_CACHE_SIZE) {
-            // Cast away const for caching (cache is logically mutable even on const self)
             const mutable_self = @constCast(self);
             mutable_self.advance_cache[glyph_id] = advance;
         }
@@ -448,9 +413,6 @@ pub const FreeTypeFace = struct {
         };
     }
 
-    /// Uses FreeType's native bitmap output with its positioning values.
-    /// offset_x = bitmap_left (horizontal offset from pen to left edge)
-    /// offset_y = bitmap_top (vertical offset from baseline to top edge, positive = above)
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
@@ -478,7 +440,6 @@ pub const FreeTypeFace = struct {
         );
     }
 
-    /// Renders from a font not owned by this face (fallback path).
     pub fn renderGlyphFromFont(
         ft_face: ft.FT_Face,
         glyph_id: u16,
@@ -510,11 +471,10 @@ pub const FreeTypeFace = struct {
         const size_metrics = face.size.metrics;
 
         const ascender = ft.f26dot6ToFloat(size_metrics.ascender);
-        const descender = -ft.f26dot6ToFloat(size_metrics.descender); // FreeType descender is negative
+        const descender = -ft.f26dot6ToFloat(size_metrics.descender);
         const height = ft.f26dot6ToFloat(size_metrics.height);
         const line_gap = height - ascender - descender;
 
-        // Estimates; refined below when the 'x' and 'H' glyphs exist.
         var x_height = ascender * 0.5;
         var cap_height = ascender * 0.7;
 
@@ -594,12 +554,10 @@ fn renderGlyphInternal(
 
     ft.FT_Set_Transform(ft_face, null, &delta);
 
-    // Set scaled size for rendering (point_size * scale = physical pixels)
     const scaled_size = point_size * scale;
     const size_f26d6 = ft.floatToF26dot6(scaled_size);
     _ = ft.FT_Set_Char_Size(ft_face, 0, size_f26d6, 96, 96);
 
-    // Load the glyph at scaled size to get correct metrics
     var load_flags = ft.FT_LOAD_DEFAULT;
     if (ft.hasColor(ft_face)) {
         load_flags |= ft.FT_LOAD_COLOR;
@@ -614,13 +572,11 @@ fn renderGlyphInternal(
 
     const slot = ft_face.glyph;
 
-    // Get metrics from the scaled glyph, then convert advance back to logical units
     const scaled_advance = ft.f26dot6ToFloat(slot.metrics.horiAdvance);
     const advance_x = scaled_advance / scale;
     const width_f = ft.f26dot6ToFloat(slot.metrics.width);
     const height_f = ft.f26dot6ToFloat(slot.metrics.height);
 
-    // Handle empty glyphs (spaces, etc.)
     if (width_f < 1 or height_f < 1) {
         ft.FT_Set_Transform(ft_face, null, null);
         _ = ft.FT_Set_Char_Size(ft_face, 0, ft.floatToF26dot6(point_size), 96, 96);
@@ -676,7 +632,6 @@ fn renderGlyphInternal(
         }
     }
 
-    // Use FreeType's native bitmap positioning (see renderGlyphSubpixel).
     return RasterizedGlyph{
         .width = width,
         .height = height,

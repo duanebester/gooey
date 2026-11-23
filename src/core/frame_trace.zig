@@ -1,22 +1,3 @@
-//! Per-frame phase timestamps for measuring frame time on real hardware.
-//! Off by default; when off, the window's `trace` field is `void` and every
-//! hook compiles to nothing. All timestamps come from one clock
-//! (`resources.io`, `.awake`), so the phases of one frame and the gaps
-//! between frames are comparable across threads.
-//!
-//! A scenario may drive the app with synthetic input, pushed into the core's
-//! queue once per built frame, before the drain, as a platform would push it.
-//!
-//! Ownership: the main thread writes an entry's tick through publish fields
-//! before `publish` sets `frame_in_flight` (release); the render side writes
-//! pack through done after it reads the flag (acquire). The dump runs only
-//! with no frame in flight, so every entry it reads is complete.
-//!
-//! Resource sketch: `entry_count_max` entries × 96 B, reserved at init from
-//! fresh pages only when tracing; one entry is written per frame. The dump
-//! formats one row at a time through a stack buffer and makes no Gooey
-//! allocation.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("gooey_build_options");
@@ -29,15 +10,10 @@ pub const scenario: Scenario = build_options.frame_trace;
 pub const enabled = scenario != .off;
 pub const seconds: u32 = build_options.frame_trace_seconds;
 
-/// The most frames one trace records: 60 s at 500 Hz, past any display.
 pub const entry_count_max: u32 = 32_768;
-/// Frames drawn before the trace counts any: startup, first atlas uploads.
 pub const warmup_frame_count: u32 = 60;
-/// Frames between scroll reversals, so the content stays near its start.
 const scroll_reverse_frames: u32 = 60;
-/// Logical pixels per scroll step.
 const scroll_step_px: f64 = 40;
-/// Characters typed before as many backspaces.
 const typing_run_count: u32 = 48;
 const typing_text = "the quick brown fox jumps over the lazy dog ";
 
@@ -45,14 +21,11 @@ pub const file_name = "frame-trace.csv";
 
 comptime {
     assert(seconds > 0);
-    // The trace ends at `seconds` or a full table, whichever comes first;
-    // `seconds` must fit at 500 Hz so the table never decides it.
     assert(@as(u64, seconds) * 500 <= entry_count_max);
     assert(typing_run_count <= 2 * typing_text.len);
     assert(@sizeOf(Entry) == 96);
 }
 
-/// One built frame. Times are nanoseconds on the trace clock; 0 = not reached.
 pub const Entry = extern struct {
     frame_number: u64,
     tick_ns: u64,
@@ -67,27 +40,20 @@ pub const Entry = extern struct {
     node_count: u32,
     viewport_width_px: u32,
     viewport_height_px: u32,
-    /// When the frame reached the glass, on the trace clock, for hosts that
-    /// report it (macOS, `notePresented`): 0 = not reported, 1 = never shown.
     present_ns: u64,
 };
 
-/// `Entry.present_ns` of a frame the platform never showed.
 pub const present_dropped: u64 = 1;
 
 pub const Trace = struct {
     entries: []Entry,
     io: std.Io,
-    /// The clock at the first tick; the dump writes times relative to it.
     start_ns: u64,
-    /// The clock at the start of the current tick (main thread).
     tick_ns: u64,
-    /// Frames the driver has stepped.
     step_count: u32,
     finished: bool,
 };
 
-/// The window's trace field: `void` when tracing is off.
 pub const State = if (enabled) Trace else void;
 
 pub fn init(state: *State, gpa: std.mem.Allocator, io: std.Io) !void {
@@ -113,7 +79,6 @@ pub fn stamp(state: *const State) u64 {
     return @intCast(ns);
 }
 
-/// The entry of `frame_number`, or null past the table (the trace then ends).
 pub fn entry(state: *State, frame_number: u64) ?*Entry {
     if (comptime !enabled) return null;
     assert(frame_number > 0);
@@ -121,8 +86,6 @@ pub fn entry(state: *State, frame_number: u64) ?*Entry {
     return &state.entries[@intCast(frame_number - 1)];
 }
 
-/// Phase stamps, one call per phase boundary. `frame_number` is the frame
-/// the phase belongs to.
 pub const Mark = enum { build, layout, emit, publish, pack, draw, done };
 
 pub fn mark(state: *State, frame_number: u64, which: Mark) void {
@@ -146,21 +109,15 @@ pub fn mark(state: *State, frame_number: u64, which: Mark) void {
     assert(target.frame_number == frame_number);
 }
 
-/// The platform's report of when `frame_number` reached the glass, or that it
-/// never did (`present_dropped`). Render side, while that frame's entry is no
-/// longer written by anyone else: its done stamp is in the past.
 pub fn notePresented(state: *State, frame_number: u64, present_ns: u64) void {
     if (comptime !enabled) return;
     const target = entry(state, frame_number) orelse return;
     assert(target.frame_number == frame_number);
     assert(target.done_ns > 0);
     assert(present_ns >= present_dropped);
-    // A platform clock is mapped onto the trace clock, so a present stamp is
-    // not asserted against draw_ns; the report checks the order.
     target.present_ns = present_ns;
 }
 
-/// Counts for the frame just built, recorded with its publish.
 pub fn noteFrame(state: *State, frame_number: u64, counts: struct {
     paint_count: u32,
     node_count: u32,
@@ -178,8 +135,6 @@ pub fn noteFrame(state: *State, frame_number: u64, counts: struct {
 
 pub const TickAction = enum { none, quit };
 
-/// Start of a main tick. With no frame in flight, either end the trace (dump
-/// and quit) or push this frame's synthetic input.
 pub fn beginTick(state: *State, window: anytype, in_flight: bool) TickAction {
     if (comptime !enabled) return .none;
     state.tick_ns = stamp(state);
@@ -197,7 +152,6 @@ pub fn beginTick(state: *State, window: anytype, in_flight: bool) TickAction {
     return .none;
 }
 
-/// Push this frame's synthetic input (see the file comment).
 fn drive(state: *State, window: anytype) void {
     if (scenario == .passive) return;
     const step = state.step_count;
@@ -246,7 +200,6 @@ fn drive(state: *State, window: anytype) void {
     }
 }
 
-/// The renderer this build draws with, for the dump's header.
 const renderer_name: []const u8 = switch (builtin.os.tag) {
     .macos => "metal",
     .linux => @tagName(build_options.linux_backend),
@@ -258,8 +211,6 @@ const renderer_name: []const u8 = switch (builtin.os.tag) {
 const header = "frame,tick_ns,build_ns,layout_ns,emit_ns,publish_ns,pack_ns,draw_ns," ++
     "done_ns,paint_records,nodes,viewport_width_px,viewport_height_px,present_ns";
 
-/// Write every complete frame after the warmup. Native targets write
-/// `file_name`; the web logs each line with a `frame-trace,` prefix.
 fn dump(state: *State, frame_count: u64) void {
     assert(frame_count <= state.entries.len);
     if (comptime builtin.os.tag == .freestanding) {
@@ -300,15 +251,18 @@ const LogSink = struct {
 
 fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
     var line_buffer: [512]u8 = undefined;
-    const meta = std.fmt.bufPrint(&line_buffer, "# gooey frame trace: scenario={t} " ++
-        "seconds={d} os={t} arch={t} renderer={s} optimize={t}", .{
+    const meta_format = "# gooey frame trace: scenario={t} " ++
+        "seconds={d} os={t} arch={t} renderer={s} optimize={t}";
+    const meta_args = .{
         scenario,
         seconds,
         builtin.os.tag,
         builtin.cpu.arch,
         renderer_name,
         builtin.mode,
-    }) catch unreachable; // 512 bytes hold every tag name above.
+    };
+    assert(std.fmt.count(meta_format, meta_args) <= line_buffer.len);
+    const meta = std.fmt.bufPrint(&line_buffer, meta_format, meta_args) catch unreachable;
     sink.line(meta);
     sink.line(header);
     var written: u64 = 0;
@@ -334,7 +288,7 @@ fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
             e.viewport_width_px,
             e.viewport_height_px,
             presentRelative(state, e.present_ns),
-        }) catch unreachable; // 14 integers of at most 20 digits fit 512 bytes.
+        }) catch unreachable;
         sink.line(row);
         written += 1;
     }
@@ -342,8 +296,6 @@ fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
     return written;
 }
 
-/// `present_ns` relative to the trace start; 0 and `present_dropped` keep
-/// their meaning.
 fn presentRelative(state: *const State, ns: u64) u64 {
     if (ns <= present_dropped) return ns;
     return relative(state, ns);

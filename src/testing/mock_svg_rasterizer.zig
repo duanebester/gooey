@@ -1,8 +1,6 @@
 const std = @import("std");
 const interface_verify = @import("../core/interface_verify.zig");
 
-// Must match the real SVG rasterizer's interface.
-
 pub const RasterizedSvg = struct {
     width: u32,
     height: u32,
@@ -21,12 +19,11 @@ pub const RasterizeError = error{
 pub const StrokeOptions = struct {
     enabled: bool = false,
     width: f32 = 1.0,
-    color: ?[4]u8 = null, // RGBA, null = use path's stroke color
+    color: ?[4]u8 = null,
 };
 
 pub const RasterBudget = @import("../svg/path.zig").RasterBudget;
 
-/// The mock allocates nothing, so it needs no scratch.
 pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     _ = budget;
     _ = device_size_max;
@@ -58,8 +55,6 @@ pub const MockSvgRasterizer = struct {
     pub fn init() Self {
         return Self{};
     }
-
-    // No deinit needed - no allocations
 
     pub fn rasterize(
         self: *Self,
@@ -158,8 +153,6 @@ pub const MockSvgRasterizer = struct {
         interface_verify.verifySvgRasterizerInterface(@This());
     }
 };
-
-// Must match the real rasterizer module's interface.
 
 var global_mock: ?*MockSvgRasterizer = null;
 

@@ -16,22 +16,13 @@ const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
 
-/// How a core app drives this window: the window pushes input and resizes
-/// into the core's queue and asks the host for a tick, and AppKit's
-/// synchronous questions (the IME rect, whether a key is claimed) go to the
-/// read-only query. The host's render thread draws.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
     context: *anyopaque,
-    /// Ask the host for a main-thread tick. Called on the main thread after
-    /// every push.
     schedule_tick: *const fn (context: *anyopaque) void,
 };
 
-/// Maximum window title length in bytes, excluding the NUL terminator.
-/// Matches the Linux backend's bound so an application that fits one host
-/// fits the other.
 pub const title_bytes_max: usize = 255;
 
 const NSRect = appkit.NSRect;
@@ -40,62 +31,32 @@ const NSSize = appkit.NSSize;
 pub const Window = struct {
     allocator: std.mem.Allocator,
 
-    /// Owning platform.
     plat: *platform.MacPlatform,
 
-    /// Owned +1 from `alloc`/`init`, released once in `deinit`. AppKit's
-    /// release-when-closed is turned off at creation, so this reference alone
-    /// decides the window's lifetime (see `createNSWindow`).
     ns_window: objc.Object,
-    /// Owned +1 from `input_view.create`, released once in `deinit`. The view
-    /// owns `metal_layer` and, through it, the layer's drawables.
     ns_view: objc.Object,
-    /// Borrowed: `+[CAMetalLayer layer]` is autoreleased and the view retains it.
     metal_layer: objc.Object,
     renderer: metal.Renderer,
     size: geometry.Size(f64),
     scale_factor: f64,
-    /// The budget's framebuffer, which caps the content size (`applySizeLimits`).
     window_limits: limits_mod.WindowLimits,
-    /// `WindowOptions.min_size` and `max_size`: content sizes in points, as
-    /// `setContentMinSize:` and `setContentMaxSize:` take them.
     min_size: ?geometry.Size(f64),
     max_size: ?geometry.Size(f64),
-    /// The scale `applySizeLimits` last ran for; 0 until `createNSWindow`
-    /// applies it.
     size_limits_scale: f64,
-    /// NUL-terminated window title storage: `stringWithUTF8String:` needs a
-    /// NUL, so a borrowed slice would read past its end, and owning fixed
-    /// storage also matches Linux.
     title_buf: [title_bytes_max + 1]u8,
     title_len: u16,
     title_bar: TitleBar,
-    /// The traffic-light area of a `.transparent` title bar, as last
-    /// measured (`measureTitleBarInset`) and reported to the core. Its `top`
-    /// is the strip where an unclaimed press moves the window.
     title_bar_inset: TitleBar.Inset,
 
-    /// Owned +1 from `window_delegate.create`, released once in `deinit`.
     delegate: ?objc.Object = null,
-    /// Owned +1 from `alloc`/`init`; the view also retains it while installed.
-    /// `deinit` removes it from the view and releases this reference.
     tracking_area: ?objc.Object = null,
 
-    /// Last OS-level pointer icon applied via `NSCursor.set()`. Cached so
-    /// the host's `setCursorShape` call is a no-op when the hovered element
-    /// didn't change.
     cursor_shape: ?interface_mod.CursorShape = null,
 
     marked_text: []const u8 = "",
-    /// `text.preedit_bytes_max` bytes and a NUL terminator, allocated with
-    /// the window; `marked_text` is always followed by a NUL.
     marked_text_buffer: []u8 = &.{},
-    /// The marked text's length and the IME's selection within it, in UTF-16
-    /// units as NSTextInputClient counts them; `marked_text` is UTF-8.
     marked_length_utf16: c_ulong = 0,
     marked_selection: appkit.NSRange = .{ .location = 0, .length = 0 },
-    /// `marked_length_utf16` as the core's rendered frame shows it, which
-    /// lags `setMarkedText:` by a frame. The core host sets it.
     rendered_marked_length_utf16: c_ulong = 0,
 
     on_close: ?CloseCallback = null,
@@ -124,18 +85,12 @@ pub const Window = struct {
         errdefer allocator.free(self.marked_text_buffer);
         try self.createNSWindow(options);
 
-        // Set the delegate after `ns_view` exists: delegate callbacks such as
-        // `windowDidChangeBackingProperties` can fire during `center()` and
-        // call `handleResize`, which needs `ns_view`.
         const window_delegate = @import("window_delegate.zig");
         self.delegate = try window_delegate.create(self);
         self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
 
         try self.setupTrackingArea();
 
-        // `createNSWindow` read the backing scale and capped the size, so the
-        // Metal layer and the renderer are sized for the first frame's
-        // drawable.
         assert(self.scale_factor > 0.0);
         assert(self.size_limits_scale == self.scale_factor);
 
@@ -159,10 +114,6 @@ pub const Window = struct {
         return self;
     }
 
-    /// Bring every field to a defined state before any AppKit object exists.
-    /// `noinline` because `Window` carries the embedded renderer plus two
-    /// 256-byte IME buffers and must never be built in a caller's frame and
-    /// copied.
     noinline fn initFields(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -172,9 +123,6 @@ pub const Window = struct {
         assert(@intFromPtr(self) != 0);
         assert(options.width >= 1);
 
-        // AppKit handles (`ns_window`, `ns_view`, `metal_layer`) and the
-        // renderer stay `undefined` until `init` has actually created them;
-        // every field an early delegate callback could observe is set here.
         self.* = .{
             .allocator = allocator,
             .plat = plat,
@@ -188,30 +136,21 @@ pub const Window = struct {
             .min_size = options.min_size,
             .max_size = options.max_size,
             .size_limits_scale = 0,
-            // Zeroed rather than seeded from `options.title`: `init` calls
-            // `setTitle` once the NSWindow exists, which is the one place that
-            // owns the copy and the NUL termination.
             .title_buf = @splat(0),
             .title_len = 0,
             .title_bar = options.title_bar,
-            // `createNSWindow` measures it once the traffic lights exist.
             .title_bar_inset = .{},
         };
         assert(self.core == null);
         assert(self.on_close == null);
     }
 
-    /// The content view must exist before `init` installs the delegate:
-    /// delegate callbacks dereference it.
     fn createNSWindow(self: *Self, options: *const WindowOptions) !void {
         assert(options.width >= 1);
         assert(options.height >= 1);
 
         const NSWindow = objc.getClass("NSWindow") orelse return error.ClassNotFound;
 
-        // Titled | closable | miniaturizable | resizable, and for a transparent
-        // title bar `NSWindowStyleMaskFullSizeContentView`, which extends the
-        // content view under the title bar.
         const style_full_size_content: u64 = 1 << 15;
         const style_mask: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) |
             if (options.title_bar == .transparent) style_full_size_content else 0;
@@ -228,31 +167,22 @@ pub const Window = struct {
             .{
                 content_rect,
                 style_mask,
-                @as(u64, 2), // NSBackingStoreBuffered
+                @as(u64, 2),
                 false,
             },
         );
         if (self.ns_window.value == null) return error.WindowCreationFailed;
 
-        // Own the window's lifetime through the +1 above. With AppKit's default
-        // (released when closed), `-close` frees the window by itself, and
-        // `deinit` runs later, at the owning app's drain point after a titlebar
-        // close, so it would message a freed object. `deinit` releases it once.
         self.ns_window.msgSend(void, "setReleasedWhenClosed:", .{false});
         assert(!self.ns_window.msgSend(bool, "isReleasedWhenClosed", .{}));
 
         self.setTitle(options.title);
         if (options.title_bar == .transparent) {
-            // The title stays set for the Window menu, Mission Control, and
-            // VoiceOver; it is only not drawn.
             const ns_window_title_hidden: c_long = 1;
             self.ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
             self.ns_window.msgSend(void, "setTitleVisibility:", .{ns_window_title_hidden});
         }
 
-        // The backing scale of the screen the window opened on decides the
-        // cap, which must shrink an oversized request before `center` places it.
-        // No delegate is installed yet, so the shrink is read back here.
         self.scale_factor = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
         assert(self.scale_factor > 0.0);
         self.applySizeLimits(self.scale_factor);
@@ -266,21 +196,17 @@ pub const Window = struct {
         self.ns_view = try input_view.create(view_frame, self);
         self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
         assert(self.ns_view.value != null);
-        // A standard title bar keeps its content below the bar: no inset.
         if (self.title_bar == .transparent) self.title_bar_inset = self.measureTitleBarInset();
         assert(std.meta.eql(self.title_bar_inset, TitleBar.Inset{}) or
             self.title_bar == .transparent);
     }
 
-    /// Set the close callback. Return false to prevent close.
     pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
         assert(self.ns_window.value != null);
         self.on_close = callback;
         assert((self.on_close == null) == (callback == null));
     }
 
-    /// A longer composition is external input, so it is cut at a codepoint
-    /// boundary, never inside a UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
         const bytes_max = self.marked_text_buffer.len - 1;
         assert(bytes_max > 0);
@@ -296,7 +222,6 @@ pub const Window = struct {
         if (kept > 0 and kept < text.len) assert(text[kept] & 0xC0 != 0x80);
     }
 
-    /// Clear the marked text (composition ended or cancelled)
     pub fn clearMarkedText(self: *Self) void {
         self.marked_text = "";
         self.marked_length_utf16 = 0;
@@ -307,22 +232,11 @@ pub const Window = struct {
         return self.marked_text.len > 0;
     }
 
-    /// Events that arrive before the core host binds are dropped: `init`
-    /// shows the window before `bindCore`, and nothing can consume them yet.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
         const binding = self.core orelse return false;
         return pushCoreInput(binding, event, self.hasMarkedText());
     }
 
-    /// Queue `event` for the core's next drain. Only a key the keymap claims
-    /// counts as handled, so every other key still reaches the IME, and only
-    /// a press the router will act on (`Query.pressClaims`), so a press on
-    /// empty title strip still moves the window (`pressTitleBar`). While the
-    /// IME holds marked text it owns every key (Escape cancels the
-    /// composition, Return accepts a candidate), so a key down is neither
-    /// queued nor claimed: no binding or `on_key` handler may act on a
-    /// keystroke that only edited the composition. Windows drops
-    /// `VK_PROCESSKEY` for the same reason.
     fn pushCoreInput(binding: CoreBinding, event: input.InputEvent, composing: bool) bool {
         if (composing) {
             if (event == .key_down) return false;
@@ -339,21 +253,15 @@ pub const Window = struct {
         };
     }
 
-    /// Bind a core app. Call once, before the host's render thread starts.
     pub fn bindCore(self: *Self, binding: CoreBinding) void {
         assert(self.core == null);
         assert(self.ns_view.value != null);
         self.core = binding;
-        // The core starts with no inset; the first tick drains this before
-        // it builds, so the first frame already stays clear of the lights.
         if (self.title_bar == .transparent) {
             binding.queue.push(.{ .window = .{ .title_bar = self.title_bar_inset } });
         }
     }
 
-    /// Tear down the window. Runs once, on the main thread, after the core
-    /// host's render thread has stopped: free GPU resources, then release the
-    /// AppKit objects children-first, then free the Zig allocation.
     pub fn deinit(self: *Self) void {
         assert(self.ns_window.value != null);
         assert(self.ns_view.value != null);
@@ -363,14 +271,6 @@ pub const Window = struct {
         self.allocator.destroy(self);
     }
 
-    /// Release every AppKit object `init` created, exactly once, children
-    /// first. Each optional is cleared as it is released, so a second release
-    /// cannot happen through it.
-    ///
-    /// AppKit may keep a view or window alive briefly after our release (an
-    /// autorelease pool, an event in flight), so the `_gooeyWindow`
-    /// back-pointers are cleared first: a late callback then finds no window
-    /// and returns, instead of dereferencing the freed `Window`.
     fn releaseAppKitObjects(self: *Self) void {
         assert(self.ns_window.value != null);
         assert(self.ns_view.value != null);
@@ -389,10 +289,6 @@ pub const Window = struct {
         }
 
         self.ns_view.setInstanceVariable("_gooeyWindow", nil);
-        // `-close` is a no-op on an already-closed window. With release-when-
-        // closed off, it never frees the window, so the release below is the
-        // only one. The window drops its content-view retain when it is freed;
-        // the view's own +1 is released after it.
         self.ns_window.msgSend(void, "close", .{});
         assert(!self.ns_window.msgSend(bool, "isReleasedWhenClosed", .{}));
         self.ns_window.release();
@@ -404,11 +300,8 @@ pub const Window = struct {
     pub fn handleResize(self: *Self) void {
         const new_scale = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
         assert(new_scale > 0);
-        // A display with another backing scale changes how many points the
-        // budget allows; a shrink re-enters here first (`applySizeLimits`).
         if (new_scale != self.size_limits_scale) self.applySizeLimits(new_scale);
         assert(self.size_limits_scale == new_scale);
-        // Full screen hides the strip, and a zoom or resize can follow it.
         if (self.title_bar == .transparent) self.updateTitleBarInset();
 
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
@@ -431,21 +324,12 @@ pub const Window = struct {
         if (self.core) |binding| {
             self.resizeCore(binding, size, new_scale);
         } else {
-            // Before `bindCore`: record the geometry the host reads at bind.
             self.size = size;
             self.scale_factor = new_scale;
             self.metal_layer.msgSend(void, "setContentsScale:", .{new_scale});
         }
     }
 
-    /// Cap the content size at the largest the budget's framebuffer holds at
-    /// `scale_factor`, within the app's `min_size` and `max_size`, and shrink a
-    /// window already past it. The framebuffer a window can reach is then the
-    /// one the budget reserved, never a reduced drawing scale.
-    /// A `min_size` past the cap yields to it, as on Windows. AppKit holds
-    /// live resizes and zoom to the cap. The shrink posts `windowDidResize:`,
-    /// which re-enters `handleResize`; `size_limits_scale` is set first, so
-    /// that call reads the capped bounds without reapplying the limits.
     fn applySizeLimits(self: *Self, scale_factor: f64) void {
         assert(scale_factor > 0);
         assert(self.ns_window.value != null);
@@ -495,9 +379,6 @@ pub const Window = struct {
         return geometry.Size(f64).init(content.size.width, content.size.height);
     }
 
-    /// A core app resizes through its queue: the next built frame carries the
-    /// new viewport and the render thread resizes the drawable before drawing
-    /// it, so the main thread never touches the renderer.
     fn resizeCore(self: *Self, binding: CoreBinding, size: geometry.Size(f64), scale: f64) void {
         assert(size.width >= 1);
         assert(size.height >= 1);
@@ -519,31 +400,24 @@ pub const Window = struct {
         return true;
     }
 
-    /// Measure the traffic lights again and, when they moved, tell the core.
     fn updateTitleBarInset(self: *Self) void {
         assert(self.title_bar == .transparent);
         const inset = self.measureTitleBarInset();
         if (std.meta.eql(inset, self.title_bar_inset)) return;
         self.title_bar_inset = inset;
-        const binding = self.core orelse return; // `bindCore` reports it.
+        const binding = self.core orelse return;
         binding.queue.push(.{ .window = .{ .title_bar = inset } });
         binding.schedule_tick(binding.context);
     }
 
-    /// The traffic-light area, read from AppKit rather than assumed: the
-    /// strip's height and the buttons' size have changed between macOS
-    /// releases. The strip is the part of the content view above
-    /// `contentLayoutRect`, which AppKit keeps clear of the title bar.
     fn measureTitleBarInset(self: *const Self) TitleBar.Inset {
         assert(self.title_bar == .transparent);
         assert(self.ns_view.value != null);
-        // The content view fills the window, so its bounds are the window's
-        // content area; `contentLayoutRect` is in window coordinates, y up.
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
         const layout: NSRect = self.ns_window.msgSend(NSRect, "contentLayoutRect", .{});
         const strip_height = bounds.size.height - (layout.origin.y + layout.size.height);
-        const close_button: c_ulong = 0; // NSWindowCloseButton
-        const zoom_button: c_ulong = 2; // NSWindowZoomButton
+        const close_button: c_ulong = 0;
+        const zoom_button: c_ulong = 2;
         const close = self.buttonRect(close_button) orelse return .{};
         const zoom = self.buttonRect(zoom_button) orelse return .{};
         const close_max_x = close.origin.x + close.size.width;
@@ -568,10 +442,6 @@ pub const Window = struct {
         return rect;
     }
 
-    /// Whether a press at `position` (view coordinates, y down) falls on the
-    /// transparent title strip where no element claims it. `acceptsFirstMouse:`
-    /// asks before the press is queued, so a drag can start from an inactive
-    /// window as it can from a standard title bar.
     pub fn titleStripTakesPress(self: *const Self, position: geometry.Point(f64)) bool {
         assert(std.math.isFinite(position.x));
         assert(std.math.isFinite(position.y));
@@ -584,12 +454,6 @@ pub const Window = struct {
         });
     }
 
-    /// Act on a left press the app did not claim (`pushCoreInput`), as a
-    /// standard title bar would when it lands on the transparent strip: a
-    /// double click runs the user's title bar action, any other press moves
-    /// the window. `performWindowDragWithEvent:` tracks the drag itself and
-    /// returns at once when the pointer does not move, so the second press
-    /// of a double click arrives here as usual.
     pub fn pressTitleBar(self: *Self, event: objc.c.id, mouse: input.MouseEvent) void {
         assert(event != null);
         assert(mouse.button == .left);
@@ -602,9 +466,6 @@ pub const Window = struct {
         }
     }
 
-    /// Run the action System Settings chose for a title bar double click
-    /// (Desktop & Dock), `AppleActionOnDoubleClick`: "Minimize" minimizes,
-    /// "None" does nothing, and anything else, including no setting, zooms.
     fn titleBarDoubleClick(self: *Self) void {
         assert(self.title_bar == .transparent);
         const NSUserDefaults = objc.getClass("NSUserDefaults") orelse return;
@@ -632,16 +493,11 @@ pub const Window = struct {
         assert(self.ns_window.value != null);
         assert(self.title_buf.len == title_bytes_max + 1);
 
-        // Clamp rather than fail: AppKit truncates for display anyway, and
-        // the clamp keeps the copy in bounds in release.
         assert(new_title.len <= title_bytes_max);
         const len = @min(new_title.len, title_bytes_max);
 
         @memcpy(self.title_buf[0..len], new_title[0..len]);
 
-        // Zero the whole tail, not just the terminator: the buffer is reused
-        // across `setTitle` calls, so a shorter title would otherwise leave
-        // the previous title's bytes readable past the NUL.
         @memset(self.title_buf[len..], 0);
         self.title_len = @intCast(len);
 
@@ -657,12 +513,6 @@ pub const Window = struct {
         self.ns_window.msgSend(void, "setTitle:", .{ns_title});
     }
 
-    /// Set the OS-level mouse pointer icon (not the text caret the text
-    /// engines draw; see `interface.CursorShape`).
-    ///
-    /// `NSCursor.set()` pushes onto a stack rather than replacing outright,
-    /// but the core host calls this with the fully resolved shape whenever it
-    /// changes, so there is never more than one Gooey-owned cursor pushed.
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
         std.debug.assert(self.ns_window.value != null);
         std.debug.assert(self.ns_view.value != null);
@@ -683,9 +533,6 @@ pub const Window = struct {
         cursor.msgSend(void, "set", .{});
         self.cursor_shape = shape;
     }
-
-    // The core never makes these calls. They stay only while the legacy
-    // `context/window.zig` compiles, and go when that file is deleted.
 
     pub fn getPlatform(self: *Self) *platform.MacPlatform {
         assert(@intFromPtr(self.plat) != 0);
@@ -746,11 +593,9 @@ pub const Window = struct {
         const CAMetalLayer = objc.getClass("CAMetalLayer") orelse return error.ClassNotFound;
         self.metal_layer = CAMetalLayer.msgSend(objc.Object, "layer", .{});
 
-        // MTLPixelFormatBGRA8Unorm.
         self.metal_layer.msgSend(void, "setPixelFormat:", .{@as(u64, 80)});
         self.metal_layer.msgSend(void, "setContentsScale:", .{self.scale_factor});
         self.metal_layer.msgSend(void, "setDisplaySyncEnabled:", .{false});
-        // `metal.Renderer.init` sets `maximumDrawableCount` (`drawable_count`).
 
         self.metal_layer.msgSend(void, "setOpaque:", .{false});
 
@@ -765,11 +610,6 @@ pub const Window = struct {
     }
 };
 
-/// The inset of a transparent title strip `strip_height` points tall whose
-/// traffic lights span `buttons_min_x` to `buttons_max_x` in a content view
-/// `width` points wide. The lights sit on the side their centre is on, with
-/// AppKit's outer margin repeated past them. A strip with no height is full
-/// screen, which shows the title bar only on demand, so nothing is inset.
 fn titleBarInset(measured: struct {
     width: f64,
     strip_height: f64,
@@ -814,9 +654,6 @@ test "titleBarInset puts the lights' inset on their side and none in full screen
     try std.testing.expectEqual(TitleBar.Inset{}, full_screen);
 }
 
-/// The largest content size, in whole points, whose framebuffer at
-/// `scale_factor` fits `ResourceLimits.window`. Flooring keeps the pixel size
-/// a window rounds to within the limits.
 pub fn contentSizeMax(
     window_limits: *const limits_mod.WindowLimits,
     scale_factor: f64,
@@ -835,11 +672,6 @@ pub fn contentSizeMax(
     return size;
 }
 
-/// The framebuffer a logical window needs, within the budget's framebuffer
-/// limits. `applySizeLimits` keeps resizes, zoom and display changes within
-/// them. Should full screen size a window past its `contentMaxSize`, it draws
-/// at the largest scale that fits, which the layer stretches to fill: sharper
-/// pixels would need drawables the budget did not provide for.
 pub fn framebufferViewport(
     logical: struct { width: f64, height: f64, scale_factor: f64 },
     window_limits: *const limits_mod.WindowLimits,
@@ -856,7 +688,6 @@ pub fn framebufferViewport(
         @floatCast(logical.height),
         @floatCast(scale),
     );
-    // Rounding to whole pixels can land one past a limit the scale meets exactly.
     viewport.size_px.width = @min(viewport.size_px.width, window_limits.framebuffer_width_max);
     viewport.size_px.height = @min(viewport.size_px.height, window_limits.framebuffer_height_max);
     assert(viewport.scale_factor <= logical.scale_factor);

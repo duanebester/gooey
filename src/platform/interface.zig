@@ -8,9 +8,6 @@ pub const WindowId = window_registry.WindowId;
 
 pub const WindowRegistry = window_registry.WindowRegistry;
 
-// Caret blinks and per-second countdowns re-arm from every frame they draw,
-// so a minute bounds any legitimate single wait and keeps deadline arithmetic
-// overflow-free in the backends.
 pub const render_delay_ms_max: u32 = 60_000;
 
 pub const CursorShape = enum(u8) {
@@ -21,12 +18,8 @@ pub const CursorShape = enum(u8) {
     resize_up_down,
 };
 
-// Wayland's `wp_fractional_scale_v1` reports scales in 120ths (180 is 1.5);
-// integer scales and Windows' 25% DPI steps lie on the same grid.
 pub const scale_steps_per_unit: u32 = 120;
 
-// A scale on the grid reaches the renderers through the frame's `f32`, which
-// is off by under 2^-24 of the scale: 6e-5 steps at the CPU renderer's 8x.
 const scale_step_tolerance: f64 = 1e-3;
 
 pub fn scaleFromSteps(steps: u32) f64 {
@@ -36,9 +29,6 @@ pub fn scaleFromSteps(steps: u32) f64 {
     return scale;
 }
 
-// On the 1/120 grid the product is computed exactly in integers: in floating
-// point a product ending in .5 can round down (405 px at 1.3 is 526.5, but
-// 405 * @as(f32, 1.3) is 526.49998). Any other scale rounds in floating point.
 pub fn devicePxFromLogical(logical_px: u32, scale_factor: f64) u32 {
     std.debug.assert(logical_px > 0);
     std.debug.assert(scale_factor > 0);
@@ -85,26 +75,19 @@ pub const RendererCapabilities = struct {
     name: []const u8 = "unknown",
 };
 
-// At least one of `files` and `directories` is set.
 pub const PathPromptOptions = struct {
     files: bool,
     directories: bool,
     multiple: bool,
 };
 
-// The panel always allows creating directories.
 pub const SavePromptOptions = struct {
     directory: ?[]const u8,
     suggested_name: ?[]const u8,
 };
 
-// Ownership transfers to the caller: free `paths` with `allocator`. The heap
-// storage conflicts with the static-allocation rule; bounded request-slot
-// storage is deliberately not attempted here.
 pub const PathPromptResult = struct {
-    /// Selected paths (empty if cancelled).
     paths: [][]const u8,
-    /// Caller frees `paths` with this allocator.
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: PathPromptResult) void {
@@ -115,9 +98,6 @@ pub const PathPromptResult = struct {
     }
 };
 
-// Passed as `*const WindowOptions` across the boundary: the struct is well
-// over the 16-byte by-value threshold, and an out-of-line pointer keeps the
-// caller's literal from being copied into every backend frame.
 pub const WindowOptions = struct {
     title: []const u8 = "Gooey Window",
 
@@ -127,27 +107,17 @@ pub const WindowOptions = struct {
 
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
 
-    /// Minimum content (client) size in logical pixels; the platform's frame
-    /// is added outside it.
     min_size: ?geometry.Size(f64) = null,
 
-    /// Maximum content (client) size in logical pixels.
     max_size: ?geometry.Size(f64) = null,
 
     centered: bool = true,
 
-    /// `Config.title_bar`. Only the macOS backend reads it; the others keep
-    /// their usual frame.
     title_bar: TitleBar = .standard,
 
-    /// The application's validated per-window budget. Backends size renderer
-    /// instance storage from it during `PlatformWindow.init`; the runtime
-    /// always sets it from the app config.
     limits: ResourceLimits,
 };
 
-// An axis left at 0 becomes 1 logical pixel, which limits nothing: Windows
-// asserts both axes positive and `set_min_size` takes them together.
 pub fn minSize(width: u32, height: u32) ?geometry.Size(f64) {
     if (width == 0 and height == 0) return null;
     const size = geometry.Size(f64).init(

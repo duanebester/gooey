@@ -1,12 +1,3 @@
-//! The EVE backend's single full-screen window: the whole panel at scale 1,
-//! drawn by the chip from display lists in its `EveRenderer`; a touch panel
-//! shows no cursor. The core host (`core_host.zig`) routes touch through
-//! `handleInput` and presents each packed frame with `presentFrame`.
-//!
-//! The panel size is read from the chip before the window opens; `init`
-//! checks it against `ResourceLimits.window`, reserves the renderer, and
-//! nothing allocates afterwards.
-
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
 const geometry = @import("../../geometry/geometry.zig");
@@ -28,7 +19,6 @@ pub const Window = struct {
     platform: *EvePlatform,
     window_id: WindowId = .invalid,
 
-    /// Logical size: the panel, at scale 1.
     size: geometry.Size(f64),
     scale_factor: f64 = 1,
     closed: bool = false,
@@ -38,7 +28,6 @@ pub const Window = struct {
 
     renderer: EveRenderer,
 
-    // Written only by the section of 0.3.1 calls below.
     dark_appearance: bool = false,
     needs_redraw: bool = true,
     render_deadline_ms: ?i64 = null,
@@ -76,8 +65,6 @@ pub const Window = struct {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
-        // Field by field: the renderer makes the window about 150 KiB, too
-        // large for a struct literal's stack temporary.
         self.allocator = allocator;
         self.platform = plat;
         self.window_id = .invalid;
@@ -131,15 +118,12 @@ pub const Window = struct {
         self.allocator.destroy(self);
     }
 
-    /// The panel at scale 1: the viewport every frame draws at.
     pub fn viewport(self: *const Self) backend.Viewport {
         assert(self.scale_factor == 1);
         assert(self.renderer.size_px.width > 0);
         return .{ .size_px = self.renderer.size_px, .scale_factor = 1 };
     }
 
-    /// Draw `frame` as one display list. The core host calls it as its
-    /// presenter, after feeding the renderer the frame's atlas records.
     pub fn presentFrame(self: *Self, frame: *const PackedFrame, clear: geometry.Color) void {
         assert(!self.closed);
         assert(clear.a >= 0);
@@ -159,7 +143,6 @@ pub const Window = struct {
         return callback(self, event);
     }
 
-    /// Records the close; the core host's loop ends at its next turn.
     pub fn close(self: *Self) void {
         if (self.closed) return;
         self.closed = true;
@@ -170,10 +153,6 @@ pub const Window = struct {
         return self.closed;
     }
 
-    // Kept only while 0.3.1 `context/window.zig` and `cx.zig` compile; the
-    // core never calls these, and they go when phase 6 deletes those files.
-
-    /// Stored only: the panel has no title bar.
     pub fn setTitle(self: *Self, title: []const u8) void {
         assert(title.len <= title_bytes_max);
         const len = @min(title.len, title_bytes_max);
@@ -196,7 +175,6 @@ pub const Window = struct {
         self.needs_redraw = true;
     }
 
-    /// Keeps only the earliest deadline.
     pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
         assert(delay_ms <= interface_mod.render_delay_ms_max);
         if (self.closed) return;

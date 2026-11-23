@@ -1,5 +1,3 @@
-//! The window-system half of Vulkan presentation (WSI).
-
 const builtin = @import("builtin");
 const vk = @import("vulkan.zig");
 const contract = @import("../contract.zig");
@@ -14,8 +12,6 @@ comptime {
     verify(NativeSurface);
 }
 
-/// Pin the surface interface on an implementation, so drift fails to compile
-/// with a message naming the declaration.
 pub fn verify(comptime Surface: type) void {
     comptime {
         contract.verifyConst(Surface, "instance_extension_name", [*:0]const u8);

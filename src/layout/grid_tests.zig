@@ -1,7 +1,3 @@
-//! Grid layout through the engine (`docs/layout-grid.md`). Each test states
-//! the sizes it expects and how they follow from the spec, so a wrong
-//! placement, sharing, or shrinking rule gives a different number.
-
 const std = @import("std");
 
 const engine_mod = @import("engine.zig");
@@ -49,7 +45,6 @@ fn startEngine(engine: *LayoutEngine) void {
     engine.beginFrame(800, 600);
 }
 
-/// Open a grid box of `width` with `config`, `gap` between columns.
 fn openGrid(
     engine: *LayoutEngine,
     width: SizingAxis,
@@ -64,7 +59,6 @@ fn openGrid(
     } }, .{ .grid = config });
 }
 
-/// A childless cell box of a fixed size.
 fn leaf(engine: *LayoutEngine, width: f32, height: f32, cell: Cell) !void {
     const decl: engine_mod.ElementDeclaration = .{
         .layout = .{ .sizing = Sizing.fixed(width, height) },
@@ -79,10 +73,6 @@ fn box(engine: *const LayoutEngine, index: u32) types.BoundingBox {
 }
 
 test "cells place row-major: spans, explicit columns, and new rows" {
-    // Three 100 px columns, gaps of 10, rows 5 apart, 20 px leaves. A spans
-    // two; B fits after it. C spans three and starts row 1. D asks column 1,
-    // before the cursor (3), so starts row 2 there; E asks column 0, before
-    // the cursor (2), so starts row 3. Rows are 20 tall: tops 0, 25, 50, 75.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -104,12 +94,10 @@ test "cells place row-major: spans, explicit columns, and new rows" {
         try expectEqual(position[0], box(&engine, @intCast(index)).x);
         try expectEqual(position[1], box(&engine, @intCast(index)).y);
     }
-    try expectEqual(@as(f32, 95), box(&engine, 0).height); // Four 20 px rows, three gaps.
+    try expectEqual(@as(f32, 95), box(&engine, 0).height);
 }
 
 test "fit columns line up across rows of different content" {
-    // Two fit columns, gap 10: column 0 is the widest of 30 and 70, so
-    // column 1 starts at 80 in both rows, and the grid is 80 + 50 wide.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -128,9 +116,6 @@ test "fit columns line up across rows of different content" {
 }
 
 test "grow columns share by weight, and one held at its minimum gives way" {
-    // 400 px, weights 1 and 3: shares 100 and 300. Column 1 holds a 350 px
-    // cell, above its share, so it stays at 350 and column 0 takes the 50
-    // left; sharing in proportion alone would give 100 and 300 and cut it.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -142,7 +127,6 @@ test "grow columns share by weight, and one held at its minimum gives way" {
     try engine.endFrame();
 
     try expectApprox(@as(f32, 50), box(&engine, 2).x, 0.001);
-    // Without the wide cell the shares are 100 and 300.
     startEngine(&engine);
     try openGrid(&engine, SizingAxis.fixed(400), SizingAxis.fit(), 0, &.{ .columns = &columns });
     try leaf(&engine, 10, 10, .{});
@@ -153,10 +137,6 @@ test "grow columns share by weight, and one held at its minimum gives way" {
 }
 
 test "equal grow columns stay equal under a long spanning text" {
-    // Four grow(1) columns in 400 px: CSS `1fr`, so 100 each. The text
-    // spanning columns 1 to 3 is 490 px unwrapped, but its widest word is
-    // 40, so it wraps in its 300 px cell. Growing from the unwrapped width
-    // instead would widen columns 1 to 3 and squeeze column 0.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -174,14 +154,10 @@ test "equal grow columns stay equal under a long spanning text" {
 
     try expectApprox(@as(f32, 100), box(&engine, 2).x, 0.001);
     try expectApprox(@as(f32, 300), box(&engine, 2).width, 0.001);
-    try expectEqual(@as(f32, 20), box(&engine, 3).height); // Six words, then four.
+    try expectEqual(@as(f32, 20), box(&engine, 3).height);
 }
 
 test "overflowing columns shrink largest first, down to their floors" {
-    // Fit columns of 300, 100, and 40 px texts in 320 px must lose 120. The
-    // 300 px text's widest word is 100, so it can: largest first gives
-    // 180, 100, 40. Shrinking in proportion would cut the 40 px word. At
-    // 180 the first text wraps to 100, then 190 does not fit: three lines.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -199,7 +175,6 @@ test "overflowing columns shrink largest first, down to their floors" {
 }
 
 test "percent columns are fractions of the width less the gaps" {
-    // Four 25 % columns with gaps of 10 in 430 px: 100 each, filling it.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -224,9 +199,6 @@ test "percent columns are fractions of the width less the gaps" {
 }
 
 test "a spanning header widens its fit columns to keep its text whole" {
-    // Two fit columns, gap 10, under a 250 px header spanning both. The
-    // cells below need 50 and 70, 130 with the gap, so each column takes
-    // half of the 120 the header lacks: 110 and 130.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -243,10 +215,6 @@ test "a spanning header widens its fit columns to keep its text whole" {
 }
 
 test "grow rows share a fixed grid's height and fall back to fit in a fit grid" {
-    // Rows fit and grow(1), 10 apart, two columns of 30 px cells, but one
-    // cell of the second row has a grow height. In a 200 px grid the grow
-    // row takes 200 - 30 - 10 = 160 and that cell fills it; in a fit-height
-    // grid the row is 30, its tallest cell, and the cell fills that.
     const heights = [_]SizingAxis{ SizingAxis.fixed(200), SizingAxis.fit() };
     const expected = [_]f32{ 160, 30 };
     for (heights, expected) |height, row_height| {
@@ -277,9 +245,6 @@ test "grow rows share a fixed grid's height and fall back to fit in a fit grid" 
 }
 
 test "a wrapped text cell raises its row, its stretched sibling, and its grid" {
-    // A 50 px column wraps "aaaa bbbb cccc" to three 10 px lines; its row
-    // and the fit-height grid become 30 tall, and the grow-height cell
-    // beside it stretches to 30 rather than staying one line tall.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -301,10 +266,6 @@ test "a wrapped text cell raises its row, its stretched sibling, and its grid" {
 }
 
 test "row boxes share the grid's columns with its header cells" {
-    // Two fit columns, gap 10. The header's cells are 40 and 30 wide; the
-    // row box's are 90 and 10, so column 0 is 90 for both and column 1
-    // starts at 100 in the header and in the row box. The row box is one
-    // row, the grid's width, below the header.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -331,12 +292,11 @@ test "row boxes share the grid's columns with its header cells" {
     const row_box = box(&engine, 3);
     try expectEqual(@as(f32, 14), row_box.y);
     try expectEqual(@as(f32, 130), row_box.width);
-    try expectEqual(@as(f32, 18), row_box.height); // 12 and its padding.
+    try expectEqual(@as(f32, 18), row_box.height);
     try expectEqual(@as(f32, 17), box(&engine, 5).y);
 }
 
 test "a column's alignment places a narrower child at its end" {
-    // A 96 px column aligned to its end holds a 20 px leaf at 96 - 20 = 76.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -350,10 +310,6 @@ test "a column's alignment places a narrower child at its end" {
 }
 
 test "track min and max bound every kind of column" {
-    // 400 px, gap 0: a fit column of min 50 holds a 10 px leaf, so 50; a
-    // percent(0.5) column of max 100 is 100, not 200; two grow columns
-    // share the 250 left, 125 each, but the first stops at its max of 60
-    // and the second takes the rest, 190. Edges at 0, 50, 110, and 210.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -384,9 +340,6 @@ test "track min and max bound every kind of column" {
 }
 
 test "an aspect child in a spanning cell takes its height from the span" {
-    // Three fixed 50 px columns, gap 10. A grow-width child of aspect 2
-    // spanning two columns is 50 + 10 + 50 = 110 wide, so 55 tall, and its
-    // row and the fit-height grid are 55; one column wide it would be 25.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -408,10 +361,6 @@ test "an aspect child in a spanning cell takes its height from the span" {
 }
 
 test "a nested grid sizes its columns in its parent's cell" {
-    // An outer grid of two grow(1) columns in 200 px puts the inner grid
-    // in a 100 px cell at x 100. The inner grid's fit column takes its
-    // 30 px leaf and its grow column the 70 left, so its grow-width cell
-    // starts at 130 and is 70 wide, not the outer grid's 170.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -437,8 +386,6 @@ test "a nested grid sizes its columns in its parent's cell" {
 }
 
 test "floating children take no cell" {
-    // A floating child between two cells does not move the second cell to
-    // the next column; a grid with only a floating child has no rows.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);
@@ -466,9 +413,6 @@ test "floating children take no cell" {
 }
 
 test "a grid holds exactly its budget of grid slots" {
-    // Goal: the slot pool is reserved, not grown. Method: open
-    // `grid_count_max` grids in one frame, then check the last one laid
-    // out; one more panics, which the fail-fast check covers.
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     startEngine(&engine);

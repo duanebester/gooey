@@ -2,7 +2,6 @@
 #extension GL_GOOGLE_include_directive : require
 #include "packed.glsl"
 
-// The quad pipeline: SDF quads, and shadows (quads with blur > 0).
 layout(location = 0) flat out uint out_shadow;
 layout(location = 1) out vec4 out_color;
 layout(location = 2) out vec4 out_border_color;
@@ -30,13 +29,9 @@ void main() {
     vec2 origin = q.bounds.xy;
     vec2 size = q.bounds.zw;
     if (out_shadow == 0u) {
-        // The fragment shader fades across [-0.5, +0.5] px of the edge. With one
-        // sample per pixel the geometry must cover the outer half too, so grow
-        // the quad by one logical pixel; empty quads stay empty.
         float fringe = (size.x > 0.0 && size.y > 0.0) ? 1.0 : 0.0;
         vec2 pos = origin - fringe + unit * (size + 2.0 * fringe);
         gl_Position = clip_position(pos);
-        // Quad-local position in pixels; outside [0, size] within the fringe.
         out_quad_coord = pos - origin;
         out_quad_size = size;
         out_content_size = size;

@@ -28,7 +28,6 @@ pub const Counter = struct {
     }
 };
 
-/// The `.nano` entity pool holds 16; keep this under it.
 pub const counter_count_max = 10;
 
 const labels = [counter_count_max][]const u8{
@@ -96,6 +95,7 @@ const ControlPanel = struct {
     pub fn render(_: ControlPanel, cx: *Cx) void {
         const s = cx.state(State);
         var buffer: [8]u8 = undefined;
+        assert(std.fmt.count("({d}/10)", .{s.counter_count}) <= buffer.len);
         const count = std.fmt.bufPrint(&buffer, "({d}/10)", .{s.counter_count}) catch unreachable;
         cx.render(ui.box(.{ .style = .{
             .direction = .row,
@@ -129,9 +129,8 @@ const CounterCard = struct {
     pub fn render(self: CounterCard, cx: *Cx) void {
         const data = cx.get(Counter, self.counter);
         var buffer: [12]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.minInt(i32)}) <= buffer.len);
         const count = std.fmt.bufPrint(&buffer, "{d}", .{data.count}) catch unreachable;
-        // Keyed by slot and generation, so a reused slot starts
-        // fresh.
         const key: u64 = (@as(u64, self.counter.generation) << 32) | self.counter.slot;
         cx.render(ui.box(.{
             .key = .{ .index = key },
@@ -168,6 +167,7 @@ const TotalDisplay = struct {
         var total: i32 = 0;
         for (s.live()) |counter| total += cx.get(Counter, counter).count;
         var buffer: [24]u8 = undefined;
+        comptime assert(std.fmt.count("Total: {d}", .{std.math.minInt(i32)}) <= buffer.len);
         const text = std.fmt.bufPrint(&buffer, "Total: {d}", .{total}) catch unreachable;
         cx.render(ui.box(.{ .style = .{
             .padding = .all(16),

@@ -1,7 +1,3 @@
-//! Hard limits for chart data structures. App data capacities are not set
-//! here: every chart type takes them at comptime from the app, checked
-//! against the `*_ceiling` constants.
-
 pub const point_count_ceiling: u32 = 4096;
 
 pub const series_count_ceiling: u32 = 16;
@@ -36,7 +32,6 @@ pub const DEFAULT_POINT_RADIUS: f32 = 4.0;
 
 pub const DEFAULT_GRID_LINE_WIDTH: f32 = 1.0;
 
-/// Charts with more points than this decimate with LTTB.
 pub const LOD_THRESHOLD: u32 = 1000;
 
 comptime {
@@ -48,13 +43,10 @@ comptime {
     std.debug.assert(MAX_LEGEND_ITEMS > 0);
     std.debug.assert(MAX_LABEL_LENGTH > 0);
 
-    // Band scales index ticks into categories.
     std.debug.assert(MAX_TICKS <= category_count_ceiling);
 
-    // Every series appears in the legend.
     std.debug.assert(series_count_ceiling <= MAX_LEGEND_ITEMS);
 
-    // Pie slices are categories: a pie never holds more than a bar series.
     std.debug.assert(slice_count_ceiling <= category_count_ceiling);
 
     std.debug.assert(LOD_THRESHOLD > 0);

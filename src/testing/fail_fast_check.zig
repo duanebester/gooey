@@ -1,9 +1,3 @@
-//! Child-process checks for failures that panic. A panic cannot be caught
-//! inside a test, so the `test` build step runs this program once per mode
-//! and asserts that it aborts with the documented message (see
-//! `addFailFastChecks` in `build.zig`). Capacity modes fill the pool exactly
-//! and claim one more. No mode may reach the end of `main`.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -132,9 +126,6 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
-    // The standard set loads regular, medium, semibold, bold, italic, and bold
-    // italic. Light is a valid variant that the set omits, so measuring it must
-    // name the variant and the loaded set instead of substituting another face.
     const text = gooey.internals.text;
     const text_system = gpa.create(text.TextSystem) catch |err| {
         std.debug.panic("setup: TextSystem allocation failed: {s}", .{@errorName(err)});
@@ -183,15 +174,12 @@ fn atlasHarness(gpa: std.mem.Allocator, io: std.Io, kind: gooey.internals.text.A
 }
 
 fn atlasItem(gpa: std.mem.Allocator, io: std.Io) void {
-    // 63 px fits a 64 px atlas only without its 1 px border on each side.
     const atlas = atlasHarness(gpa, io, .text);
     var pixels: [63 * 4]u8 = @splat(1);
     _ = atlas.insert(63, 4, &pixels);
 }
 
 fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
-    // Four 62×14 icons fill the four 16-row shelves exactly, all in frame 2;
-    // none may be evicted for a fifth in the same frame.
     const atlas = atlasHarness(gpa, io, .svg);
     var pixels: [62 * 14 * 4]u8 = @splat(1);
     var index: u32 = 0;
@@ -203,10 +191,6 @@ fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
 }
 
 fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
-    // 27 letters at 19 sizes, 8 to 26 px, are 513 distinct keys: `nano`'s 512
-    // `text.glyph_cache_count_max` exactly, then one more, all in one frame,
-    // so no entry may be evicted. The 1,024 px atlas and 1 MiB upload budget
-    // hold every glyph, so the cache is the pool that runs out.
     const text = gooey.internals.text;
     const glyph_count_max = gooey.ResourceLimits.nano.text.glyph_cache_count_max;
     const letters = "abcdefghijklmnopqrstuvwxyzA";
@@ -275,8 +259,6 @@ fn cacheUploads(gpa: std.mem.Allocator, io: std.Io) *gooey.internals.text.AtlasU
 }
 
 fn svgCache(gpa: std.mem.Allocator, io: std.Io) void {
-    // Nine 16 px squares, offset so each path differs, fill 9 of a 512² atlas's
-    // shelves easily: only the 8-entry map can run out.
     const svg = gooey.internals.svg;
     const svg_atlas = gpa.create(svg.SvgAtlas) catch |err| {
         std.debug.panic("setup: SvgAtlas allocation failed: {s}", .{@errorName(err)});
@@ -297,11 +279,10 @@ fn svgCache(gpa: std.mem.Allocator, io: std.Io) void {
     };
     var index: u32 = 0;
     while (index < 9) : (index += 1) {
-        // The 9th call is the one past the budget, in a fresh frame budget.
         if (index == 8) svg_atlas.resetFrameBudget();
         var path_buffer: [32]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buffer, "M{d} 0L24 0L24 24Z", .{index}) catch {
-            unreachable; // 32 bytes hold every path above.
+            unreachable;
         };
         _ = svg_atlas.getOrRasterize(path, 24, 16, true, null) catch |err| {
             std.debug.panic("getOrRasterize failed instead of panicking: {s}", .{@errorName(err)});
@@ -310,7 +291,6 @@ fn svgCache(gpa: std.mem.Allocator, io: std.Io) void {
 }
 
 fn imageCache(gpa: std.mem.Allocator, io: std.Io) void {
-    // Nine 8×8 images in a 512² atlas; only the 8-entry map can run out.
     const image = gooey.internals.image;
     const image_atlas = gpa.create(image.ImageAtlas) catch |err| {
         std.debug.panic("setup: ImageAtlas allocation failed: {s}", .{@errorName(err)});
@@ -327,7 +307,7 @@ fn imageCache(gpa: std.mem.Allocator, io: std.Io) void {
     while (index < 9) : (index += 1) {
         var name_buffer: [16]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buffer, "image-{d}", .{index}) catch {
-            unreachable; // 16 bytes hold every name above.
+            unreachable;
         };
         const key = image.ImageKey.initFromPath(name, null, null, 1.0);
         _ = image_atlas.cacheRgba(key, 8, 8, &pixels) catch |err| {
@@ -341,7 +321,6 @@ const CoreState = struct {
     fn dragged(_: *CoreState) void {}
 
     fn startDrag(_: *CoreState, id: gooey.ElementId, effects: *gooey.Effects) void {
-        // The call panics on a box that is not draggable; it never returns.
         _ = effects.startDrag(id);
     }
 };
@@ -365,12 +344,10 @@ const CoreApp = struct {
         });
     }
 
-    /// One past the top of the valid range: 1 itself is fine.
     fn opacityRange(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .opacity = 1.01 } }, .{}));
     }
 
-    /// A capture finds its box by id across frames, so it must be keyed.
     fn unkeyedDrag(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{
             .on_pointer_drag = cx.on(CoreState.dragged, .{}),
@@ -378,7 +355,6 @@ const CoreApp = struct {
         }, .{}));
     }
 
-    /// A drag names its source by id across frames, so it must be keyed.
     fn unkeyedDraggable(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{
             .draggable = .of(u32, 1),
@@ -386,7 +362,6 @@ const CoreApp = struct {
         }, .{}));
     }
 
-    /// A press starts one gesture, so a box cannot ask for two.
     fn dragBoth(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{
             .key = .{ .name = "both" },
@@ -396,22 +371,18 @@ const CoreApp = struct {
         }, .{}));
     }
 
-    /// The smallest invalid weight; any positive weight is valid.
     fn growWeight(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .width = .{ .grow = 0 } } }, .{}));
     }
 
-    /// A column is the default direction, so `wrap` alone asks a column.
     fn wrapColumn(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .wrap = true } }, .{}));
     }
 
-    /// The smallest invalid ratio; any positive finite ratio is valid.
     fn aspectRatio(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .aspect_ratio = 0 } }, .{}));
     }
 
-    /// A valid ratio with a height of its own, which the ratio would replace.
     fn aspectHeight(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{
             .width = .{ .fixed = 160 },
@@ -422,22 +393,18 @@ const CoreApp = struct {
 
     const two_columns = [_]gooey.ui.Track{ .fit, .fit };
 
-    /// A grid needs a column.
     fn gridColumns(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &.{} } } }, .{}));
     }
 
-    /// A clamp keeps at least one line.
     fn textLineCountZero(cx: *gooey.Cx) void {
         cx.render(gooey.ui.text("Quarterly report", .{ .wrap = .words, .line_count_max = 0 }));
     }
 
-    /// A text that does not wrap has no lines to clamp.
     fn textLineCountNone(cx: *gooey.Cx) void {
         cx.render(gooey.ui.text("Quarterly report", .{ .line_count_max = 2 }));
     }
 
-    /// One row more than a grid lists.
     fn gridRows(cx: *gooey.Cx) void {
         const rows: [gooey.ui.Grid.track_count_max + 1]gooey.ui.Track = @splat(.fit);
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{
@@ -446,7 +413,6 @@ const CoreApp = struct {
         } } }, .{}));
     }
 
-    /// A track whose minimum is above its maximum.
     fn gridTrack(cx: *gooey.Cx) void {
         const columns = [_]gooey.ui.Track{.{ .min = 10, .max = 5 }};
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &columns } } }, .{}));
@@ -460,7 +426,6 @@ const CoreApp = struct {
         } }, .{}));
     }
 
-    /// A grid places each child in its cell; it has no space to distribute.
     fn gridAlignment(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{
             .alignment = .{ .main = .space_between },
@@ -468,14 +433,12 @@ const CoreApp = struct {
         } }, .{}));
     }
 
-    /// The smallest invalid span.
     fn gridSpan(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
             gooey.ui.box(.{ .style = .{ .cell = .{ .column_span = 0 } } }, .{}),
         }));
     }
 
-    /// A span that fits the grid, from a column that leaves it one short.
     fn gridColumn(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
             gooey.ui.box(.{ .style = .{ .cell = .{ .column = 1, .column_span = 2 } } }, .{}),
@@ -486,14 +449,12 @@ const CoreApp = struct {
         cx.render(gooey.ui.box(.{ .style = .{ .cell = .{ .column = 0 } } }, .{}));
     }
 
-    /// A row box's cells sit on the grid's columns, so it has no padding across.
     fn gridRowBox(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
             gooey.ui.box(.{ .style = .{ .cell = .{ .row = true }, .padding = .all(4) } }, .{}),
         }));
     }
 
-    /// Three cells in a row box of a two-column grid.
     fn gridRowBoxCells(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
             gooey.ui.box(.{ .style = .{ .cell = .{ .row = true } } }, .{
@@ -504,7 +465,6 @@ const CoreApp = struct {
         }));
     }
 
-    /// Exactly `nano`'s grid slots, then one more.
     fn manyGrids(cx: *gooey.Cx) void {
         const count = gooey.ResourceLimits.nano.build.grid_count_frame_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{
@@ -512,8 +472,6 @@ const CoreApp = struct {
         }, .{}));
     }
 
-    /// Each level renders the next through `cx.render`, so the depth grows
-    /// by one per level until the budget stops it.
     const Nest = struct {
         pub fn render(self: Nest, cx: *gooey.Cx) void {
             cx.render(self);
@@ -524,20 +482,16 @@ const CoreApp = struct {
         cx.render(Nest{});
     }
 
-    /// 64 nested boxes inside the window root: one level past the budget,
-    /// which counts the root.
     fn deepBoxes(cx: *gooey.Cx) void {
         const box_count = gooey.ResourceLimits.nano.build.box_depth_max;
         cx.render(NestBoxes{ .remaining = box_count });
     }
 
-    /// Exactly `nano`'s elements as sibling boxes, then one more.
     fn manyBoxes(cx: *gooey.Cx) void {
         const count = gooey.ResourceLimits.nano.build.element_count_frame_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{}, .{}));
     }
 
-    /// Exactly `nano`'s layers as sibling popovers, then one more.
     fn manyLayers(cx: *gooey.Cx) void {
         const count = gooey.ResourceLimits.nano.build.layer_count_frame_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{
@@ -545,7 +499,6 @@ const CoreApp = struct {
         }, .{}));
     }
 
-    /// Exactly `nano`'s accessibility nodes as sibling buttons, then one more.
     fn manyAccessible(cx: *gooey.Cx) void {
         const count = gooey.ResourceLimits.nano.a11y.element_count_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{
@@ -553,8 +506,6 @@ const CoreApp = struct {
         }, .{}));
     }
 
-    /// Opens two boxes per component level, so 64 boxes stay within the
-    /// component depth budget and the box depth is the one exhausted.
     const NestBoxes = struct {
         remaining: u32,
 
@@ -571,10 +522,6 @@ const CoreApp = struct {
         }
     };
 
-    /// A window-sized box whose click requests a dialog completing on a
-    /// state type that is not the root state.
-    /// A keyed, window-sized button that asks to drag itself; it has no
-    /// `Box.draggable`.
     fn startDragButton(cx: *gooey.Cx) void {
         const key: gooey.Key = .{ .name = "drag" };
         cx.render(gooey.ui.box(.{
@@ -598,12 +545,10 @@ const CoreApp = struct {
             .kind = .{ .open = open_many },
             .on_complete = on_complete,
         }) catch |err| switch (err) {
-            // The run's only click: nothing waits and every slot is free.
             error.DialogBusy => unreachable,
         };
     }
 
-    /// A window-sized box whose click requests a multiple selection.
     fn manyButton(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{
             .key = .{ .name = "open" },
@@ -618,7 +563,6 @@ const CoreApp = struct {
             .kind = .{ .open = open_many },
             .on_complete = on_complete,
         }) catch |err| switch (err) {
-            // The run's only click: nothing waits and every slot is free.
             error.DialogBusy => unreachable,
         };
     }
@@ -637,15 +581,11 @@ const CoreApp = struct {
         cx.render(gooey.ui.text("code", .{ .family = .mono }));
     }
 
-    /// One line per newline, then "m": 1,025 lines, one past `nano`'s
-    /// 1,024 wrapped lines a frame, all in one text.
     fn wrapText(cx: *gooey.Cx) void {
         const run = comptime newlinesThenM(gooey.text.run_codepoint_count_max);
         cx.render(gooey.ui.text(&run, .{ .wrap = .words }));
     }
 
-    /// `nano` draws at most 1,024 glyphs, so the frame holds 1,024 wrapped
-    /// lines: the first text claims 1,000 and the second asks for 25.
     fn wrapFrame(cx: *gooey.Cx) void {
         const first = comptime newlinesThenM(999);
         const second = comptime newlinesThenM(24);
@@ -655,7 +595,6 @@ const CoreApp = struct {
         }));
     }
 
-    /// One row more than the row type's `count_max`.
     fn longList(cx: *gooey.Cx) void {
         cx.render(components.List(TallRow){ .key = "rows", .count = TallRow.count_max + 1 });
     }
@@ -671,7 +610,6 @@ const CoreApp = struct {
 
         pub fn render(_: TallRow, _: *gooey.Cx) void {}
     };
-    /// One point more than `nano` allows polylines in a frame.
     fn longPolyline(cx: *gooey.Cx) void {
         const nothing: u8 = 0;
         cx.render(gooey.ui.paint(u8, &nothing, paintLongPolyline, .{}));
@@ -693,15 +631,12 @@ const CoreApp = struct {
         cx.render(gooey.ui.paint(u8, &nothing, paintManyPolylines, .{}));
     }
 
-    /// Exactly `nano`'s polylines, then one more.
     fn paintManyPolylines(_: *const u8, painter: *gooey.ui.Painter) void {
         const count = gooey.ResourceLimits.nano.paint.polyline_count_frame_max + 1;
         const points = [2][2]f32{ .{ 0, 0 }, .{ 10, 10 } };
         for (0..count) |_| painter.polyline(&points, 1, gooey.ui.Color.rgb(1, 1, 1));
     }
 
-    /// One distinct image path more than `nano`'s request entries, in one
-    /// frame; the files do not exist, so none is decoded before the panic.
     fn manyImages(cx: *gooey.Cx) void {
         const nothing: u8 = 0;
         cx.render(gooey.ui.paint(u8, &nothing, paintManyImages, .{
@@ -726,8 +661,6 @@ const CoreApp = struct {
         }));
     }
 
-    /// One byte past `nano`'s image path budget: exactly the budget is a
-    /// valid path, and the request reserves no more.
     fn paintLongImagePath(_: *const u8, painter: *gooey.ui.Painter) void {
         const path_bytes = gooey.ResourceLimits.nano.atlas.image_path_bytes_max + 1;
         const path: [path_bytes]u8 = @splat('a');
@@ -775,21 +708,17 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
     clickCenter(app);
 }
 
-/// A job that declares one post and makes two.
 const Overpost = struct {
     pub const Input = struct { unused: u8 };
     pub const Result = struct { value: u32 };
     pub const posts_max: u32 = 1;
 
     pub fn run(_: *const Input, job: *gooey.Job(Result)) void {
-        // Nothing cancels a main-thread run, so both posts go ahead.
         if (!job.post(&.{ .value = 1 })) unreachable;
         if (!job.post(&.{ .value = 2 })) unreachable;
     }
 };
 
-/// On the main thread a post cannot wait for a drain, so a run that posts
-/// past its `posts_max` would take a result slot kept for another job.
 fn coreJobPosts(gpa: std.mem.Allocator, io: std.Io) void {
     const config = comptime blk: {
         var with_jobs = core_config;
@@ -888,8 +817,6 @@ fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*gooey.Cx) 
     app.tick(1);
 }
 
-/// Pack one record more than the packed frame's draws or clips hold. The
-/// records frame is reserved larger, the mismatch pack's check names.
 fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
     const internals = gooey.internals;
     const records = internals.records;
@@ -923,7 +850,6 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
         const bounds: records.Rect = .{ .x = offset, .y = 0, .width = 4, .height = 4 };
         const white: records.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 };
         switch (pool) {
-            // Alternating pipelines: every record starts a draw.
             .draws => frame.appendPaint(if (index % 2 == 0) .{ .quad = .{
                 .bounds = bounds,
                 .fill = white,
@@ -991,7 +917,6 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
 }
 
 fn chartPoints() void {
-    // Four points fill the series exactly; the fifth names the field to raise.
     const Chart = charts.LineChart(.{ .point_count_max = 4, .series_count_max = 1 });
     var series = Chart.Series.init("rev", null);
     var index: u32 = 0;

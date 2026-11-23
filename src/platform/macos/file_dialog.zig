@@ -10,16 +10,11 @@ pub const PathPromptResult = interface_mod.PathPromptResult;
 pub const SavePromptOptions = interface_mod.SavePromptOptions;
 
 pub const DialogError = error{
-    /// AppKit is missing a panel class, which only a broken process sees.
     DialogUnavailable,
-    /// The scratch cannot hold the selection.
     DialogPathTooLong,
-    /// A selected URL has no file system representation.
     PathUnrepresentable,
 };
 
-/// Null on cancel; an error is a failure, not a cancel. Paths live in
-/// `scratch`.
 pub fn promptForPaths(
     scratch: std.mem.Allocator,
     options: PathPromptOptions,
@@ -34,7 +29,6 @@ pub fn promptForPaths(
     panel.msgSend(void, "setCanCreateDirectories:", .{true});
     panel.msgSend(void, "setResolvesAliases:", .{true});
 
-    // Flush pending UI updates before the modal block, so clicks register.
     if (objc.getClass("NSApplication")) |NSApp| {
         const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
         app.msgSend(void, "updateWindows", .{});
@@ -50,11 +44,9 @@ pub fn promptForPaths(
     return result;
 }
 
-/// A path that cannot be copied fails the selection instead of being left
-/// out of it.
 fn openPaths(scratch: std.mem.Allocator, urls: objc.Object) DialogError!PathPromptResult {
     const count: usize = urls.msgSend(usize, "count", .{});
-    if (count == 0) return error.PathUnrepresentable; // AppKit reported OK with nothing.
+    if (count == 0) return error.PathUnrepresentable;
 
     const paths = scratch.alloc([]const u8, count) catch return scratchFull();
     for (paths, 0..) |*path, index| {
@@ -66,8 +58,6 @@ fn openPaths(scratch: std.mem.Allocator, urls: objc.Object) DialogError!PathProm
     return .{ .paths = paths, .allocator = scratch };
 }
 
-/// Null on cancel; an error is a failure, not a cancel. The path lives in
-/// `scratch`.
 pub fn promptForNewPath(
     scratch: std.mem.Allocator,
     options: SavePromptOptions,
@@ -90,7 +80,6 @@ pub fn promptForNewPath(
         }
     }
 
-    // Flush pending UI updates before the modal block, so clicks register.
     if (objc.getClass("NSApplication")) |NSApp| {
         const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
         app.msgSend(void, "updateWindows", .{});
@@ -107,7 +96,6 @@ pub fn promptForNewPath(
 }
 
 fn nsUrlToPath(scratch: std.mem.Allocator, url: objc.Object) DialogError![]const u8 {
-    // `fileSystemRepresentation` is a UTF-8, null-terminated C string.
     const cstr: ?[*:0]const u8 = url.msgSend(?[*:0]const u8, "fileSystemRepresentation", .{});
     const ptr = cstr orelse {
         std.log.warn("macos: file dialog selected a URL with no file system path", .{});
@@ -127,7 +115,6 @@ pub fn scratchFull() DialogError {
 fn createNSString(str: []const u8) ?objc.Object {
     const NSString = objc.getClass("NSString") orelse return null;
 
-    // `str` may not be NUL-terminated, so `initWithBytes:length:encoding:`.
     const ns_string_id: objc.c.id = NSString.msgSend(objc.c.id, "alloc", .{});
     if (ns_string_id == null) return null;
 
@@ -138,7 +125,7 @@ fn createNSString(str: []const u8) ?objc.Object {
         .{
             str.ptr,
             @as(c_ulong, str.len),
-            @as(c_ulong, 4), // NSUTF8StringEncoding = 4
+            @as(c_ulong, 4),
         },
     );
     if (initialized_id == null) return null;

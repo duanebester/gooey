@@ -1,9 +1,3 @@
-//! Every pipeline reads one descriptor set per frame in flight, with the
-//! bindings `shaders/packed.glsl` declares: 0 to 4 the packed frame's storage
-//! buffers (`vk_types.FrameBuffer`), 5 the viewport uniform, 6 to 8 the glyph,
-//! SVG, and image atlases, 9 the atlas sampler. So a frame binds its set once,
-//! whichever pipelines its draws use.
-
 const std = @import("std");
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
@@ -12,7 +6,6 @@ const assert = std.debug.assert;
 
 const descriptor_set_count_frame: u32 = 1;
 
-/// Atlases the shaders sample, in binding order: glyph, SVG, image.
 pub const atlas_binding_count: u32 = 3;
 
 const storage_binding_count: u32 = vk_types.frame_buffer_count;
@@ -22,7 +15,6 @@ const sampler_binding: u32 = atlas_binding_first + atlas_binding_count;
 const binding_count: u32 = sampler_binding + 1;
 
 comptime {
-    // `shaders/packed.glsl` and the sprite fragment shaders hard-code these.
     assert(uniform_binding == 5);
     assert(atlas_binding_first == 6);
     assert(sampler_binding == 9);
@@ -118,8 +110,6 @@ pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.De
     return pool;
 }
 
-/// The pool owns the set's memory; sets are freed implicitly when the pool is
-/// destroyed.
 pub fn allocateDescriptorSet(
     device: vk.Device,
     pool: vk.DescriptorPool,
@@ -146,13 +136,9 @@ pub fn allocateDescriptorSet(
     return descriptor_set;
 }
 
-/// Everything one frame's descriptor set points at. Written once at init:
-/// the buffers and atlas images are never recreated.
 pub const FrameBindings = struct {
-    /// Indexed by `vk_types.FrameBuffer`, each bound over its whole range.
     storage: [storage_binding_count]vk.DescriptorBufferInfo,
     uniform: vk.Buffer,
-    /// Glyph, SVG, and image atlas views, in the shader's binding order.
     atlas_views: [atlas_binding_count]vk.ImageView,
     sampler: vk.Sampler,
 };

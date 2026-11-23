@@ -5,11 +5,6 @@ pub const interface = @import("interface.zig");
 
 pub const contract = @import("contract.zig");
 
-// `PlatformWindow` and the framework-level `Window` are deliberately distinct
-// names for very different things: `PlatformWindow` is the OS-level handle
-// (NSWindow on macOS, wl_surface on Linux, canvas on web); the framework-level
-// `Window` holds per-window frame state.
-
 pub const WindowOptions = interface.WindowOptions;
 
 pub const CursorShape = interface.CursorShape;
@@ -30,8 +25,6 @@ pub const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 
 pub const is_linux = builtin.os.tag == .linux;
 
-// Read by policy that follows platform convention rather than by backend
-// selection, which goes through `backend` below.
 pub const is_macos = builtin.os.tag == .macos;
 
 pub const is_windows = builtin.os.tag == .windows;
@@ -49,13 +42,6 @@ else switch (builtin.os.tag) {
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
-// Every backend namespace declares `Platform` and `PlatformWindow`, so the
-// aliases below do not have to know what any backend calls its own types.
-
-// Every renderer, the CPU renderer included, keeps atlas pixels only in its
-// own textures and receives them through `AtlasUploads` (`Renderer.uploadAtlas`).
-// Synthetic-text builds draw with the `NullRenderer`, which reads the glyph
-// atlas in place, so they keep CPU pixels.
 pub const atlas_storage: @import("../text/atlas_uploads.zig").AtlasStorage = if (text_is_synthetic)
     .cpu_texture
 else
@@ -65,16 +51,10 @@ const text_is_synthetic = @import("../text/mod.zig").is_synthetic;
 
 pub const Platform = backend.Platform;
 
-// The platform's native window object: `NSWindow` on macOS (wrapped),
-// `wl_surface` plus xdg-shell state on Linux/Wayland, an
-// `HTMLCanvasElement`-backed shim on web. Framework code should treat it as
-// opaque and reach for it through `Window` (the framework-level wrapper).
-// Named `PlatformWindow` so the framework wrapper can own the name `Window`.
 pub const PlatformWindow = backend.PlatformWindow;
 
 pub const macos = if (is_macos) @import("macos/mod.zig") else struct {};
 
-// Short alias for `macos`, kept so existing callers compile.
 pub const mac = macos;
 
 pub const linux = if (is_linux) struct {

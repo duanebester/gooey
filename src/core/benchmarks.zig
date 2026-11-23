@@ -2,7 +2,6 @@ const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
-/// `.awake` is the monotonic clock — deltas here can never go negative.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -57,8 +56,6 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark; zero in
-/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 const BenchmarkResult = struct {
@@ -83,7 +80,6 @@ const BenchmarkResult = struct {
         return avg_ns / @as(f64, @floatFromInt(self.operation_count));
     }
 
-    /// The best-of-N estimator, least perturbed by runner noise.
     pub fn minPerOpNs(self: BenchmarkResult) f64 {
         std.debug.assert(self.iterations > 0);
         std.debug.assert(self.operation_count > 0);
@@ -108,7 +104,6 @@ const StrokeData = struct {
     point_count: u32 = 0,
 };
 
-/// CCW winding for consistent triangulator behavior.
 fn generateConvexPolygon(comptime vertex_count: u32) PolygonData {
     comptime {
         std.debug.assert(vertex_count >= 3);
@@ -131,7 +126,6 @@ fn generateConvexPolygon(comptime vertex_count: u32) PolygonData {
     return data;
 }
 
-/// Concave shape — stresses reflex vertex tracking in ear-clipper.
 fn generateStarPolygon(comptime point_count: u32) PolygonData {
     comptime {
         std.debug.assert(point_count >= 3);
@@ -158,7 +152,6 @@ fn generateStarPolygon(comptime point_count: u32) PolygonData {
     return data;
 }
 
-/// Sharp corners stress miter/bevel join logic.
 fn generateZigzagPath(comptime point_count: u32) StrokeData {
     comptime {
         std.debug.assert(point_count >= 2);
@@ -176,7 +169,6 @@ fn generateZigzagPath(comptime point_count: u32) StrokeData {
     return data;
 }
 
-/// Exercises round join logic without extreme miter angles.
 fn generateSinePath(comptime point_count: u32) StrokeData {
     comptime {
         std.debug.assert(point_count >= 2);
@@ -196,7 +188,6 @@ fn generateSinePath(comptime point_count: u32) StrokeData {
     return data;
 }
 
-/// Uniform curvature exercises join logic at every vertex.
 fn generateCirclePath(comptime point_count: u32) StrokeData {
     comptime {
         std.debug.assert(point_count >= 3);
@@ -219,7 +210,6 @@ fn generateCirclePath(comptime point_count: u32) StrokeData {
     return data;
 }
 
-/// Measures reset + triangulate. Operation count = vertex count.
 fn benchTriangulate(
     comptime name: []const u8,
     comptime generateFn: fn () PolygonData,
@@ -253,7 +243,6 @@ fn benchTriangulate(
         sampler.record(end.since(start));
     }
 
-    // Result must be consumed to prevent dead-code elimination.
     std.debug.assert(last_index_count > 0);
 
     return .{
@@ -265,7 +254,6 @@ fn benchTriangulate(
     };
 }
 
-/// Operation count = input point count.
 fn benchStrokeExpand(
     comptime name: []const u8,
     comptime generateFn: fn () StrokeData,
@@ -310,7 +298,6 @@ fn benchStrokeExpand(
     };
 }
 
-/// Bypasses ear-clipper. Operation count = input point count.
 fn benchStrokeToTriangles(
     comptime name: []const u8,
     comptime generateFn: fn () StrokeData,
@@ -355,7 +342,6 @@ fn benchStrokeToTriangles(
     };
 }
 
-/// Operation count = item_count.
 fn benchFixedArrayAppendClear(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -385,9 +371,6 @@ fn benchFixedArrayAppendClear(
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
         }
-        // Treat the entire populated slice as externally observable.
-        // This prevents LLVM from folding the sequential stores into a
-        // computed final state — every element must be materialised.
         std.mem.doNotOptimizeAway(array.constSlice());
         array.clear();
         const end = time.Instant.now();
@@ -404,7 +387,6 @@ fn benchFixedArrayAppendClear(
     };
 }
 
-/// Operation count = item_count.
 fn benchFixedArrayPopCycle(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -435,8 +417,6 @@ fn benchFixedArrayPopCycle(
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
         }
-        // Make array contents opaque so LLVM cannot predict pop return values
-        // and fold the loop into an arithmetic identity (sum = N*(N-1)/2).
         std.mem.doNotOptimizeAway(array.constSlice());
 
         var pop_sink: u32 = 0;
@@ -445,7 +425,6 @@ fn benchFixedArrayPopCycle(
             pop_sink +%= array.pop();
         }
         const end = time.Instant.now();
-        // Sink must be observable per-iteration to prevent cross-iteration folding.
         std.mem.doNotOptimizeAway(pop_sink);
         std.debug.assert(array.len == 0);
         sampler.record(end.since(start));
@@ -460,7 +439,6 @@ fn benchFixedArrayPopCycle(
     };
 }
 
-/// Operation count = item_count.
 fn benchFixedArraySwapRemove(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -509,8 +487,6 @@ fn benchFixedArraySwapRemove(
     };
 }
 
-/// Each orderedRemove is O(n) due to element shifting — exposes quadratic total cost.
-/// Operation count = item_count.
 fn benchFixedArrayOrderedRemove(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -559,7 +535,6 @@ fn benchFixedArrayOrderedRemove(
     };
 }
 
-/// Operation count = vector_count.
 fn benchVec2Normalize(
     comptime name: []const u8,
     comptime vector_count: u32,
@@ -578,7 +553,6 @@ fn benchVec2Normalize(
     const operation_count = vector_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Accumulate into a sink to prevent dead-code elimination.
     var sink = Vec2.zero;
     for (0..warmup_count) |_| {
         for (0..vector_count) |i| {
@@ -598,7 +572,6 @@ fn benchVec2Normalize(
         sampler.record(end.since(start));
     }
 
-    // Accumulated length must be finite (ensures work was not optimized away).
     std.debug.assert(sink.lengthSq() >= 0);
     std.debug.assert(!std.math.isNan(sink.x));
 
@@ -611,8 +584,6 @@ fn benchVec2Normalize(
     };
 }
 
-/// Points oscillate in and out of the rect to defeat branch prediction.
-/// Operation count = point_count.
 fn benchRectContains(
     comptime name: []const u8,
     comptime point_count: u32,
@@ -659,7 +630,6 @@ fn benchRectContains(
         sampler.record(end.since(start));
     }
 
-    // Hit count must be non-zero (some points are inside the rect).
     std.debug.assert(hit_count > 0);
 
     return .{
@@ -671,25 +641,14 @@ fn benchRectContains(
     };
 }
 
-/// Cards in the pack benchmark's UI frame. Each card is a shadow and its quad,
-/// then a clip around a label of `pack_card_glyph_count` glyphs and an icon:
-/// the record mix of a scrolling list. 128 cards are 3,712 records, a dense
-/// `.standard` frame.
 const pack_card_count: u32 = 128;
 const pack_card_glyph_count: u32 = 24;
-/// Shadow, quad, clip push, glyphs, icon, clip pop.
 const pack_card_record_count: u32 = 5 + pack_card_glyph_count;
 
-/// The chart frame: `pack_chart_row_count` triangle meshes, each a strip of
-/// `pack_chart_column_count` cells of two triangles. Neighbouring triangles
-/// share edges, and rows alternate fills, so pack classifies interior,
-/// silhouette and underlap edges. 512 triangles in four meshes of 384 points,
-/// under the 510-point mesh ceiling.
 const pack_chart_row_count: u32 = 4;
 const pack_chart_column_count: u32 = 64;
 const pack_chart_triangle_count: u32 = pack_chart_row_count * pack_chart_column_count * 2;
 
-/// What one pack case reads and writes, reserved once outside the timed loop.
 const PackFixture = struct {
     frame: records.Frame,
     target: packed_frame.PackedFrame,
@@ -728,7 +687,6 @@ const PackFixture = struct {
     }
 };
 
-/// Append the UI frame's cards, top to bottom.
 fn appendPackCards(frame: *records.Frame) void {
     assert(frame.paint_count == 0);
     const white = records.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
@@ -777,8 +735,6 @@ fn packSprite(atlas: records.AtlasKind, bounds: records.Rect) records.Sprite {
     };
 }
 
-/// Append the chart frame's meshes: row `r` covers y in [r, r + 1] × 32 px,
-/// each cell split by its rising diagonal into triangles A and B.
 fn appendPackChart(frame: *records.Frame) void {
     assert(frame.paint_count == 0);
     const cell: f32 = 32;
@@ -810,8 +766,6 @@ fn appendPackChart(frame: *records.Frame) void {
     assert(frame.mesh_point_count == pack_chart_triangle_count * 3);
 }
 
-/// Benchmark `pack` over a frame the fixture already holds. Operation count is
-/// the records (cards) or triangles (chart) one pack processes.
 fn benchPack(
     comptime name: []const u8,
     fixture: *PackFixture,
@@ -842,7 +796,6 @@ fn benchPack(
     };
 }
 
-/// Pack the card frame, then the chart frame, in one fixture.
 fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -851,7 +804,6 @@ fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
     printHeader();
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
-    // Reserving the fixture is setup, not part of the first pack benchmark.
     reporter.pauseBenchmark();
 
     var fixture: PackFixture = undefined;
@@ -936,7 +888,6 @@ fn validateTriangulation(comptime generateFn: fn () PolygonData) !void {
     var triangulator = Triangulator.init();
     const indices = try triangulator.triangulate(polygon_vertices, polygon);
 
-    // N-vertex simple polygon always produces exactly (N - 2) triangles.
     const expected_triangles = data.vertex_count - 2;
     const expected_indices = expected_triangles * 3;
     try std.testing.expectEqual(expected_indices, @as(u32, @intCast(indices.len)));
@@ -997,20 +948,18 @@ test "validate: FixedArray append and clear" {
 }
 
 test "validate: FixedArray swapRemove vs orderedRemove" {
-    // swapRemove does NOT preserve order.
     var swap_arr: FixedArray(u32, 8) = .{};
     swap_arr.appendAssumeCapacity(10);
     swap_arr.appendAssumeCapacity(20);
     swap_arr.appendAssumeCapacity(30);
-    _ = swap_arr.swapRemove(0); // 30 moves to index 0.
+    _ = swap_arr.swapRemove(0);
     try std.testing.expectEqual(@as(u32, 30), swap_arr.get(0));
 
-    // orderedRemove preserves order.
     var ord_arr: FixedArray(u32, 8) = .{};
     ord_arr.appendAssumeCapacity(10);
     ord_arr.appendAssumeCapacity(20);
     ord_arr.appendAssumeCapacity(30);
-    _ = ord_arr.orderedRemove(0); // 20 shifts to index 0.
+    _ = ord_arr.orderedRemove(0);
     try std.testing.expectEqual(@as(u32, 20), ord_arr.get(0));
 }
 
@@ -1028,11 +977,6 @@ test "validate: Rect.contains boundary behavior" {
 }
 
 test "validate: pack keeps every card record, one draw per pipeline run" {
-    // Goal: the benchmark packs the frame it claims to. Method: count what
-    // pack wrote, derived from the card layout: two quads (a shadow and its
-    // card) and 25 sprites per card, one clip per card plus the unbounded
-    // one, and three draws per card (quads, glyphs, icon), since each
-    // pipeline or clip change starts a draw. Nothing is culled.
     var fixture: PackFixture = undefined;
     try fixture.init(std.testing.allocator);
     defer fixture.deinit(std.testing.allocator);
@@ -1048,12 +992,6 @@ test "validate: pack keeps every card record, one draw per pipeline run" {
 }
 
 test "validate: pack classifies the chart's shared edges" {
-    // Goal: the chart case exercises all three edge modes. Method: in row 1,
-    // cell 10 (away from every border), triangle A's top edge meets row 0,
-    // an earlier draw of another fill (fade), and its diagonal and left edge
-    // meet triangles of its own fill (interior): 1. Triangle B's bottom edge
-    // meets row 2, a later draw of another fill (underlap, edge v1→v2), and
-    // its other edges are interior: 2 << 2.
     var fixture: PackFixture = undefined;
     try fixture.init(std.testing.allocator);
     defer fixture.deinit(std.testing.allocator);
@@ -1076,7 +1014,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.minPerOpNs(),
     ));
     result.print();
-    // Printing stays outside the next benchmark's Cachegrind region.
     reporter.beginBenchmark();
 }
 

@@ -1,28 +1,3 @@
-//! Image Loader - Windows WIC Backend
-//!
-//! Decodes images with the Windows Imaging Component, a system API, so no
-//! codec is vendored (CLAUDE.md §12). WIC sniffs the container itself: PNG,
-//! JPEG, GIF, BMP, TIFF, and ICO decode on every supported Windows release, and
-//! WebP or HEIF wherever their system codecs are installed. Like the
-//! CoreGraphics backend, a multi-frame image yields its first frame, and EXIF
-//! orientation and embedded color profiles are not applied.
-//!
-//! The decoded frame converts straight to `GUID_WICPixelFormat32bppRGBA`, which
-//! is the `ImageData.format == .rgba` layout (straight alpha), so the pixels
-//! need no swizzle and no unpremultiply pass.
-//!
-//! Threading: `loadFromMemory` runs on the frame thread for embedded and path
-//! sources, and on `Io.Group` worker threads for URL sources. WIC objects must
-//! be created on a thread where COM is initialized, so each call enters COM for
-//! its own duration and leaves it balanced. A thread that already initialized
-//! COM, in either model, keeps its model; the call only borrows it.
-//!
-//! Memory: the pixel buffer is allocated from the caller's allocator because
-//! the `DecodedImage` contract shared with the other backends returns owned
-//! pixels. It is bounded by `image_side_max` in each dimension: at most 1 GiB
-//! transient for one decode, and `width * height * 4` bytes in practice.
-//! WIC's own objects live for the call and are released before it returns.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const interface_verify = @import("../../../core/interface_verify.zig");
@@ -36,8 +11,6 @@ comptime {
     interface_verify.verifyImageLoaderModule(@This());
 }
 
-/// Largest accepted width or height in pixels. WIC sizes `CopyPixels` buffers
-/// in 32 bits, so the full RGBA frame must fit a `u32` byte count.
 pub const image_side_max: u32 = 16_384;
 
 const bytes_per_pixel: u32 = 4;
@@ -50,7 +23,6 @@ comptime {
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
-    /// RGBA pixel data (owned by allocator)
     pixels: []u8,
     allocator: std.mem.Allocator,
 
@@ -81,17 +53,6 @@ pub const LoadError = error{
     IoError,
 };
 
-/// Decodes the first frame of an encoded image into straight-alpha RGBA.
-///
-/// - `InvalidFormat`: empty data, or no installed codec claims it. Codecs
-///   probe the header before claiming, so a PNG signature over an invalid
-///   header is also `InvalidFormat`.
-/// - `UnsupportedSource`: the data or the frame exceeds the 32-bit sizes WIC
-///   takes (`image_side_max` per side).
-/// - `DecodeFailed`: a claimed frame reports no pixels or fails later in WIC,
-///   or COM could not start. A PNG truncated or corrupt inside its pixel data
-///   is not an error: WIC decodes what it can and the rest is transparent
-///   black.
 pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImage {
     if (data.len == 0) return error.InvalidFormat;
     if (data.len > std.math.maxInt(u32)) return error.UnsupportedSource;
@@ -129,17 +90,12 @@ const FrameSize = struct {
     height: u32,
 };
 
-/// Bytes in a tightly packed RGBA frame; `image_side_max` keeps it in `u32`.
 fn pixelBytes(size: FrameSize) usize {
     assert(size.width <= image_side_max);
     assert(size.height <= image_side_max);
     return @as(usize, size.width) * size.height * bytes_per_pixel;
 }
 
-/// Enters COM on the calling thread. Returns whether the caller must balance
-/// the entry with `CoUninitialize`: every successful `CoInitializeEx`,
-/// including `S_FALSE`, needs one. `RPC_E_CHANGED_MODE` means the thread is
-/// already an STA, where WIC works just as well, and that entry is not ours.
 fn comEnter() LoadError!bool {
     const result = wic.CoInitializeEx(null, wic.COINIT_MULTITHREADED);
     if (result == wic.RPC_E_CHANGED_MODE) return false;
@@ -161,13 +117,10 @@ fn createFactory() LoadError!*wic.IWICImagingFactory {
     );
     if (!wic.succeeded(result)) return loadError("CoCreateInstance", result);
     assert(factory != null);
-    // COM interface pointers point at a vtable pointer, so they are aligned.
     assert(std.mem.isAligned(@intFromPtr(factory.?), @alignOf(wic.IWICImagingFactory)));
     return @ptrCast(@alignCast(factory.?));
 }
 
-/// Wraps `data` without copying. The stream borrows the bytes, so it must be
-/// released before `data` goes out of scope; `loadFromMemory` guarantees that.
 fn createStream(factory: *wic.IWICImagingFactory, data: []const u8) LoadError!*wic.IWICStream {
     assert(data.len > 0);
     assert(data.len <= std.math.maxInt(u32));
@@ -209,8 +162,6 @@ fn firstFrame(decoder: *wic.IWICBitmapDecoder) LoadError!*wic.IWICBitmapFrameDec
     return frame.?;
 }
 
-/// Reads and validates the frame's dimensions before any pixel buffer exists,
-/// so an oversized header is rejected without allocating.
 fn frameSize(frame: *wic.IWICBitmapFrameDecode) LoadError!FrameSize {
     var width: u32 = 0;
     var height: u32 = 0;
@@ -248,14 +199,6 @@ fn createConverter(
     return converter.?;
 }
 
-/// Decodes the whole frame into a tightly packed buffer: a stride of exactly
-/// `width * 4` bytes, which is what the image atlas reads.
-///
-/// WIC's PNG decoder reports success for a stream truncated or corrupt inside
-/// its pixel data and leaves the rows it could not decode to the output
-/// buffer. The buffer is zeroed first so those rows are transparent black,
-/// deterministically, rather than whatever the allocator last held
-/// (CLAUDE.md §21).
 fn copyPixels(
     allocator: std.mem.Allocator,
     converter: *wic.IWICFormatConverter,
@@ -291,9 +234,6 @@ fn copyPixels(
     };
 }
 
-/// Classifies a failed `HRESULT`. Unrecognized data is the caller's input
-/// problem; anything else is logged with its code, which names the cause in
-/// Microsoft's documentation.
 fn loadError(operation: []const u8, result: wic.HRESULT) LoadError {
     assert(operation.len > 0);
     assert(!wic.succeeded(result));

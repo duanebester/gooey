@@ -1,13 +1,7 @@
-//! One buffer reserved at init serves copy and paste; a pending write is what
-//! a paste in the same drain reads until the flush hands it to the platform.
-
 const std = @import("std");
 
 const assert = std.debug.assert;
 
-/// The platform side, bound by the host. `read` copies the clipboard text
-/// into `out`, cut at a codepoint boundary, and returns the byte count (0 for
-/// no text). `write` replaces the clipboard text. Both run on the main thread.
 pub const Service = struct {
     context: *anyopaque,
     read: *const fn (context: *anyopaque, out: []u8) u32,
@@ -17,7 +11,6 @@ pub const Service = struct {
 pub const Clipboard = struct {
     service: ?Service,
     buffer: []u8,
-    /// Bytes of `buffer` waiting for `flush`, or null when nothing is.
     pending_len: ?u32,
 
     pub fn init(buffer: []u8) Clipboard {
@@ -26,7 +19,6 @@ pub const Clipboard = struct {
         return .{ .service = null, .buffer = buffer, .pending_len = null };
     }
 
-    /// Store `text` for the platform. Called from a text engine's handler.
     pub fn write(self: *Clipboard, text: []const u8) void {
         assert(text.len > 0);
         assert(@intFromPtr(text.ptr) != @intFromPtr(self.buffer.ptr));
@@ -35,7 +27,6 @@ pub const Clipboard = struct {
         self.pending_len = @intCast(kept);
     }
 
-    /// The clipboard text, valid until the next `read`, `write`, or `flush`.
     pub fn read(self: *Clipboard) []const u8 {
         if (self.pending_len) |len| return self.buffer[0..len];
         const service = self.service orelse return "";
@@ -44,8 +35,6 @@ pub const Clipboard = struct {
         return self.buffer[0..len];
     }
 
-    /// Hand a pending write to the platform. The tick calls it after the
-    /// drain, outside any handler.
     pub fn flush(self: *Clipboard) void {
         const len = self.pending_len orelse return;
         self.pending_len = null;
@@ -55,8 +44,6 @@ pub const Clipboard = struct {
     }
 };
 
-/// The longest prefix of `value` that fits `room` bytes without splitting a
-/// UTF-8 sequence. Platforms use it to cut what they read.
 pub fn prefixFitting(value: []const u8, room: usize) usize {
     if (value.len <= room) return value.len;
     var end = room;
@@ -65,8 +52,6 @@ pub fn prefixFitting(value: []const u8, room: usize) usize {
     return end;
 }
 
-/// The length of `bytes` without a trailing partial UTF-8 sequence, for a
-/// read that filled its buffer and may have stopped inside a codepoint.
 pub fn wholeCodepoints(bytes: []const u8) usize {
     var start = bytes.len;
     var steps: u32 = 0;
@@ -122,7 +107,7 @@ test "a pending copy is what a paste in the same drain reads" {
     try std.testing.expectEqual(@as(usize, 0), platform.written_len);
     clipboard.flush();
     try std.testing.expectEqualStrings("new", platform.written[0..platform.written_len]);
-    clipboard.flush(); // Nothing pending: no second write.
+    clipboard.flush();
     try std.testing.expectEqual(@as(usize, 3), platform.written_len);
 }
 
@@ -134,7 +119,6 @@ test "text past the buffer is cut at a codepoint boundary" {
     try std.testing.expectEqualStrings("abcdefg", clipboard.read());
     clipboard.write("xyzxyzx\u{e9}");
     try std.testing.expectEqualStrings("xyzxyzx", clipboard.read());
-    // An "é" that ends exactly at byte 8 is kept.
     clipboard.write("xyzxyz\u{e9}");
     try std.testing.expectEqualStrings("xyzxyz\u{e9}", clipboard.read());
 }

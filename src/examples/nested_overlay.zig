@@ -81,7 +81,6 @@ const ModalContent = struct {
                 .selected = state.selected,
                 .width = 280,
             },
-            // Keyed, so the menu covering it has a modal record beneath.
             ui.box(.{ .key = .{ .name = "expected-area" }, .style = .{
                 .width = .{ .grow = 1 },
                 .height = .{ .fixed = 120 },

@@ -2,7 +2,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const geometry = @import("../geometry/geometry.zig");
 
-/// Virtual key codes (based on macOS keycodes, used cross-platform)
 pub const KeyCode = enum(u16) {
     a = 0x00,
     s = 0x01,
@@ -42,10 +41,6 @@ pub const KeyCode = enum(u16) {
     @"9" = 0x19,
     @"0" = 0x1D,
 
-    // Keycodes are positional (US ANSI layout); on other layouts the
-    // physical key at this position may produce a different character, so
-    // consumers that care about the typed character must use the event's
-    // `characters_ignoring_modifiers` instead of these names.
     minus = 0x1B,
     equal = 0x18,
     left_bracket = 0x21,
@@ -65,8 +60,6 @@ pub const KeyCode = enum(u16) {
     escape = 0x35,
     forward_delete = 0x75,
 
-    // Keypad. Distinct from the number row so terminal emulators and games
-    // can honor application keypad mode (DECKPAM).
     keypad_0 = 0x52,
     keypad_1 = 0x53,
     keypad_2 = 0x54,
@@ -80,7 +73,7 @@ pub const KeyCode = enum(u16) {
     keypad_decimal = 0x41,
     keypad_multiply = 0x43,
     keypad_plus = 0x45,
-    keypad_clear = 0x47, // NumLock position on PC keyboards
+    keypad_clear = 0x47,
     keypad_divide = 0x4B,
     keypad_enter = 0x4C,
     keypad_minus = 0x4E,
@@ -167,45 +160,30 @@ pub const ScrollEvent = struct {
 pub const KeyEvent = struct {
     key: KeyCode,
     modifiers: Modifiers,
-    /// UTF-8 text; may be empty for non-printable keys.
     characters: ?[]const u8,
     characters_ignoring_modifiers: ?[]const u8,
     is_repeat: bool,
 };
 
-/// Text inserted via IME; includes emoji picker, dead keys, CJK input,
-/// dictation.
 pub const TextInputEvent = struct {
     text: []const u8,
 };
 
-/// IME composition (preedit) state changed.
 pub const CompositionEvent = struct {
-    /// UTF-8; empty if composition ended.
     text: []const u8,
 };
 
 pub const TouchEvent = struct {
     position: geometry.Point(f64),
-    /// Unique per active touch within a gesture sequence.
     id: i32,
 };
 
-/// Key codes a `FocusLostEvent` can hold: every `KeyCode` but `.unknown`
-/// is below it.
 pub const held_key_count_max: u32 = 128;
 
 pub const HeldKeys = std.StaticBitSet(held_key_count_max);
 
-/// What a window held when it lost keyboard focus, reported as one event
-/// rather than one release each, so a focus loss costs one queue slot
-/// however many keys were down. Their real releases go to the window that
-/// gained focus.
 pub const FocusLostEvent = struct {
-    /// A pointer gesture was in progress: it cancels as `pointer_cancelled`.
     pointer_cancelled: bool,
-    /// Keys reported down and not yet up, by `KeyCode` value. Each releases
-    /// with no modifiers.
     keys_held: HeldKeys,
 };
 
@@ -233,13 +211,7 @@ pub const InputEvent = union(enum) {
     touch_up: TouchEvent,
     touch_moved: TouchEvent,
     touch_cancelled,
-    /// The platform took the pointer gesture away (lost capture, a broken
-    /// grab, or the window losing focus with a button held). A pointer drag
-    /// in progress cancels instead of ending, so nothing drops or commits.
     pointer_cancelled,
-    /// The window lost keyboard focus with a gesture or keys held. Reported
-    /// by platforms that track held keys themselves (Windows); the core
-    /// cancels the gesture and releases each key.
     focus_lost: FocusLostEvent,
 };
 
@@ -254,8 +226,6 @@ test "KeyCode.from resolves named codes and collapses unnamed ones" {
     try testing.expectEqual(KeyCode.left_bracket, KeyCode.from(0x21));
     try testing.expectEqual(KeyCode.grave, KeyCode.from(0x32));
 
-    // KeypadEnter (0x4C) is the key regression case: it produces no printable
-    // text, so collapsing it to `.unknown` drops the keystroke.
     try testing.expectEqual(KeyCode.keypad_enter, KeyCode.from(0x4C));
     try testing.expectEqual(KeyCode.keypad_0, KeyCode.from(0x52));
     try testing.expectEqual(KeyCode.keypad_9, KeyCode.from(0x5C));
@@ -264,7 +234,7 @@ test "KeyCode.from resolves named codes and collapses unnamed ones" {
     try testing.expectEqual(KeyCode.f13, KeyCode.from(0x69));
     try testing.expectEqual(KeyCode.f20, KeyCode.from(0x5A));
 
-    try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x42)); // gap in kVK table
+    try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x42));
     try testing.expectEqual(KeyCode.unknown, KeyCode.from(0xFFFF));
     try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x1234));
 }
