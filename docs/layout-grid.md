@@ -5,7 +5,7 @@
 Proposed on 2026-11-21 against v0.6.7, approved on 2026-11-22 with the answers under
 "Resolved questions", and implemented as decision 28 in `docs/core-contract.md`. It builds
 on decision 27, which sizes heights after text wraps. `ui.Style` in §1 has the fields below,
-`src/layout/layout.md` documents the engine side, and `src/examples/grid_layout.zig` shows a
+and `src/examples/grid_layout.zig` shows a
 form, a table, and a dashboard. Two points differ from the proposal: grow columns grow from
 their content's floor, as CSS `1fr` does ("Column widths"), and overflowing columns stop at
 their content's floor as well as the track's `min` (decision 26).

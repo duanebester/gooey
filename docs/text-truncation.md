@@ -8,8 +8,7 @@ with the answers under "Resolved questions", and implemented as decision 29 in
 clamped cards. Three points differ from the proposal: `overflow` is an inline enum beside
 `wrap` and `alignment` rather than a named `TextOverflow`; a `.none` text's one cut line is
 marked `cut_if_wide`, not `cut` ("Passes"); and, decided after review (resolved question
-6), `.clip` cuts a too-wide line at the cut width too, so no text draws past it. It is the
-last open item under "P1: layout" in `docs/api-developer-experience-roadmap.md`. It builds
+6), `.clip` cuts a too-wide line at the cut width too, so no text draws past it. It builds
 on decision 26 (content floors and largest-first shrink) and decision 27 (heights after
 widths). A text that fits its width lays out and draws byte for byte as before; only a line
 wider than its width, which drew past its parent before, is now cut at it.
