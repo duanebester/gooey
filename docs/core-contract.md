@@ -243,7 +243,7 @@ Contract:
   grow child in a column, counts every wrapped line (decision 27).
 - **Grid.** A box with `grid` places its children in cells, row-major in declaration
   order, and sizes its columns once from all of them, so every row shares the same column
-  lines; `docs/layout-grid.md` specifies placement, track sizing, row boxes, and the
+  lines; decision 28 specifies placement, track sizing, row boxes, and the
   checks. A child without a `cell` takes the next free column. A row box
   (`cell.row = true`) spans one row and lays its own children on the grid's columns, so a
   keyed, hoverable table row keeps its cells under the header's (decision 28).
@@ -1095,7 +1095,7 @@ value keeps at most `value_bytes_max` bytes: the whole lines around `A11y.select
 Layout takes every capacity from `build` and `paint` (`LayoutCapacity.fromLimits`):
 `element_count_frame_max + 1` elements (the window root), a `box_depth_max` open stack,
 `layer_count_frame_max` floating roots (each layer box floats), `grid_count_frame_max` grid
-slots (one per grid box, `docs/layout-grid.md`), a wrap batch of
+slots (one per grid box, decision 28), a wrap batch of
 `text.run_codepoint_count_max` words, and `paint.glyph_count_frame_max` wrapped lines per
 frame, which one text may fill alone. A text of any length wraps in batches and is measured
 and drawn in shaping runs of at most `text.run_codepoint_count_max` codepoints, split after a
@@ -1717,9 +1717,9 @@ wrappers for list iteration.
     lines: up to 32 `.fit`, `.fixed`, `.grow`, or `.percent` columns with `min` and
     `max`, rows that are listed or implicit, a separate row gap, row-major placement in
     declaration order with spans and explicit columns, and row boxes (`cell.row`), one
-    keyed box per table row whose cells sit on the grid's columns. `docs/layout-grid.md`
-    is the specification. It takes Clay's sizing order and largest-first shrink, CSS
-    grid's track kinds and placement, SwiftUI's `GridRow` for row boxes, and GPUI's
+    keyed box per table row whose cells sit on the grid's columns. It takes
+    Clay's sizing order and largest-first shrink, CSS grid's track kinds and placement,
+    SwiftUI's `GridRow` for row boxes, and GPUI's
     separate row gap. Grow columns grow from their content's floor, as CSS `1fr` does,
     so equal weights give equal columns under long text; columns shrink to their
     floors, as decision 26 shrinks children. A grid measures each text once, in the
@@ -1740,7 +1740,7 @@ wrappers for list iteration.
 29. **Text truncation (0.6, 2026-11-22).** `ui.Text` gains `line_count_max: ?u8`, the most
     lines a wrapping text keeps, and `overflow: enum { clip, ellipsis } = .clip`, what marks
     a line cut short: one wider than the text's width, or the last kept line with text after
-    it. `docs/text-truncation.md` is the specification. The two are independent, as GPUI's
+    it. The two are independent, as GPUI's
     `line_clamp` and `text_overflow`; `.clip`, the default, drops lines past the limit and
     cuts a too-wide line at the text's width with no mark, so no text draws past its width
     unless its parent scrolls along x. `.clip` keeps decision 26's floors, so a label gives
