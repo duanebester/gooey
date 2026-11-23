@@ -187,6 +187,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         self.stop();
         self.unbindWindow();
     }

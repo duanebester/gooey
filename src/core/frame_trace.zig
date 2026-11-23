@@ -251,15 +251,18 @@ const LogSink = struct {
 
 fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
     var line_buffer: [512]u8 = undefined;
-    const meta = std.fmt.bufPrint(&line_buffer, "# gooey frame trace: scenario={t} " ++
-        "seconds={d} os={t} arch={t} renderer={s} optimize={t}", .{
+    const meta_format = "# gooey frame trace: scenario={t} " ++
+        "seconds={d} os={t} arch={t} renderer={s} optimize={t}";
+    const meta_args = .{
         scenario,
         seconds,
         builtin.os.tag,
         builtin.cpu.arch,
         renderer_name,
         builtin.mode,
-    }) catch unreachable;
+    };
+    assert(std.fmt.count(meta_format, meta_args) <= line_buffer.len);
+    const meta = std.fmt.bufPrint(&line_buffer, meta_format, meta_args) catch unreachable;
     sink.line(meta);
     sink.line(header);
     var written: u64 = 0;

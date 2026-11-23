@@ -273,6 +273,7 @@ fn appendName(list: *BenchmarkList, raw_name: []const u8) !void {
     if (occurrence > 99) return error.too_many_repeats;
 
     const slot = &list.names[list.count];
+    std.debug.assert(std.fmt.count("{s}#{d}", .{ raw_name, occurrence }) <= slot.len);
     const written = if (occurrence == 1)
         std.fmt.bufPrint(slot, "{s}", .{raw_name}) catch unreachable
     else
@@ -334,6 +335,9 @@ fn startJob(io: Io, args: *const Args, module: []const u8, side: Side, index: u3
     job.index = index;
     const binary = binaryPath(&job.binary, args, side, module);
     job.binary_length = @intCast(binary.len);
+    comptime std.debug.assert(std.fmt.count("{d}", .{
+        std.math.maxInt(u32),
+    }) <= @sizeOf(@TypeOf(job.index_text)));
     const index_text = std.fmt.bufPrint(&job.index_text, "{d}", .{index}) catch unreachable;
     const out_file_flag = std.fmt.bufPrint(&job.out_file_flag, "--cachegrind-out-file={s}/{s}/{s}/{d}.cg", .{
         args.work_dir,

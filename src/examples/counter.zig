@@ -93,6 +93,7 @@ const CounterCard = struct {
     pub fn render(_: CounterCard, cx: *Cx) void {
         const s = cx.state(State);
         var digits: [16]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.minInt(i32)}) <= digits.len);
         const count = std.fmt.bufPrint(&digits, "{d}", .{s.count}) catch unreachable;
         cx.render(ui.box(.{ .style = .{
             .direction = .row,

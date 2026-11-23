@@ -801,7 +801,7 @@ pub fn registryBind(
     return proxy;
 }
 
-test "bindVersion is capped by the linked interface table" {
+test "bindVersion caps at the table version: libwayland 1.21 crash, compositor 6 > table 5" {
     var table = Interface{
         .name = "wl_test",
         .version = 5,

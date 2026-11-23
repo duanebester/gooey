@@ -381,6 +381,9 @@ pub const DeviceSet = struct {
         var index: u32 = 0;
         while (index < device_scan_max and self.count < device_count_max) : (index += 1) {
             var path_buffer: [device_path_bytes_max]u8 = undefined;
+            comptime assert(std.fmt.count("/dev/input/event{d}", .{
+                std.math.maxInt(u32),
+            }) < path_buffer.len);
             const path = std.fmt.bufPrintSentinel(
                 &path_buffer,
                 "/dev/input/event{d}",

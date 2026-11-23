@@ -245,6 +245,7 @@ fn pasteDecodePrefix(units: []const u16, target: []u8) u32 {
     while (decoder.next()) |code_point| {
         assert(decoder.index <= units.len);
         if (utf8Length(code_point) > target.len - count) break;
+        assert(code_point < 0xD800 or code_point > 0xDFFF);
         const length = std.unicode.utf8Encode(code_point, target[count..]) catch unreachable;
         count += length;
     }

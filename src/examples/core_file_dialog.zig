@@ -69,6 +69,7 @@ pub const State = struct {
     }
 
     fn setStatus(self: *State, comptime format: []const u8, args: anytype) void {
+        std.debug.assert(std.fmt.count(format, args) <= self.status_bytes.len);
         const text = std.fmt.bufPrint(&self.status_bytes, format, args) catch unreachable;
         self.status_len = @intCast(text.len);
     }

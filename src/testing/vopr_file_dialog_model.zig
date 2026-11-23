@@ -284,6 +284,9 @@ pub const FileDialogModel = struct {
         self.shown = shown.*;
         self.refused_last = false;
         self.counts.completions += 1;
+        comptime assert(std.fmt.count("Selected {d} paths; the first:", .{
+            std.math.maxInt(u32),
+        }) <= @sizeOf(@TypeOf(self.status_bytes)));
         switch (shown.outcome) {
             .selected => {
                 self.counts.selected += 1;

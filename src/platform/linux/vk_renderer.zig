@@ -884,7 +884,7 @@ fn logicalSize(size_px: u32, scale_factor: f32) f32 {
     return @as(f32, @floatFromInt(size_px)) / scale_factor;
 }
 
-test "present semaphores are never signalled while a present still waits on them" {
+test "VUID-vkQueueSubmit-pSignalSemaphores-00067: no signal while a present waits" {
     const handles: [swapchain_image_count_max]u8 = @splat(0);
     const orders = [_][]const u32{
         &.{ 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 },

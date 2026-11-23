@@ -248,6 +248,7 @@ const Footer = struct {
     pub fn render(_: Footer, cx: *Cx) void {
         const s = cx.state(State);
         var buffer: [32]u8 = undefined;
+        comptime assert(std.fmt.count("{d} left", .{std.math.maxInt(u32)}) <= buffer.len);
         const left = std.fmt.bufPrint(&buffer, "{d} left", .{s.remaining()}) catch unreachable;
         cx.render(ui.box(.{
             .style = .{ .direction = .row, .gap = 12, .alignment = .center_cross },

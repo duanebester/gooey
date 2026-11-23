@@ -606,6 +606,10 @@ pub const TodoModel = struct {
     }
 
     fn difference(self: *const TodoModel, state: *const todo.State, buffer: []u8) ?[]const u8 {
+        assert(std.fmt.count("{d} items, expected {d}", .{
+            state.count,
+            self.item_count,
+        }) <= buffer.len);
         if (state.count != self.item_count) {
             return std.fmt.bufPrint(buffer, "{d} items, expected {d}", .{
                 state.count,
@@ -615,10 +619,12 @@ pub const TodoModel = struct {
         for (self.items[0..self.item_count], state.todos[0..state.count], 0..) |*a, *b, i| {
             assert(!a.maybe);
             if (!std.unicode.utf8ValidateSlice(b.bytes[0..b.len])) {
+                assert(std.fmt.count("item {d} is not valid UTF-8", .{i}) <= buffer.len);
                 return std.fmt.bufPrint(buffer, "item {d} is not valid UTF-8", .{i}) catch
                     unreachable;
             }
             if (!std.mem.eql(u8, a.text[0..a.len], b.bytes[0..b.len]) or a.done != b.done) {
+                assert(std.fmt.count("item {d} differs", .{i}) <= buffer.len);
                 return std.fmt.bufPrint(buffer, "item {d} differs", .{i}) catch unreachable;
             }
         }

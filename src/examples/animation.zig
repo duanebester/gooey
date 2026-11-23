@@ -132,6 +132,7 @@ const CounterDisplay = struct {
         assert(pulse <= 1.5);
         const scale = 1.0 + (1.0 - pulse) * 0.15;
         var digits: [16]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.minInt(i32)}) <= digits.len);
         const label = std.fmt.bufPrint(&digits, "{d}", .{self.count}) catch unreachable;
         const color = if (self.count >= 0) Color.rgb(0.2, 0.5, 0.8) else Color.rgb(0.8, 0.3, 0.3);
         cx.render(ui.box(.{ .style = .{

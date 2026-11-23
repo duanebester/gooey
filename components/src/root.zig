@@ -1034,6 +1034,10 @@ fn sliderDecimals(step: ?f32, range: f32) u8 {
 fn sliderValueText(buffer: *[slider_value_bytes_max]u8, value: f32, decimals: u8) []const u8 {
     assert(std.math.isFinite(value));
     assert(decimals <= slider_decimals_max);
+    comptime assert(std.fmt.count("{d:.[1]}", .{
+        -std.math.floatMax(f32),
+        slider_decimals_max,
+    }) <= slider_value_bytes_max);
     const text = std.fmt.bufPrint(buffer, "{d:.[1]}", .{ value, decimals }) catch unreachable;
     assert(text.len > 0);
     return text;
@@ -2406,6 +2410,7 @@ pub const CodeEditor = struct {
         var line = first;
         while (line < @min(line_count, first + visible)) : (line += 1) {
             var buffer: [10]u8 = undefined;
+            comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u32)}) <= buffer.len);
             const label = std.fmt.bufPrint(&buffer, "{d}", .{line + 1}) catch unreachable;
             const view = &engine.view;
             const color = if (line == caret_line) view.text_color else view.placeholder_color;
@@ -2427,11 +2432,18 @@ pub const CodeEditor = struct {
             const column = engine.cursor - engine.lineStart(engine.cursor) + 1;
             var position_buffer: [32]u8 = undefined;
             var indent_buffer: [16]u8 = undefined;
+            comptime assert(std.fmt.count("Ln {d}, Col {d}", .{
+                std.math.maxInt(u32),
+                std.math.maxInt(u32),
+            }) <= position_buffer.len);
             const position = std.fmt.bufPrint(&position_buffer, "Ln {d}, Col {d}", .{
                 line,
                 column,
             }) catch unreachable;
             const indent_name = if (self.editor.use_hard_tabs) "Tab" else "Spaces";
+            comptime assert(std.fmt.count("Spaces: {d}", .{
+                std.math.maxInt(u8),
+            }) <= indent_buffer.len);
             const indent = std.fmt.bufPrint(&indent_buffer, "{s}: {d}", .{
                 indent_name,
                 self.editor.tab_size,

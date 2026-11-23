@@ -117,6 +117,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(self.core.phase == .idle);
         assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
@@ -138,6 +139,7 @@ pub const Host = struct {
     }
 
     fn runLoop(self: *Host, comptime App: type, app: *App) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(&app.window == self.core);
         while (!self.window.isClosed()) {
             const now_ns = platform_mod.nowNanoseconds();

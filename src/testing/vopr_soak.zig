@@ -154,6 +154,7 @@ const Soak = struct {
 
     fn runSeed(self: *Soak, gpa: std.mem.Allocator, seed: u64) void {
         var seed_buffer: [24]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u64)}) <= seed_buffer.len);
         const seed_text = std.fmt.bufPrint(&seed_buffer, "{d}", .{seed}) catch unreachable;
         const vopr = self.options.vopr_path;
         const argv = [_][]const u8{ vopr, "--app", self.options.app, seed_text };
@@ -190,13 +191,12 @@ const Soak = struct {
     fn recordFailure(self: *Soak, seed: u64, how: []const u8, stderr: []const u8) void {
         const tail = stderr[stderr.len - @min(stderr.len, stderr_tail_bytes_max) ..];
         var header_buffer: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&header_buffer, "\n== seed {d}: {s}\n" ++
-            "replay: zig build vopr -- --app {s} {d} --verbose\n", .{
-            seed,
-            how,
-            self.options.app,
-            seed,
-        }) catch unreachable;
+        const header_format = "\n== seed {d}: {s}\n" ++
+            "replay: zig build vopr -- --app {s} {d} --verbose\n";
+        const header_args = .{ seed, how, self.options.app, seed };
+        assert(std.fmt.count(header_format, header_args) <= header_buffer.len);
+        const header = std.fmt.bufPrint(&header_buffer, header_format, header_args) catch
+            unreachable;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.failed += 1;
@@ -242,6 +242,7 @@ const Soak = struct {
 
     fn log(self: *Soak, comptime format: []const u8, args: anytype) void {
         var buffer: [256]u8 = undefined;
+        assert(std.fmt.count(format, args) <= buffer.len);
         const line = std.fmt.bufPrint(&buffer, format, args) catch unreachable;
         std.debug.print("{s}", .{line});
         self.mutex.lockUncancelable(self.io);

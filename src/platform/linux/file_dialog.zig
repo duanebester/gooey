@@ -298,6 +298,7 @@ fn generateToken(buf: *[64]u8) [:0]const u8 {
     _ = std.c.clock_gettime(.REALTIME, &ts);
 
     const hash: u64 = @bitCast(ts.sec *% 1000000000 +% ts.nsec);
+    comptime std.debug.assert(std.fmt.count("gooey_{x}", .{std.math.maxInt(u64)}) <= 63);
     const len = std.fmt.bufPrint(buf[0..63], "gooey_{x}", .{hash}) catch unreachable;
     buf[len.len] = 0;
     return buf[0..len.len :0];

@@ -3451,6 +3451,7 @@ const PlainRow = struct {
 };
 
 fn listRowLabel(buffer: *[16]u8, index: u32) []const u8 {
+    comptime assert(std.fmt.count("row {d}", .{std.math.maxInt(u32)}) <= buffer.len);
     return std.fmt.bufPrint(buffer, "row {d}", .{index}) catch unreachable;
 }
 

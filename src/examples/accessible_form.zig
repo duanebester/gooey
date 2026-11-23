@@ -335,6 +335,7 @@ const NotificationsSection = struct {
         const s = cx.state(State);
         const sms_available = s.phone.len > 0;
         var count_buffer: [32]u8 = undefined;
+        comptime assert(std.fmt.count("{d} per week", .{std.math.maxInt(u32)}) <= count_buffer.len);
         const count = std.fmt.bufPrint(&count_buffer, "{d} per week", .{
             @as(u32, @intFromFloat(s.emails_per_week)),
         }) catch unreachable;

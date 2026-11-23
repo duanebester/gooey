@@ -213,6 +213,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         if (self.thread) |thread| {
             self.stopping.store(true, .release);
             signal(self.render_wake);
@@ -291,6 +292,7 @@ pub const Host = struct {
     }
 
     fn runLoop(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(self.thread != null);
         while (!self.quit) {
             self.turn();

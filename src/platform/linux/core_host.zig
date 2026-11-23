@@ -267,6 +267,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         if (self.dialog) |*pending| pending.request.close();
         self.dialog = null;
         if (self.thread) |thread| {
@@ -313,6 +314,7 @@ pub const Host = struct {
     }
 
     fn runLoop(self: *Host) void {
+        assert(self.core.presenter.?.context == @as(*anyopaque, self));
         assert(self.thread != null);
         while (!self.quit) {
             self.platform.fireKeyRepeat();

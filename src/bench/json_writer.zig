@@ -362,6 +362,11 @@ pub const Reporter = struct {
 
         var date_buf: [16]u8 = undefined;
         const date = getCurrentDate(self.io);
+        comptime std.debug.assert(std.fmt.count("{d:0>2}-{d:0>2}-{d}", .{
+            std.math.maxInt(u8),
+            std.math.maxInt(u8),
+            std.math.maxInt(u16),
+        }) <= date_buf.len);
         const date_str = std.fmt.bufPrint(&date_buf, "{d:0>2}-{d:0>2}-{d}", .{
             date.month,
             date.day,

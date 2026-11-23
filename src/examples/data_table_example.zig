@@ -201,6 +201,12 @@ const SortStatus = struct {
     pub fn render(_: SortStatus, cx: *Cx) void {
         const s = cx.state(State);
         var buffer: [64]u8 = undefined;
+        if (s.sort_column) |column| {
+            assert(std.fmt.count("Sort: {s} {s}", .{
+                column_names[@backingInt(column)],
+                "↑",
+            }) <= buffer.len);
+        }
         const text = if (s.sort_column) |column|
             std.fmt.bufPrint(&buffer, "Sort: {s} {s}", .{
                 column_names[@backingInt(column)],
@@ -283,6 +289,7 @@ const TableRow = struct {
         var id_buffer: [16]u8 = undefined;
         var size_buffer: [32]u8 = undefined;
         var modified_buffer: [32]u8 = undefined;
+        comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u32)}) <= id_buffer.len);
         const cells = [column_count][]const u8{
             std.fmt.bufPrint(&id_buffer, "{d}", .{row.id}) catch unreachable,
             names[row.name_index],
@@ -314,6 +321,9 @@ const RowCells = struct {
 
 fn formatSize(buffer: *[32]u8, bytes: u64) []const u8 {
     const value: f64 = @floatFromInt(bytes);
+    comptime assert(std.fmt.count("{d:.2} GB", .{
+        @as(f64, @floatFromInt(std.math.maxInt(u64))) / (1024.0 * 1024.0 * 1024.0),
+    }) <= buffer.len);
     if (bytes < 1024) return std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch unreachable;
     if (bytes < 1024 * 1024) {
         return std.fmt.bufPrint(buffer, "{d:.1} KB", .{value / 1024.0}) catch unreachable;
@@ -327,6 +337,7 @@ fn formatSize(buffer: *[32]u8, bytes: u64) []const u8 {
 }
 
 fn formatModified(buffer: *[32]u8, days_ago: u16) []const u8 {
+    comptime assert(std.fmt.count("{d} months ago", .{std.math.maxInt(u16)}) <= buffer.len);
     if (days_ago == 0) return "Today";
     if (days_ago == 1) return "Yesterday";
     if (days_ago < 7) {

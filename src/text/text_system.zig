@@ -911,6 +911,7 @@ pub const TextSystem = struct {
         std.debug.assert(end - first <= FontVariant.count);
         for (self.face_variants[first..end], 0..) |loaded, index| {
             const separator = if (index == 0) "" else ", ";
+            assert(separator.len + @tagName(loaded).len <= names_buffer.len - names_len);
             const written = std.fmt.bufPrint(names_buffer[names_len..], "{s}{s}", .{
                 separator,
                 @tagName(loaded),
@@ -1445,6 +1446,7 @@ test "ShapedRunCache hash collision handling" {
     var i: usize = 0;
     while (i < 100) : (i += 1) {
         var buf: [32]u8 = undefined;
+        assert(std.fmt.count("collision_test_{d}", .{i}) <= buf.len);
         const text = std.fmt.bufPrint(&buf, "collision_test_{d}", .{i}) catch unreachable;
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
         cache.put(key, run);
@@ -1455,6 +1457,7 @@ test "ShapedRunCache hash collision handling" {
     i = 0;
     while (i < 100) : (i += 1) {
         var buf: [32]u8 = undefined;
+        assert(std.fmt.count("collision_test_{d}", .{i}) <= buf.len);
         const text = std.fmt.bufPrint(&buf, "collision_test_{d}", .{i}) catch unreachable;
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
         try std.testing.expect(cache.get(key) != null);
@@ -1463,6 +1466,7 @@ test "ShapedRunCache hash collision handling" {
     i = 100;
     while (i < test_shaped_run_count + 50) : (i += 1) {
         var buf: [32]u8 = undefined;
+        assert(std.fmt.count("evict_test_{d}", .{i}) <= buf.len);
         const text = std.fmt.bufPrint(&buf, "evict_test_{d}", .{i}) catch unreachable;
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
         cache.put(key, run);
@@ -1473,6 +1477,7 @@ test "ShapedRunCache hash collision handling" {
     i = test_shaped_run_count;
     while (i < test_shaped_run_count + 50) : (i += 1) {
         var buf: [32]u8 = undefined;
+        assert(std.fmt.count("evict_test_{d}", .{i}) <= buf.len);
         const text = std.fmt.bufPrint(&buf, "evict_test_{d}", .{i}) catch unreachable;
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
         try std.testing.expect(cache.get(key) != null);

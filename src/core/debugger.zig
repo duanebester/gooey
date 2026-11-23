@@ -562,6 +562,12 @@ fn directionName(direction: layout_types.LayoutDirection) []const u8 {
 const value_limit: f32 = 1e9;
 
 fn boundsText(buffer: *[48]u8, bounds: Rect) []const u8 {
+    comptime assert(std.fmt.count("{d:.0},{d:.0} {d:.0}x{d:.0}", .{
+        -value_limit,
+        -value_limit,
+        value_limit,
+        value_limit,
+    }) <= buffer.len);
     return std.fmt.bufPrint(buffer, "{d:.0},{d:.0} {d:.0}x{d:.0}", .{
         std.math.clamp(bounds.x, -value_limit, value_limit),
         std.math.clamp(bounds.y, -value_limit, value_limit),
@@ -571,6 +577,11 @@ fn boundsText(buffer: *[48]u8, bounds: Rect) []const u8 {
 }
 
 fn sizingText(buffer: *[40]u8, axis: layout_types.SizingAxis) []const u8 {
+    comptime assert(std.fmt.count("{s} ({d:.0}-{d:.0})", .{
+        "percent",
+        value_limit,
+        value_limit,
+    }) <= buffer.len);
     const kind = switch (std.meta.activeTag(axis.value)) {
         .fit => "fit",
         .grow => "grow",
@@ -600,16 +611,19 @@ fn sourceText(buffer: *[64]u8, source: ?Source) []const u8 {
     const value = source orelse return "(not tracked)";
     const name = value.basename();
     const name_len = @min(name.len, buffer.len - 11);
+    comptime assert(std.fmt.count(":{d}", .{std.math.maxInt(u32)}) <= 11);
     return std.fmt.bufPrint(buffer, "{s}:{d}", .{ name[0..name_len], value.line }) catch
         unreachable;
 }
 
 fn msText(buffer: *[16]u8, ns: u64) []const u8 {
     const ms = @min(@as(f32, @floatFromInt(ns)) / std.time.ns_per_ms, 1e6);
+    comptime assert(std.fmt.count("{d:.1}", .{@as(f32, 1e6)}) <= buffer.len);
     return std.fmt.bufPrint(buffer, "{d:.1}", .{ms}) catch unreachable;
 }
 
 fn countText(buffer: *[16]u8, count: u32) []const u8 {
+    comptime assert(std.fmt.count("{d}", .{std.math.maxInt(u32)}) <= buffer.len);
     return std.fmt.bufPrint(buffer, "{d}", .{count}) catch unreachable;
 }
 

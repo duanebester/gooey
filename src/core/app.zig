@@ -406,6 +406,7 @@ pub fn App(
         }
 
         pub fn tick(self: *Self, now_ns: u64) void {
+            assert(self.store.root_state == @as(*anyopaque, &self.state));
             assert(self.guard.lifecycle == .running);
             tick_mod.tick(self, &self.window, now_ns);
         }

@@ -1387,6 +1387,7 @@ fn pathDataWriteNumber(buffer: []u8, number: f32, is_flag: bool) usize {
         return 2;
     }
     var digits: [std.fmt.float.min_buffer_size]u8 = undefined;
+    assert(std.math.isFinite(number));
     const text = std.fmt.float.render(&digits, number, .{
         .mode = .scientific,
         .precision = null,

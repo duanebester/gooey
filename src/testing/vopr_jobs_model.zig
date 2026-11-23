@@ -237,6 +237,12 @@ const Rows = struct {
         const s = cx.state(State);
         for (s.rows, 0..) |row, index| {
             var bytes: [row_text_bytes_max]u8 = undefined;
+            assert(std.fmt.count("#{d} {t}: {d} results, last {d}", .{
+                row.number,
+                row.status,
+                row.result_count,
+                row.value_last,
+            }) <= bytes.len);
             const text = std.fmt.bufPrint(&bytes, "#{d} {t}: {d} results, last {d}", .{
                 row.number,
                 row.status,
