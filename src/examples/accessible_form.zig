@@ -11,6 +11,8 @@ const Checkbox = components.Checkbox;
 const TextInput = components.TextInput;
 const Select = components.Select;
 const RadioGroup = components.RadioGroup;
+const Switch = components.Switch;
+const Slider = components.Slider;
 const Tooltip = components.Tooltip;
 
 pub const State = struct {
@@ -23,6 +25,10 @@ pub const State = struct {
     terms_accepted: bool = false,
 
     experience_level: ?usize = null,
+
+    notifications: bool = true,
+    sms_alerts: bool = false,
+    emails_per_week: f32 = 3,
 
     form_submitted: bool = false,
     validation_errors: ValidationErrors = .{},
@@ -50,6 +56,14 @@ pub const State = struct {
     pub fn toggleTerms(self: *State) void {
         self.terms_accepted = !self.terms_accepted;
         if (self.terms_accepted) self.validation_errors.terms = false;
+    }
+
+    pub fn toggleNotifications(self: *State) void {
+        self.notifications = !self.notifications;
+    }
+
+    pub fn toggleSmsAlerts(self: *State) void {
+        self.sms_alerts = !self.sms_alerts;
     }
 
     pub fn setContact(self: *State, method: ContactMethod) void {
@@ -133,6 +147,7 @@ const FormBody = struct {
                 .newsletter = s.newsletter,
             },
             ExperienceSection{ .experience_level = s.experience_level },
+            NotificationsSection{},
             TermsSection{
                 .terms_accepted = s.terms_accepted,
                 .has_error = s.validation_errors.terms,
@@ -315,6 +330,56 @@ const ExperienceSection = struct {
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
             },
+        }));
+    }
+};
+
+const NotificationsSection = struct {
+    pub fn render(_: NotificationsSection, cx: *Cx) void {
+        const s = cx.state(State);
+        // SMS alerts need a phone number to send to.
+        const sms_available = s.phone.len > 0;
+        var count_buffer: [32]u8 = undefined;
+        const count = std.fmt.bufPrint(&count_buffer, "{d} per week", .{
+            @as(u32, @intFromFloat(s.emails_per_week)),
+        }) catch unreachable; // 32 bytes hold any u32 and the suffix.
+        cx.render(ui.box(card("Notification settings", false), .{
+            sectionHeading("Notifications"),
+            Switch{
+                .key = .{ .name = "notifications" },
+                .checked = s.notifications,
+                .label = "Email notifications",
+                .on_click = cx.on(State.toggleNotifications, .{}),
+            },
+            Switch{
+                .key = .{ .name = "sms-alerts" },
+                .checked = s.sms_alerts,
+                .label = "SMS alerts",
+                .disabled = !sms_available,
+                .accessible_description = if (sms_available)
+                    null
+                else
+                    "Add a phone number to turn on SMS alerts",
+                .on_click = cx.on(State.toggleSmsAlerts, .{}),
+            },
+            FormField{ .label = "Emails per week", .error_message = null },
+            ui.box(.{ .style = .{
+                .direction = .row,
+                .gap = 16,
+                .alignment = .center_cross,
+            } }, .{
+                Slider{
+                    .key = "emails-per-week",
+                    .bind = &s.emails_per_week,
+                    .min = 1,
+                    .max = 7,
+                    .step = 1,
+                    .width = 260,
+                    .disabled = !s.notifications,
+                    .accessible_name = "Emails per week",
+                },
+                ui.text(count, .{ .size = 14, .color = .{ .rgba = label_color } }),
+            }),
         }));
     }
 };

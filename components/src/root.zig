@@ -730,6 +730,428 @@ const RadioOption = struct {
     }
 };
 
+/// An on/off toggle. Like `Checkbox`, it shows the app's `checked` and runs
+/// `on_click` to flip it; Enter and Space press it through the router.
+pub const Switch = struct {
+    checked: bool,
+    on_click: ?Handler = null,
+    key: ?Key = null,
+    label: ?[]const u8 = null,
+    disabled: bool = false,
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    const track_width: f32 = 40;
+    const track_height: f32 = 22;
+    const thumb_inset: f32 = 2;
+    const thumb_size: f32 = track_height - thumb_inset * 2;
+
+    comptime {
+        assert(thumb_size > 0);
+        assert(track_width > thumb_size * 2);
+    }
+
+    pub fn render(self: Switch, cx: *Cx) void {
+        assert(self.accessible_name != null or self.label != null);
+        if (self.label) |label| assert(label.len > 0);
+        const theme = cx.theme();
+        const interactive = !self.disabled and self.on_click != null;
+        const hovered = if (self.key) |key| interactive and cx.hovered(cx.id(key)) else false;
+        const off_color = theme.muted.withAlpha(0.5);
+        const track_color = if (self.checked) theme.primary else off_color;
+        const track_fill = if (hovered) track_color.withAlpha(0.85) else track_color;
+        cx.render(ui.box(.{
+            .key = self.key,
+            .style = .{
+                .direction = .row,
+                .gap = 10,
+                .alignment = .center_cross,
+                // The track's ends, for the focus ring.
+                .corner_radius = .all(track_height / 2),
+                .cursor = if (interactive) .pointer else null,
+                .opacity = if (self.disabled) 0.5 else 1,
+            },
+            .focusable = interactive,
+            .on_click = if (interactive) self.on_click else null,
+            .a11y = .{
+                .role = .switch_,
+                .label = self.accessible_name orelse self.label,
+                .description = self.accessible_description,
+                .checked = self.checked,
+                .disabled = self.disabled,
+            },
+        }, .{
+            ui.box(.{ .style = .{
+                .width = .{ .fixed = track_width },
+                .height = .{ .fixed = track_height },
+                .padding = .all(thumb_inset),
+                .background = .{ .rgba = track_fill },
+                .corner_radius = .all(track_height / 2),
+                .direction = .row,
+                .alignment = .{ .main = if (self.checked) .end else .start, .cross = .center },
+            } }, .{
+                ui.box(.{ .style = .{
+                    .width = .{ .fixed = thumb_size },
+                    .height = .{ .fixed = thumb_size },
+                    .background = .{ .rgba = theme.on_primary },
+                    .corner_radius = .all(thumb_size / 2),
+                    .shadow = .{ .blur = 3, .offset_y = 1 },
+                } }, .{}),
+            }),
+            if (self.label) |label| ui.text(label, .{
+                .size = theme.font_size_base,
+                .color = .text,
+            }) else null,
+        }));
+    }
+};
+
+/// A value in `[min, max]` bound to an app field, as `TextInput` binds its
+/// text: the slider's handlers write `bind` and the app reads it there. With
+/// a `step`, every value it writes is `min` plus a whole number of steps, at
+/// most `max`. Arrows move one step (a hundredth of the range without one), Page
+/// Up and Page Down a tenth of the range, Home and End to the ends; a press
+/// on the track jumps there and a drag follows the pointer.
+pub const Slider = struct {
+    key: []const u8,
+    bind: *f32,
+    min: f32 = 0,
+    max: f32 = 100,
+    step: ?f32 = null,
+    disabled: bool = false,
+    width: f32 = 200,
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: Slider, cx: *Cx) void {
+        self.check();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(SliderState, id, .frame, SliderState.init);
+        const state = cx.get(SliderState, handle);
+        state.sync(id, &self);
+        const value = self.bind.*;
+        const lit = !self.disabled and (state.dragging or cx.hovered(id));
+        var text: [slider_value_bytes_max]u8 = undefined;
+        const decimals = sliderDecimals(self.step, self.max - self.min);
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{
+                .width = .{ .fixed = self.width },
+                .height = .{ .fixed = slider_thumb_size },
+                .direction = .row,
+                .alignment = .center_cross,
+                // The thumb's ends, for the focus ring.
+                .corner_radius = .all(slider_thumb_size / 2),
+                .cursor = if (self.disabled) null else .pointer,
+                .opacity = if (self.disabled) 0.5 else 1,
+            },
+            .focusable = !self.disabled,
+            .on_key = if (self.disabled) null else cx.on(SliderState.onKey, .{ .entity = handle }),
+            .on_pointer_drag = if (self.disabled)
+                null
+            else
+                cx.on(SliderState.onDrag, .{ .entity = handle }),
+            .a11y = .{
+                .role = .slider,
+                .label = self.accessible_name,
+                .description = self.accessible_description,
+                .value = sliderValueText(&text, value, decimals),
+                .range = .{
+                    .min = self.min,
+                    .max = self.max,
+                    .now = value,
+                    .orientation = .horizontal,
+                },
+                .disabled = self.disabled,
+            },
+        }, .{SliderTrack{
+            .before = (self.width - slider_thumb_size) * sliderFraction(value, self.min, self.max),
+            .travel = self.width - slider_thumb_size,
+            .lit = lit,
+        }}));
+    }
+
+    fn check(self: *const Slider) void {
+        assert(self.key.len > 0);
+        assert(self.accessible_name != null);
+        assert(std.math.isFinite(self.min));
+        assert(std.math.isFinite(self.max));
+        assert(self.min < self.max);
+        assert(self.width > slider_thumb_size);
+        if (self.step) |step| {
+            assert(step > 0);
+            assert(step <= self.max - self.min);
+        }
+        const value = self.bind.*;
+        assert(value >= self.min);
+        assert(value <= self.max);
+    }
+};
+
+const slider_thumb_size: f32 = 20;
+const slider_track_height: f32 = 6;
+/// A formatted f32: at most 39 integer digits, a sign, a point, and
+/// `slider_decimals_max` decimals.
+const slider_value_bytes_max: u32 = 48;
+const slider_decimals_max: u8 = 3;
+
+comptime {
+    assert(slider_track_height < slider_thumb_size);
+    assert(39 + 2 + slider_decimals_max <= slider_value_bytes_max);
+}
+
+/// A `Slider`'s pointer and keys, retained under its key. `sync` copies the
+/// props of each build, so the handlers act on the slider on screen: the
+/// frame they route against is the last one built.
+const SliderState = struct {
+    root: ElementId,
+    bind: ?*f32,
+    scale: SliderScale,
+    /// The value at the press, which a cancelled drag restores.
+    drag_start: f32,
+    dragging: bool,
+    disabled: bool,
+
+    comptime {
+        assert(@sizeOf(SliderState) <= 64);
+    }
+
+    fn init(self: *SliderState) void {
+        self.* = .{
+            .root = .root,
+            .bind = null,
+            .scale = .{ .min = 0, .max = 1, .step = 0 },
+            .drag_start = 0,
+            .dragging = false,
+            .disabled = false,
+        };
+    }
+
+    fn sync(self: *SliderState, id: ElementId, slider: *const Slider) void {
+        assert(id.isKeyed());
+        assert(slider.min < slider.max);
+        self.root = id;
+        self.bind = slider.bind;
+        self.scale = .{ .min = slider.min, .max = slider.max, .step = slider.step orelse 0 };
+        self.disabled = slider.disabled;
+        // A slider disabled mid-drag drops the drag where it is.
+        if (slider.disabled) self.dragging = false;
+        assert(self.scale.step >= 0);
+    }
+
+    fn onKey(self: *SliderState, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        assert(self.scale.min < self.scale.max);
+        if (self.disabled) return;
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const key = event.key_down;
+        if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
+        const bind = self.bind.?;
+        const page = self.scale.pageStops();
+        bind.* = switch (key.key) {
+            .right, .up => self.scale.move(bind.*, 1),
+            .left, .down => self.scale.move(bind.*, -1),
+            .page_up => self.scale.move(bind.*, page),
+            .page_down => self.scale.move(bind.*, -page),
+            .home => self.scale.min,
+            .end => self.scale.snap(self.scale.max),
+            else => return,
+        };
+        assert(bind.* >= self.scale.min);
+        assert(bind.* <= self.scale.max);
+        effects.stopPropagation();
+    }
+
+    /// The primary button only, as native sliders answer.
+    fn onDrag(self: *SliderState, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        const drag = effects.pointerDrag() orelse return;
+        if (drag.button != .left) return;
+        if (self.disabled) return;
+        const bind = self.bind.?;
+        switch (drag.phase) {
+            .begin => {
+                self.drag_start = bind.*;
+                self.dragging = true;
+                bind.* = self.valueAt(effects, drag.x) orelse bind.*;
+            },
+            .move, .end => {
+                if (!self.dragging) return;
+                bind.* = self.valueAt(effects, drag.x) orelse bind.*;
+                self.dragging = drag.phase == .move;
+            },
+            .cancel => {
+                if (self.dragging) bind.* = self.drag_start;
+                self.dragging = false;
+            },
+        }
+        assert(bind.* >= self.scale.min);
+        assert(bind.* <= self.scale.max);
+    }
+
+    /// The value under window x `x`, or null when the slider is not on
+    /// screen. The thumb's centre travels from half a thumb inside the left
+    /// end to half a thumb inside the right. The bounds are those hit testing
+    /// sees, so a slider cut by a horizontal clip maps the visible part.
+    fn valueAt(self: *const SliderState, effects: *const Effects, x: f32) ?f32 {
+        assert(std.math.isFinite(x));
+        const bounds = effects.bounds(self.root) orelse return null;
+        const travel = bounds.width - slider_thumb_size;
+        if (travel <= 0) return null;
+        const offset = x - bounds.x - slider_thumb_size / 2;
+        const fraction = std.math.clamp(offset / travel, 0, 1);
+        return self.scale.snap(self.scale.min + fraction * (self.scale.max - self.scale.min));
+    }
+};
+
+/// The values a `Slider` writes: with a `step` above 0, the stops
+/// `min + n * step` up to `max`; with `step` 0, all of `[min, max]`, in
+/// keyboard stops of a hundredth of the range.
+const SliderScale = struct {
+    min: f32,
+    max: f32,
+    step: f32,
+
+    /// A stop's offset within `step` of a whole one that counts as on it,
+    /// so float error in `min + n * step` does not skip or repeat a stop.
+    const stop_tolerance: f32 = 1e-3;
+    const continuous_stop_count: f32 = 100;
+
+    /// The size of one keyboard stop.
+    fn unit(self: SliderScale) f32 {
+        assert(self.min < self.max);
+        assert(self.step >= 0);
+        if (self.step > 0) return self.step;
+        return (self.max - self.min) / continuous_stop_count;
+    }
+
+    /// The index of the last stop, at or below `max`.
+    fn last(self: SliderScale) f32 {
+        const stops = @floor((self.max - self.min) / self.unit() + stop_tolerance);
+        assert(stops >= 1);
+        return stops;
+    }
+
+    /// A tenth of the range in whole stops, and at least one.
+    fn pageStops(self: SliderScale) f32 {
+        const stops = @max(1, @round(self.last() / 10));
+        assert(stops <= self.last());
+        return stops;
+    }
+
+    /// `value` clamped to `[min, max]`, at the nearest stop when stepped.
+    fn snap(self: SliderScale, value: f32) f32 {
+        assert(std.math.isFinite(value));
+        const clamped = std.math.clamp(value, self.min, self.max);
+        if (self.step == 0) return clamped;
+        const index = std.math.clamp(@round((clamped - self.min) / self.step), 0, self.last());
+        return self.stop(index);
+    }
+
+    /// The stop `count` stops above `value` (below for a negative count). A
+    /// value between stops moves first to the stop on that side, so every
+    /// press moves toward its end.
+    fn move(self: SliderScale, value: f32, count: f32) f32 {
+        assert(std.math.isFinite(value));
+        assert(count != 0);
+        if (self.step == 0) {
+            return std.math.clamp(value + count * self.unit(), self.min, self.max);
+        }
+        var position = (value - self.min) / self.step;
+        if (@abs(position - @round(position)) < stop_tolerance) position = @round(position);
+        const from = if (count > 0) @floor(position) else @ceil(position);
+        return self.stop(std.math.clamp(from + count, 0, self.last()));
+    }
+
+    fn stop(self: SliderScale, index: f32) f32 {
+        assert(self.step > 0);
+        assert(index >= 0);
+        assert(index <= self.last());
+        const value = @min(self.min + index * self.step, self.max);
+        assert(value >= self.min);
+        return value;
+    }
+};
+
+fn sliderFraction(value: f32, min: f32, max: f32) f32 {
+    assert(min < max);
+    assert(value >= min);
+    assert(value <= max);
+    const fraction = (value - min) / (max - min);
+    assert(fraction >= 0);
+    assert(fraction <= 1);
+    return fraction;
+}
+
+/// The decimals a screen reader hears: as many as `step` has, up to
+/// `slider_decimals_max`, or for a continuous slider fewer the wider the range.
+fn sliderDecimals(step: ?f32, range: f32) u8 {
+    assert(range > 0);
+    const size = step orelse {
+        if (range >= 100) return 0;
+        return if (range >= 10) 1 else 2;
+    };
+    assert(size > 0);
+    var scaled = size;
+    var decimals: u8 = 0;
+    while (decimals < slider_decimals_max) : (decimals += 1) {
+        if (@abs(scaled - @round(scaled)) < 1e-3) break;
+        scaled *= 10;
+    }
+    assert(decimals <= slider_decimals_max);
+    return decimals;
+}
+
+fn sliderValueText(buffer: *[slider_value_bytes_max]u8, value: f32, decimals: u8) []const u8 {
+    assert(std.math.isFinite(value));
+    assert(decimals <= slider_decimals_max);
+    // The buffer holds any finite f32 at `slider_decimals_max` decimals.
+    const text = std.fmt.bufPrint(buffer, "{d:.[1]}", .{ value, decimals }) catch unreachable;
+    assert(text.len > 0);
+    return text;
+}
+
+/// The filled track before the thumb, the thumb, and the empty track after
+/// it, laid out in a row whose widths add to the slider's.
+const SliderTrack = struct {
+    before: f32,
+    travel: f32,
+    lit: bool,
+
+    pub fn render(self: SliderTrack, cx: *Cx) void {
+        assert(self.travel > 0);
+        assert(self.before >= 0);
+        assert(self.before <= self.travel);
+        const theme = cx.theme();
+        const glow = theme.primary.withAlpha(0.45);
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .fixed = self.before },
+            .height = .{ .fixed = slider_track_height },
+            .background = .primary,
+            .corner_radius = .all(slider_track_height / 2),
+        } }, .{}));
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .fixed = slider_thumb_size },
+            .height = .{ .fixed = slider_thumb_size },
+            .background = .{ .rgba = theme.on_primary },
+            .border = .{ .width = 2, .color = .primary },
+            .corner_radius = .all(slider_thumb_size / 2),
+            .shadow = if (self.lit)
+                .{ .blur = 8, .color = .{ .rgba = glow } }
+            else
+                .{ .blur = 3, .offset_y = 1 },
+        } }, .{}));
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .fixed = self.travel - self.before },
+            .height = .{ .fixed = slider_track_height },
+            .background = .{ .rgba = theme.muted.withAlpha(0.35) },
+            .corner_radius = .all(slider_track_height / 2),
+        } }, .{}));
+    }
+};
+
 pub fn Tooltip(comptime Child: type) type {
     return struct {
         key: []const u8,
@@ -2239,6 +2661,8 @@ test "components compile against the gooey surface" {
         _ = Button;
         _ = Checkbox;
         _ = RadioGroup;
+        _ = Switch;
+        _ = Slider;
         _ = Tooltip(Button);
         _ = ContextMenu(Button);
         _ = TextInput;
