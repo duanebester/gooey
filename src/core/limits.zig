@@ -889,7 +889,7 @@ pub fn textScratchBytes(events: *const EventLimits) u32 {
 
 pub const handler_count_element_max: u32 = 3;
 
-pub const text_field_handler_count_max: u32 = 8;
+pub const text_field_handler_count_max: u32 = 9;
 
 pub const MAX_COMPONENT_DEPTH: u32 = 128;
 
@@ -1982,12 +1982,12 @@ test "check bounds box depth and layers by their ceilings and the element count"
     try std.testing.expectEqualStrings("element_count_frame_max", limits.check().?.field);
 }
 
-test "check holds the handler budget to eight per text field" {
+test "check holds the handler budget to nine per text field" {
     var limits = ResourceLimits.standard;
-    try std.testing.expectEqual(@as(u32, 68 * 8), limits.textFieldHandlerCount());
+    try std.testing.expectEqual(@as(u32, 68 * 9), limits.textFieldHandlerCount());
     limits.text.editor.count_max = 2;
     const fields_handlers = limits.textFieldHandlerCount();
-    try std.testing.expectEqual(@as(u32, 70 * 8), fields_handlers);
+    try std.testing.expectEqual(@as(u32, 70 * 9), fields_handlers);
     limits.records.handler_count_frame_max = fields_handlers;
     try std.testing.expect(limits.check() == null);
     limits.records.handler_count_frame_max = fields_handlers - 1;

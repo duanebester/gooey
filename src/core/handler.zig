@@ -248,6 +248,7 @@ pub const Effects = struct {
         start_y: f32,
         button: input.MouseButton,
         modifiers: input.Modifiers,
+        click_count: u32,
 
         pub const Phase = enum { begin, move, end, cancel };
     };

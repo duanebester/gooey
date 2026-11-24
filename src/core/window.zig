@@ -359,6 +359,7 @@ pub const Capture = struct {
     start_y: f32,
     moved: bool,
     cursor: element.CursorShape,
+    click_count: u32,
 
     pub const click_slop_px: f32 = 2;
 
@@ -369,6 +370,7 @@ pub const Capture = struct {
         .start_y = 0,
         .moved = false,
         .cursor = .default,
+        .click_count = 0,
     };
 };
 

@@ -1916,16 +1916,23 @@ pub const TextInput = struct {
         const handle = cx.retain(InputEngine, id, .{ .scope = id }, initEngine);
         const engine = cx.get(InputEngine, handle);
         engine.syncBound(self.bind);
-        const engine_actions = EngineActions.of(cx, InputEngine, handle, engine.hasSelection());
         const focused = cx.focused(id);
         setView(&engine.view, theme, id, self.placeholder);
-        engine.blink(cx, focused);
         const inset = self.padding + self.border_width;
         const metrics = cx.fontMetrics();
+        engine.resolvePointer(cx, .{
+            .text_x = inset,
+            .text_y = inset,
+            .viewport_height = metrics.line_height,
+            .gutter_end = 0,
+        });
+        const engine_actions = EngineActions.of(cx, InputEngine, handle, engine.hasSelection());
+        engine.blink(cx, focused);
         cx.render(ui.box(.{
             .key = key,
             .focusable = true,
             .on_key = cx.on(InputEngine.onKey, .{ .entity = handle }),
+            .on_pointer_drag = cx.on(InputEngine.onPointerDrag, .{ .entity = handle }),
             .key_context = gooey.keymaps.context_input,
             .actions = engine_actions.slice(),
             .style = .{
@@ -2039,7 +2046,7 @@ const EngineActions = struct {
     const engine_action_count_max: u32 = 7;
 
     comptime {
-        assert(engine_action_count_max + 1 == gooey.ResourceLimits.text_field_handlers);
+        assert(engine_action_count_max + 2 == gooey.ResourceLimits.text_field_handlers);
     }
 
     fn of(cx: *Cx, comptime E: type, handle: anytype, has_selection: bool) EngineActions {
@@ -2119,7 +2126,12 @@ pub const TextArea = struct {
         const inset = self.padding + self.border_width;
         const line_height = cx.fontMetrics().line_height;
         const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
-        engine.resolveClick(cx, .{ .text_x = inset, .text_y = inset, .gutter_end = 0 });
+        engine.resolvePointer(cx, .{
+            .text_x = inset,
+            .text_y = inset,
+            .viewport_height = viewport_height,
+            .gutter_end = 0,
+        });
         const engine_actions = EngineActions.of(cx, AreaEngine, handle, engine.hasSelection());
         engine.follow(line_height, viewport_height);
         engine.blink(cx, focused);
@@ -2129,7 +2141,7 @@ pub const TextArea = struct {
             .on_key = cx.on(AreaEngine.onKey, .{ .entity = handle }),
             .key_context = gooey.keymaps.context_area,
             .actions = engine_actions.slice(),
-            .on_click = cx.on(AreaEngine.onClick, .{ .entity = handle }),
+            .on_pointer_drag = cx.on(AreaEngine.onPointerDrag, .{ .entity = handle }),
             .style = .{
                 .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
                 .height = .{ .fixed = viewport_height + inset * 2 },
@@ -2330,9 +2342,10 @@ pub const CodeEditor = struct {
         else
             self.filledViewportHeight(cx, id, line_height);
         const separator: f32 = if (gutter > 0) 1 else 0;
-        engine.resolveClick(cx, .{
+        engine.resolvePointer(cx, .{
             .text_x = self.border_width + gutter + separator + self.padding,
             .text_y = self.border_width + self.padding,
+            .viewport_height = viewport_height,
             .gutter_end = self.border_width + gutter,
         });
         const engine_actions = EngineActions.of(cx, EditorEngine, handle, engine.hasSelection());
@@ -2344,7 +2357,7 @@ pub const CodeEditor = struct {
             .on_key = cx.on(EditorEngine.onKey, .{ .entity = handle }),
             .key_context = gooey.keymaps.context_editor,
             .actions = engine_actions.slice(),
-            .on_click = cx.on(EditorEngine.onClick, .{ .entity = handle }),
+            .on_pointer_drag = cx.on(EditorEngine.onPointerDrag, .{ .entity = handle }),
             .style = .{
                 .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
                 .height = if (self.rows == null) .{ .grow = 1 } else .fit,
