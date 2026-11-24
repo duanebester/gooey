@@ -114,6 +114,7 @@ pub const App = gooey.App(State, render, .{
     .width = 600,
     .height = 800,
     .limits = .small,
+    .keymap = gooey.keymaps.text_default,
 });
 
 pub const main = App.main;

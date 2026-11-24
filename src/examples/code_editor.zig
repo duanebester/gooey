@@ -260,6 +260,7 @@ pub const App = gooey.App(State, render, .{
     .height = window_height,
     .limits = limits,
     .theme = &gooey.Theme.dark,
+    .keymap = gooey.keymaps.text_default,
 });
 
 pub const main = App.main;

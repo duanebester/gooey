@@ -205,7 +205,7 @@ pub const KeyContext = struct {
 pub const ActionBinding = struct { action: u64, handler: Handler };
 
 pub fn action(comptime Action: type) u64 {
-    comptime assert(@typeInfo(Action) == .@"struct");
+    comptime assert(@typeInfo(Action) == .@"struct" or @typeInfo(Action) == .@"enum");
     return comptime nonZeroHash(@typeName(Action));
 }
 

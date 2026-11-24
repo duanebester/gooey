@@ -54,20 +54,21 @@ pub const Keystroke = struct {
         if (name.len == 1) return std.meta.stringToEnum(KeyCode, name);
 
         const map = std.StaticStringMap(KeyCode).initComptime(.{
-            .{ "escape", .escape },    .{ "esc", .escape },
-            .{ "return", .@"return" }, .{ "enter", .@"return" },
-            .{ "tab", .tab },          .{ "space", .space },
-            .{ "backspace", .delete }, .{ "delete", .forward_delete },
-            .{ "up", .up },            .{ "down", .down },
-            .{ "left", .left },        .{ "right", .right },
-            .{ "home", .home },        .{ "end", .end },
-            .{ "pageup", .page_up },   .{ "pagedown", .page_down },
-            .{ "f1", .f1 },            .{ "f2", .f2 },
-            .{ "f3", .f3 },            .{ "f4", .f4 },
-            .{ "f5", .f5 },            .{ "f6", .f6 },
-            .{ "f7", .f7 },            .{ "f8", .f8 },
-            .{ "f9", .f9 },            .{ "f10", .f10 },
-            .{ "f11", .f11 },          .{ "f12", .f12 },
+            .{ "escape", .escape },            .{ "esc", .escape },
+            .{ "return", .@"return" },         .{ "enter", .@"return" },
+            .{ "tab", .tab },                  .{ "space", .space },
+            .{ "numpadenter", .keypad_enter }, .{ "backspace", .delete },
+            .{ "delete", .forward_delete },    .{ "up", .up },
+            .{ "down", .down },                .{ "left", .left },
+            .{ "right", .right },              .{ "home", .home },
+            .{ "end", .end },                  .{ "pageup", .page_up },
+            .{ "pagedown", .page_down },       .{ "f1", .f1 },
+            .{ "f2", .f2 },                    .{ "f3", .f3 },
+            .{ "f4", .f4 },                    .{ "f5", .f5 },
+            .{ "f6", .f6 },                    .{ "f7", .f7 },
+            .{ "f8", .f8 },                    .{ "f9", .f9 },
+            .{ "f10", .f10 },                  .{ "f11", .f11 },
+            .{ "f12", .f12 },
         });
 
         return map.get(name);

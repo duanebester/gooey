@@ -7,8 +7,8 @@ const Cx = gooey.Cx;
 const Button = components.Button;
 const TextInput = components.TextInput;
 
-const Undo = struct {};
-const Redo = struct {};
+const Undo = gooey.actions.Undo;
+const Redo = gooey.actions.Redo;
 const Save = struct {};
 const Cancel = struct {};
 
@@ -48,9 +48,7 @@ pub fn AppWith(comptime modifier: Modifier) type {
         .width = 800,
         .height = 600,
         .limits = .nano,
-        .keymap = &.{
-            .{ .keys = m ++ "-z", .action = ui.action(Undo) },
-            .{ .keys = m ++ "-shift-z", .action = ui.action(Redo) },
+        .keymap = gooey.keymaps.text_default ++ &[_]gooey.keymaps.Binding{
             .{ .keys = m ++ "-s", .action = ui.action(Save), .key_context = .named("Editor") },
             .{ .keys = "escape", .action = ui.action(Cancel) },
         },

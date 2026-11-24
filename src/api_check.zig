@@ -286,6 +286,7 @@ fn pinExact() void {
             "FontLimits",  "FontSource",        "Color",             "animation",
             "input",       "text",              "accessibility",     "log",
             "std_options", "testing",           "internals",         "TitleBar",
+            "actions",     "keymaps",
         });
         expectDecls(gooey.ui, "gooey.ui", &.{
             "box",          "text",          "paint",           "Paint",        "when",
@@ -323,6 +324,14 @@ fn pinExact() void {
             "tween_duration_ms_max", "loop_period_ms_max", "Easing", "Tween",
             "Spring",                "Phase",              "Motion", "tween",
             "tweenOn",               "loop",               "motion",
+        });
+        expectDecls(gooey.actions, "gooey.actions", &.{
+            "Undo",  "Redo",      "Cut",    "Copy",
+            "Paste", "SelectAll", "Unbind", "TextCommand",
+        });
+        expectDecls(gooey.keymaps, "gooey.keymaps", &.{
+            "Binding",       "text_default", "text_mac",       "text_pc",
+            "context_input", "context_area", "context_editor",
         });
     }
 }

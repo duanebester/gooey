@@ -209,6 +209,15 @@ pub const ResourceLimits = struct {
                 element_count * handler_count_element_max,
             );
         }
+        if (self.records.handler_count_frame_max < self.textFieldHandlerCount()) {
+            return .{
+                .budget = .records,
+                .field = "handler_count_frame_max",
+                .rule = .below_text_field_handlers,
+                .value = self.records.handler_count_frame_max,
+                .bound = self.textFieldHandlerCount(),
+            };
+        }
         if (self.build.key_count_frame_max > element_count) {
             return relationship(
                 .build,
@@ -257,6 +266,15 @@ pub const ResourceLimits = struct {
             };
         }
         return null;
+    }
+
+    pub const text_field_handlers = text_field_handler_count_max;
+
+    pub fn textFieldHandlerCount(self: *const ResourceLimits) u32 {
+        const field_count = self.text.input.count_max + self.text.area.count_max +
+            self.text.editor.count_max;
+        assert(field_count <= std.math.maxInt(u32) / text_field_handler_count_max);
+        return field_count * text_field_handler_count_max;
     }
 
     fn checkAtlasCacheRelationships(self: *const ResourceLimits) ?Violation {
@@ -871,6 +889,8 @@ pub fn textScratchBytes(events: *const EventLimits) u32 {
 
 pub const handler_count_element_max: u32 = 3;
 
+pub const text_field_handler_count_max: u32 = 8;
+
 pub const MAX_COMPONENT_DEPTH: u32 = 128;
 
 pub const layer_count_ceiling: u32 = std.math.maxInt(u8);
@@ -1389,6 +1409,7 @@ pub const Violation = struct {
         above_ceiling,
         below_relationship,
         above_relationship,
+        below_text_field_handlers,
         not_multiple,
         not_power_of_two,
         duplicate,
@@ -1412,6 +1433,19 @@ pub const Violation = struct {
             .above_relationship => std.fmt.comptimePrint(
                 "ResourceLimits.{t}.{s} = {d} exceeds {d}, set by a related budget",
                 .{ self.budget, self.field, self.value, self.bound },
+            ),
+            .below_text_field_handlers => std.fmt.comptimePrint(
+                "ResourceLimits.{t}.{s} = {d} is below {d}: every TextInput, TextArea, and " ++
+                    "CodeEditor in ResourceLimits.text (input + area + editor count_max) " ++
+                    "registers up to {d} handlers per frame; raise {s} or lower those counts",
+                .{
+                    self.budget,
+                    self.field,
+                    self.value,
+                    self.bound,
+                    text_field_handler_count_max,
+                    self.field,
+                },
             ),
             .not_multiple => std.fmt.comptimePrint(
                 "ResourceLimits.{t}.{s} = {d} is not a multiple of {d}",
@@ -1946,6 +1980,31 @@ test "check bounds box depth and layers by their ceilings and the element count"
     limits.build.element_count_frame_max += 1;
     try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
     try std.testing.expectEqualStrings("element_count_frame_max", limits.check().?.field);
+}
+
+test "check holds the handler budget to eight per text field" {
+    var limits = ResourceLimits.standard;
+    try std.testing.expectEqual(@as(u32, 68 * 8), limits.textFieldHandlerCount());
+    limits.text.editor.count_max = 2;
+    const fields_handlers = limits.textFieldHandlerCount();
+    try std.testing.expectEqual(@as(u32, 70 * 8), fields_handlers);
+    limits.records.handler_count_frame_max = fields_handlers;
+    try std.testing.expect(limits.check() == null);
+    limits.records.handler_count_frame_max = fields_handlers - 1;
+    const violation = limits.check().?;
+    try std.testing.expectEqual(Violation.Budget.records, violation.budget);
+    try std.testing.expectEqualStrings("handler_count_frame_max", violation.field);
+    try std.testing.expectEqual(Violation.Rule.below_text_field_handlers, violation.rule);
+    try std.testing.expectEqual(fields_handlers - 1, violation.value);
+    try std.testing.expectEqual(fields_handlers, violation.bound);
+    limits.records.handler_count_frame_max = fields_handlers;
+    limits.text.input.count_max += 1;
+    try std.testing.expectEqual(Violation.Rule.below_text_field_handlers, limits.check().?.rule);
+    inline for (ResourceLimits.profile_names) |name| {
+        const profile = @field(ResourceLimits, name);
+        const handlers = profile.records.handler_count_frame_max;
+        try std.testing.expect(profile.textFieldHandlerCount() <= handlers);
+    }
 }
 
 test "derived budget quantities" {

@@ -503,7 +503,7 @@ pub const TextAreaModel = struct {
     fn applyKey(self: *TextAreaModel, chord: Action.Chord) bool {
         if (!self.field.preedit_known and self.field.preedit_len > 0) {
             if (takesKey(chord)) {
-                if (chord.key == .c or chord.key == .x) self.clipboard_known = false;
+                if (clipboardWrite(chord)) self.clipboard_known = false;
                 self.field.text_known = false;
                 self.field.caret_known = false;
                 self.history.complete = false;
@@ -515,63 +515,41 @@ pub const TextAreaModel = struct {
         if (self.field.preedit_len > 0) return false;
         if (!takesKey(chord)) return false;
         if (!self.field.known()) {
-            if (chord.key == .c or chord.key == .x) self.clipboard_known = false;
+            if (clipboardWrite(chord)) self.clipboard_known = false;
             self.field.text_known = false;
             self.field.caret_known = false;
             self.history.complete = false;
             return true;
         }
-        const mods = chord.modifiers;
-        const command = commandModifier(mods);
-        const field = &self.field;
-        if (command) {
-            switch (chord.key) {
-                .a, .c, .x, .v, .z => {
-                    self.applyCommand(chord);
-                    return true;
-                },
-                else => {},
-            }
-        }
-        switch (chord.key) {
-            .@"return" => {
+        switch (commandOf(chord).?) {
+            .move => |move| self.moveBy(move.motion, move.extend),
+            .delete => |motion| self.deleteBy(motion),
+            .newline => {
                 self.insert("\n");
                 self.counts.newlines += 1;
             },
-            .up => if (command) self.moveTo(0, mods.shift) else self.moveLine(false, mods.shift),
-            .down => if (command) {
-                self.moveTo(field.len, mods.shift);
-            } else {
-                self.moveLine(true, mods.shift);
+            .select_all => {
+                self.field.anchor = 0;
+                self.moveTo(self.field.len, true);
             },
-            .home => {
-                const start = if (command) 0 else lineStart(field.text(), field.cursor);
-                self.moveTo(start, mods.shift);
+            .copy, .cut, .paste => self.applyClipboard(commandOf(chord).?),
+            .undo, .redo => {
+                self.counts.undos += 1;
+                self.field.text_known = false;
+                self.field.caret_known = false;
+                self.undone = true;
             },
-            .end => {
-                const end = if (command) field.len else lineEnd(field.text(), field.cursor);
-                self.moveTo(end, mods.shift);
-            },
-            .delete => self.backspace(),
-            .forward_delete => self.deleteForward(),
-            .left => self.moveHorizontal(false, mods),
-            .right => self.moveHorizontal(true, mods),
-            else => unreachable,
         }
         return true;
     }
 
-    fn applyCommand(self: *TextAreaModel, chord: Action.Chord) void {
+    fn applyClipboard(self: *TextAreaModel, command: Command) void {
         const field = &self.field;
         const start = field.selectionStart();
         const end = field.selectionEnd();
-        switch (chord.key) {
-            .a => {
-                field.anchor = 0;
-                self.moveTo(field.len, true);
-            },
-            .c => if (end > start) self.clipboard.set(field.text()[start..end]),
-            .x => if (end > start) {
+        switch (command) {
+            .copy => if (end > start) self.clipboard.set(field.text()[start..end]),
+            .cut => if (end > start) {
                 if (lineFit(field.text(), start, end, "") == null) {
                     self.counts.joins_refused += 1;
                     return;
@@ -579,18 +557,12 @@ pub const TextAreaModel = struct {
                 self.clipboard.set(field.text()[start..end]);
                 self.replace(start, end, "");
             },
-            .v => if (self.clipboard.len > 0) {
+            .paste => if (self.clipboard.len > 0) {
                 const pasted = self.clipboard.text();
                 if (std.mem.indexOfScalar(u8, pasted, '\n') != null) {
                     self.counts.multiline_pastes += 1;
                 }
                 self.replace(start, end, pasted);
-            },
-            .z => {
-                self.counts.undos += 1;
-                field.text_known = false;
-                field.caret_known = false;
-                self.undone = true;
             },
             else => unreachable,
         }
@@ -615,22 +587,19 @@ pub const TextAreaModel = struct {
         self.field.preedit_known = true;
     }
 
-    fn backspace(self: *TextAreaModel) void {
+    fn deleteBy(self: *TextAreaModel, motion: Motion) void {
         const field = &self.field;
         if (field.cursor != field.anchor) {
             return self.replace(field.selectionStart(), field.selectionEnd(), "");
         }
-        if (field.cursor == 0) return;
-        self.replace(previousBoundary(field.text(), field.cursor), field.cursor, "");
-    }
-
-    fn deleteForward(self: *TextAreaModel) void {
-        const field = &self.field;
-        if (field.cursor != field.anchor) {
-            return self.replace(field.selectionStart(), field.selectionEnd(), "");
+        var reach = self.motionTarget(motion);
+        if (reach == field.cursor) {
+            const forward = motion == .forward or motion == .word_forward or
+                motion == .line_end or motion == .text_end;
+            reach = self.motionTarget(if (forward) .forward else .backward);
         }
-        if (field.cursor == field.len) return;
-        self.replace(field.cursor, nextBoundary(field.text(), field.cursor), "");
+        if (reach == field.cursor) return;
+        self.replace(@min(reach, field.cursor), @max(reach, field.cursor), "");
     }
 
     fn replace(self: *TextAreaModel, start: u32, end: u32, value: []const u8) void {
@@ -675,25 +644,34 @@ pub const TextAreaModel = struct {
         self.moved = true;
     }
 
-    fn moveHorizontal(self: *TextAreaModel, forward: bool, mods: input.Modifiers) void {
+    fn moveBy(self: *TextAreaModel, motion: Motion, extend: bool) void {
         const field = &self.field;
-        if (!mods.shift and field.cursor != field.anchor) {
-            const edge = if (forward) field.selectionEnd() else field.selectionStart();
-            return self.moveTo(edge, false);
+        if (!extend and field.cursor != field.anchor) {
+            if (motion == .backward) return self.moveTo(field.selectionStart(), false);
+            if (motion == .forward) return self.moveTo(field.selectionEnd(), false);
         }
+        switch (motion) {
+            .up => self.moveLine(false, extend),
+            .down => self.moveLine(true, extend),
+            else => self.moveTo(self.motionTarget(motion), extend),
+        }
+    }
+
+    fn motionTarget(self: *const TextAreaModel, motion: Motion) u32 {
+        const field = &self.field;
         const text = field.text();
         const at = field.cursor;
-        var target: u32 = undefined;
-        if (commandModifier(mods)) {
-            target = if (forward) lineEnd(text, at) else lineStart(text, at);
-        } else {
-            if (mods.alt) {
-                target = if (forward) nextWordStart(text, at) else previousWordStart(text, at);
-            } else {
-                target = if (forward) nextBoundary(text, at) else previousBoundary(text, at);
-            }
-        }
-        self.moveTo(target, mods.shift);
+        return switch (motion) {
+            .backward => if (at > 0) previousBoundary(text, at) else 0,
+            .forward => if (at < field.len) nextBoundary(text, at) else field.len,
+            .word_backward => previousWordStart(text, at),
+            .word_forward => nextWordStart(text, at),
+            .line_start => lineStart(text, at),
+            .line_end => lineEnd(text, at),
+            .text_start => 0,
+            .text_end => field.len,
+            .up, .down => unreachable,
+        };
     }
 
     fn moveLine(self: *TextAreaModel, down: bool, extend: bool) void {
@@ -862,22 +840,77 @@ pub const TextAreaModel = struct {
     }
 };
 
+const Motion = enum {
+    backward,
+    forward,
+    word_backward,
+    word_forward,
+    line_start,
+    line_end,
+    up,
+    down,
+    text_start,
+    text_end,
+};
+
+const Command = union(enum) {
+    move: struct { motion: Motion, extend: bool },
+    delete: Motion,
+    newline,
+    select_all,
+    copy,
+    cut,
+    paste,
+    undo,
+    redo,
+};
+
+fn clipboardWrite(chord: Action.Chord) bool {
+    const command = commandOf(chord) orelse return false;
+    return command == .copy or command == .cut;
+}
+
 fn takesKey(chord: Action.Chord) bool {
-    if (commandModifier(chord.modifiers)) {
-        switch (chord.key) {
-            .a, .c, .x, .v, .z => return true,
-            else => {},
-        }
-    }
-    return switch (chord.key) {
-        .@"return", .keypad_enter, .up, .down, .home, .end => true,
-        .delete, .forward_delete, .left, .right => true,
-        else => false,
+    return commandOf(chord) != null;
+}
+
+fn commandOf(chord: Action.Chord) ?Command {
+    const mods = chord.modifiers;
+    if (mods.alt or mods.cmd) return null;
+    if (mods.ctrl) return ctrlCommand(chord.key, mods.shift);
+    return plainCommand(chord.key, mods.shift);
+}
+
+fn plainCommand(key: input.KeyCode, shift: bool) ?Command {
+    return switch (key) {
+        .left => .{ .move = .{ .motion = .backward, .extend = shift } },
+        .right => .{ .move = .{ .motion = .forward, .extend = shift } },
+        .home => .{ .move = .{ .motion = .line_start, .extend = shift } },
+        .end => .{ .move = .{ .motion = .line_end, .extend = shift } },
+        .up => .{ .move = .{ .motion = .up, .extend = shift } },
+        .down => .{ .move = .{ .motion = .down, .extend = shift } },
+        .delete => .{ .delete = .backward },
+        .forward_delete => if (shift) null else .{ .delete = .forward },
+        .@"return", .keypad_enter => if (shift) null else .newline,
+        else => null,
     };
 }
 
-fn commandModifier(mods: input.Modifiers) bool {
-    return mods.ctrl and !mods.alt;
+fn ctrlCommand(key: input.KeyCode, shift: bool) ?Command {
+    return switch (key) {
+        .left => .{ .move = .{ .motion = .word_backward, .extend = shift } },
+        .right => .{ .move = .{ .motion = .word_forward, .extend = shift } },
+        .home => .{ .move = .{ .motion = .text_start, .extend = shift } },
+        .end => .{ .move = .{ .motion = .text_end, .extend = shift } },
+        .delete => .{ .delete = if (shift) .line_start else .word_backward },
+        .forward_delete => .{ .delete = if (shift) .line_end else .word_forward },
+        .z => if (shift) .redo else .undo,
+        .a => if (shift) null else .select_all,
+        .c => if (shift) null else .copy,
+        .x => if (shift) null else .cut,
+        .v => if (shift) null else .paste,
+        else => null,
+    };
 }
 
 fn wheelReaches(frame: *const records.Frame, area_id: ElementId, scroll: Action.Scroll) bool {

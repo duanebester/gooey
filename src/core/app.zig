@@ -245,7 +245,7 @@ pub fn App(
         pub const width = config.width;
         pub const height = config.height;
         pub const font_limits = config.limits.text.fonts;
-        pub const keymap = keymap_mod.compile(config.keymap);
+        pub const keymap = keymap_mod.compileBoth(config.keymap);
 
         pub fn render(cx: *Cx) void {
             render_fn(cx);

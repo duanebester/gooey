@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const id_mod = @import("id.zig");
 const handler_mod = @import("handler.zig");
 const retained = @import("retained.zig");
@@ -12,12 +11,15 @@ const Color = @import("../geometry/geometry.zig").Color;
 const Point = @import("router.zig").Point;
 const wheelOffset = @import("window.zig").wheelOffset;
 const text_mod = @import("../text/mod.zig");
+const actions_mod = @import("actions.zig");
 
 const assert = std.debug.assert;
 
 pub const ElementId = id_mod.ElementId;
 pub const History = history_mod.History;
 pub const Clipboard = clipboard_mod.Clipboard;
+pub const TextCommand = actions_mod.TextCommand;
+const Motion = actions_mod.Motion;
 
 pub const line_codepoint_count_max: u32 = text_mod.run_codepoint_count_max;
 
@@ -297,49 +299,83 @@ pub fn Engine(comptime kind: Kind) type {
             self.preferred_column = null;
         }
 
-        fn moveHorizontal(self: *Self, forward: bool, mods: input.Modifiers) void {
-            if (!mods.shift and self.hasSelection()) {
-                const edge = if (forward) self.selectionEnd() else self.selectionStart();
-                return self.moveTo(edge, false);
+        pub fn perform(self: *Self, command: TextCommand) bool {
+            assert(self.cursor <= self.len);
+            assert(self.preedit_len == 0);
+            if (actions_mod.moveOf(command)) |move| return self.moveBy(move.motion, move.extend);
+            if (actions_mod.deleteOf(command)) |motion| {
+                self.deleteBy(motion);
+                return true;
             }
-            const bytes = self.text();
-            const at = self.cursor;
-            const target = if (editCommand(mods))
-                (if (forward) self.lineEnd(at) else self.lineStart(at))
-            else if (mods.alt)
-                (if (forward) nextWord(bytes, at) else previousWord(bytes, at))
-            else if (forward)
-                (if (at < self.len) nextBoundary(bytes, at) else self.len)
-            else
-                (if (at > 0) previousBoundary(bytes, at) else 0);
-            self.moveTo(target, mods.shift);
-        }
-
-        fn applyLineKey(self: *Self, key: input.KeyEvent) bool {
-            comptime assert(kind != .input);
-            const mods = key.modifiers;
-            switch (key.key) {
-                .@"return", .keypad_enter => self.insert("\n"),
-                .tab => {
+            switch (command) {
+                .newline => {
+                    if (kind == .input) return false;
+                    self.insert("\n");
+                },
+                .indent => {
                     if (kind != .editor) return false;
-                    if (mods.shift or mods.ctrl or mods.alt or mods.cmd) return false;
                     self.insertIndent();
                 },
-                .up => if (editCommand(mods)) {
-                    self.moveTo(0, mods.shift);
-                } else {
-                    self.moveLine(false, mods.shift);
-                },
-                .down => if (editCommand(mods)) {
-                    self.moveTo(self.len, mods.shift);
-                } else {
-                    self.moveLine(true, mods.shift);
-                },
-                .home => if (editCommand(mods)) self.moveTo(0, mods.shift) else return false,
-                .end => if (editCommand(mods)) self.moveTo(self.len, mods.shift) else return false,
-                else => return false,
+                else => unreachable,
             }
             return true;
+        }
+
+        fn moveBy(self: *Self, motion: Motion, extend: bool) bool {
+            if (!extend and self.hasSelection()) {
+                switch (motion) {
+                    .backward => return self.moveCollapsed(self.selectionStart()),
+                    .forward => return self.moveCollapsed(self.selectionEnd()),
+                    else => {},
+                }
+            }
+            switch (motion) {
+                .up, .down => {
+                    if (kind == .input) return false;
+                    self.moveLine(motion == .down, extend);
+                },
+                else => self.moveTo(self.motionTarget(motion), extend),
+            }
+            assert(self.cursor <= self.len);
+            return true;
+        }
+
+        fn moveCollapsed(self: *Self, edge: u32) bool {
+            assert(edge <= self.len);
+            self.moveTo(edge, false);
+            return true;
+        }
+
+        fn motionTarget(self: *const Self, motion: Motion) u32 {
+            const bytes = self.text();
+            const at = self.cursor;
+            const result = switch (motion) {
+                .backward => if (at > 0) previousBoundary(bytes, at) else 0,
+                .forward => if (at < self.len) nextBoundary(bytes, at) else self.len,
+                .word_backward => previousWord(bytes, at),
+                .word_forward => nextWord(bytes, at),
+                .line_start => self.lineStart(at),
+                .line_end => self.lineEnd(at),
+                .text_start => 0,
+                .text_end => self.len,
+                .up, .down => unreachable,
+            };
+            assert(result <= self.len);
+            return result;
+        }
+
+        fn deleteBy(self: *Self, motion: Motion) void {
+            assert(motion != .up);
+            assert(motion != .down);
+            if (self.hasSelection()) return self.deleteSelection();
+            var reach = self.motionTarget(motion);
+            if (reach == self.cursor) {
+                const forward = motion == .forward or motion == .word_forward or
+                    motion == .line_end or motion == .text_end;
+                reach = self.motionTarget(if (forward) .forward else .backward);
+            }
+            if (reach == self.cursor) return;
+            self.replace(@min(reach, self.cursor), @max(reach, self.cursor), "");
         }
 
         fn insertIndent(self: *Self) void {
@@ -478,11 +514,10 @@ pub fn Engine(comptime kind: Kind) type {
             assert(self.cursor <= self.len);
         }
 
-        pub fn apply(self: *Self, event: *const input.InputEvent, clipboard: *Clipboard) bool {
+        pub fn apply(self: *Self, event: *const input.InputEvent) bool {
             switch (event.*) {
                 .text_input => |typed| self.insert(typed.text),
                 .composition => |composing| self.setPreedit(composing.text),
-                .key_down => |key| return self.applyKey(key, clipboard),
                 .scroll => |scroll| {
                     if (kind == .input) return false;
                     assert(std.math.isFinite(scroll.delta.y));
@@ -493,57 +528,77 @@ pub fn Engine(comptime kind: Kind) type {
             return true;
         }
 
-        fn applyKey(self: *Self, key: input.KeyEvent, clipboard: *Clipboard) bool {
-            if (self.preedit_len > 0) return false;
-            if (editCommand(key.modifiers)) {
-                if (self.applyCommand(key, clipboard)) return true;
+        pub fn selectAll(self: *Self) void {
+            self.anchor = 0;
+            self.moveTo(self.len, true);
+            assert(self.selectionEnd() == self.len);
+        }
+
+        pub fn copy(self: *Self, clipboard: *Clipboard) void {
+            const start = self.selectionStart();
+            const end = self.selectionEnd();
+            if (end > start) clipboard.write(self.bytes[start..end]);
+        }
+
+        pub fn cut(self: *Self, clipboard: *Clipboard) void {
+            const start = self.selectionStart();
+            const end = self.selectionEnd();
+            if (end == start) return;
+            const line_max = line_codepoint_count_max;
+            if (lineFitting(self.text(), start, end, "", line_max) == null) return;
+            clipboard.write(self.bytes[start..end]);
+            self.replace(start, end, "");
+            assert(self.cursor == start);
+        }
+
+        pub fn paste(self: *Self, clipboard: *Clipboard) void {
+            const pasted = clipboard.read();
+            if (pasted.len > 0) {
+                self.replaceAsStep(self.selectionStart(), self.selectionEnd(), pasted);
             }
-            if (kind != .input) {
-                if (self.applyLineKey(key)) return true;
+        }
+
+        fn performAction(self: *Self, action: u64, arg: u64, clipboard: *Clipboard) bool {
+            assert(action != 0);
+            if (action == actions_mod.text_command) {
+                assert(arg < TextCommand.count);
+                return self.perform(@fromBackingInt(@intCast(arg)));
             }
-            const extend = key.modifiers.shift;
-            switch (key.key) {
-                .delete => self.backspace(),
-                .forward_delete => self.deleteForward(),
-                .left => self.moveHorizontal(false, key.modifiers),
-                .right => self.moveHorizontal(true, key.modifiers),
-                .home => self.moveTo(self.lineStart(self.cursor), extend),
-                .end => self.moveTo(self.lineEnd(self.cursor), extend),
-                else => return false,
+            assert(arg == 0);
+            if (action == actions_mod.undo) {
+                self.undo();
+            } else if (action == actions_mod.redo) {
+                self.redo();
+            } else if (action == actions_mod.select_all) {
+                self.selectAll();
+            } else if (action == actions_mod.copy) {
+                self.copy(clipboard);
+            } else if (action == actions_mod.cut) {
+                self.cut(clipboard);
+            } else {
+                assert(action == actions_mod.paste);
+                self.paste(clipboard);
             }
             return true;
         }
 
-        fn applyCommand(self: *Self, key: input.KeyEvent, clipboard: *Clipboard) bool {
-            const start = self.selectionStart();
-            const end = self.selectionEnd();
-            switch (key.key) {
-                .a => {
-                    self.anchor = 0;
-                    self.moveTo(self.len, true);
-                },
-                .c => if (end > start) clipboard.write(self.bytes[start..end]),
-                .x => if (end > start) {
-                    const line_max = line_codepoint_count_max;
-                    if (lineFitting(self.text(), start, end, "", line_max) == null) return true;
-                    clipboard.write(self.bytes[start..end]);
-                    self.replace(start, end, "");
-                    assert(self.cursor == start);
-                },
-                .v => {
-                    const pasted = clipboard.read();
-                    if (pasted.len > 0) self.replaceAsStep(start, end, pasted);
-                },
-                .z => if (key.modifiers.shift) self.redo() else self.undo(),
-                else => return false,
+        pub fn onAction(self: *Self, effects: *handler_mod.Effects) void {
+            assert(effects.action != 0);
+            if (self.bind) |binding| self.syncBound(binding);
+            assert(self.preedit_len == 0);
+            if (!self.performAction(effects.action, effects.action_arg, effects.clipboard.?)) {
+                return;
             }
-            return true;
+            self.pending_click = null;
+            if (self.bind) |binding| binding.* = self.text();
+            effects.requestRender();
+            effects.stopPropagation();
         }
 
         pub fn onKey(self: *Self, effects: *handler_mod.Effects) void {
             const event = effects.inputEvent() orelse return;
             if (self.bind) |binding| self.syncBound(binding);
-            if (!self.apply(event, effects.clipboard.?)) return;
+            if (!self.apply(event)) return;
             self.pending_click = null;
             if (self.bind) |binding| binding.* = self.text();
             effects.requestRender();
@@ -555,13 +610,6 @@ pub fn Engine(comptime kind: Kind) type {
 pub const InputEngine = Engine(.input);
 pub const AreaEngine = Engine(.area);
 pub const EditorEngine = Engine(.editor);
-
-pub fn editCommand(mods: input.Modifiers) bool {
-    if (uses_cmd) return mods.cmd;
-    return mods.ctrl and !mods.alt;
-}
-
-pub var uses_cmd: bool = builtin.os.tag == .macos;
 
 fn columnAt(text_system: anytype, line: []const u8, x: f32) u32 {
     assert(line.len <= std.math.maxInt(u32));
@@ -824,19 +872,8 @@ fn TestOf(comptime kind: Kind) type {
             self.clipboard = Clipboard.init(&self.clipboard_bytes);
         }
 
-        fn key(self: *@This(), code: input.KeyCode, mods: input.Modifiers) bool {
-            const event = input.InputEvent{ .key_down = .{
-                .key = code,
-                .modifiers = mods,
-                .characters = null,
-                .characters_ignoring_modifiers = null,
-                .is_repeat = false,
-            } };
-            return self.engine.apply(&event, &self.clipboard);
-        }
-
-        fn command() input.Modifiers {
-            return if (uses_cmd) .{ .cmd = true } else .{ .ctrl = true };
+        fn run(self: *@This(), command: TextCommand) bool {
+            return self.engine.perform(command);
         }
     };
 }
@@ -884,7 +921,7 @@ test "input engine edits by codepoint and commits over a preedit" {
     try std.testing.expectEqual(@as(u32, 0), engine.preedit_len);
     engine.backspace();
     try std.testing.expectEqualStrings("caf", engine.text());
-    try std.testing.expect(t.key(.left, .{}));
+    try std.testing.expect(t.run(.move_backward));
     engine.insert("X");
     try std.testing.expectEqualStrings("caXf", engine.text());
     engine.insert("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}");
@@ -922,21 +959,21 @@ test "shift moves select, typing replaces the selection, and words and lines mov
     t.init();
     const engine = &t.engine;
     engine.insert("one two  three");
-    try std.testing.expect(t.key(.left, .{ .alt = true }));
+    try std.testing.expect(t.run(.move_word_backward));
     try std.testing.expectEqual(@as(u32, 9), engine.cursor);
-    try std.testing.expect(t.key(.left, .{ .alt = true, .shift = true }));
+    try std.testing.expect(t.run(.select_word_backward));
     try std.testing.expectEqual(@as(u32, 4), engine.selectionStart());
     try std.testing.expectEqual(@as(u32, 9), engine.selectionEnd());
     engine.insert("2 ");
     try std.testing.expectEqualStrings("one 2 three", engine.text());
-    try std.testing.expect(t.key(.right, .{ .shift = true }));
-    try std.testing.expect(t.key(.right, .{ .shift = true }));
-    try std.testing.expect(t.key(.left, .{}));
+    try std.testing.expect(t.run(.select_forward));
+    try std.testing.expect(t.run(.select_forward));
+    try std.testing.expect(t.run(.move_backward));
     try std.testing.expectEqual(@as(u32, 6), engine.cursor);
     try std.testing.expect(!engine.hasSelection());
-    try std.testing.expect(t.key(.right, TestEngine.command()));
+    try std.testing.expect(t.run(.move_line_end));
     try std.testing.expectEqual(engine.len, engine.cursor);
-    try std.testing.expect(t.key(.home, .{ .shift = true }));
+    try std.testing.expect(t.run(.select_line_start));
     try std.testing.expectEqual(engine.len, engine.selectionEnd());
     engine.backspace();
     try std.testing.expectEqualStrings("", engine.text());
@@ -947,18 +984,16 @@ test "undo and redo restore text and caret; a new edit drops redo" {
     t.init();
     const engine = &t.engine;
     for ("ab cd") |byte| engine.insert(&.{byte});
-    try std.testing.expect(t.key(.z, TestEngine.command()));
+    engine.undo();
     try std.testing.expectEqualStrings("ab", engine.text());
     try std.testing.expectEqual(@as(u32, 2), engine.cursor);
-    try std.testing.expect(t.key(.z, TestEngine.command()));
+    engine.undo();
     try std.testing.expectEqualStrings("", engine.text());
-    var redo = TestEngine.command();
-    redo.shift = true;
-    try std.testing.expect(t.key(.z, redo));
+    engine.redo();
     try std.testing.expectEqualStrings("ab", engine.text());
-    try std.testing.expect(t.key(.a, TestEngine.command()));
+    engine.selectAll();
     engine.backspace();
-    try std.testing.expect(t.key(.z, TestEngine.command()));
+    engine.undo();
     try std.testing.expectEqualStrings("ab", engine.text());
     try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
     try std.testing.expectEqual(@as(u32, 2), engine.selectionEnd());
@@ -971,44 +1006,88 @@ test "a paste and an IME phrase are undo steps of their own" {
     t.init();
     const engine = &t.engine;
     t.clipboard.write("abc");
-    try std.testing.expect(t.key(.v, TestEngine.command()));
+    engine.paste(&t.clipboard);
     engine.insert("Q");
     engine.insert("\u{65e5}\u{672c}");
     engine.insert("z");
     try std.testing.expectEqualStrings("abcQ\u{65e5}\u{672c}z", engine.text());
     const steps = [_][]const u8{ "abcQ\u{65e5}\u{672c}", "abcQ", "abc", "" };
     for (steps) |expected| {
-        try std.testing.expect(t.key(.z, TestEngine.command()));
+        engine.undo();
         try std.testing.expectEqualStrings(expected, engine.text());
     }
 }
 
-test "copy, cut, and paste go through the clipboard; other commands bubble" {
+test "copy, cut, and paste go through the clipboard; line commands miss an input" {
     var t: TestEngine = undefined;
     t.init();
     const engine = &t.engine;
     engine.insert("hello world");
-    try std.testing.expect(t.key(.left, .{ .alt = true, .shift = true }));
-    try std.testing.expect(t.key(.c, TestEngine.command()));
+    try std.testing.expect(t.run(.select_word_backward));
+    engine.copy(&t.clipboard);
     try std.testing.expectEqualStrings("world", t.clipboard.read());
-    try std.testing.expect(t.key(.x, TestEngine.command()));
+    engine.cut(&t.clipboard);
     try std.testing.expectEqualStrings("hello ", engine.text());
-    try std.testing.expect(t.key(.home, .{}));
-    try std.testing.expect(t.key(.v, TestEngine.command()));
+    try std.testing.expect(t.run(.move_line_start));
+    engine.paste(&t.clipboard);
     try std.testing.expectEqualStrings("worldhello ", engine.text());
     try std.testing.expectEqual(@as(u32, 5), engine.cursor);
     t.clipboard.flush();
-    try std.testing.expect(t.key(.c, TestEngine.command()));
+    engine.copy(&t.clipboard);
     try std.testing.expect(t.clipboard.pending_len == null);
-    try std.testing.expect(!t.key(.s, TestEngine.command()));
-    try std.testing.expect(!t.key(.@"return", .{}));
+    try std.testing.expect(!t.run(.newline));
+    try std.testing.expect(!t.run(.move_up));
+    try std.testing.expect(!t.run(.indent));
 }
 
-test "edit commands use Cmd on macOS and Ctrl elsewhere, not with Alt" {
-    try std.testing.expectEqual(uses_cmd, editCommand(.{ .cmd = true }));
-    try std.testing.expectEqual(!uses_cmd, editCommand(.{ .ctrl = true }));
-    try std.testing.expect(!editCommand(.{ .ctrl = true, .alt = true }));
-    try std.testing.expect(!editCommand(.{ .alt = true }));
+test "delete commands remove a word or a line's part, or the newline at its edge" {
+    var t: TestOf(.area) = undefined;
+    t.init();
+    const engine = &t.engine;
+    engine.insert("one two  three\nfour");
+    try std.testing.expect(t.run(.move_up));
+    try std.testing.expectEqual(@as(u32, 4), engine.cursor);
+    try std.testing.expect(t.run(.delete_word_backward));
+    try std.testing.expectEqualStrings("two  three\nfour", engine.text());
+    try std.testing.expect(t.run(.delete_word_forward));
+    try std.testing.expectEqualStrings("three\nfour", engine.text());
+    try std.testing.expect(t.run(.delete_line_end));
+    try std.testing.expectEqualStrings("\nfour", engine.text());
+    try std.testing.expect(t.run(.delete_line_end));
+    try std.testing.expectEqualStrings("four", engine.text());
+    try std.testing.expect(t.run(.move_line_end));
+    try std.testing.expect(t.run(.delete_line_start));
+    try std.testing.expectEqualStrings("", engine.text());
+    engine.undo();
+    try std.testing.expectEqualStrings("four", engine.text());
+    try std.testing.expect(t.run(.move_text_start));
+    try std.testing.expect(t.run(.delete_line_start));
+    try std.testing.expectEqualStrings("four", engine.text());
+    try std.testing.expect(t.run(.select_word_forward));
+    try std.testing.expect(t.run(.delete_word_backward));
+    try std.testing.expectEqualStrings("", engine.text());
+    engine.undo();
+    try std.testing.expectEqualStrings("four", engine.text());
+}
+
+test "only a character move collapses a selection to its edge" {
+    var t: TestEngine = undefined;
+    t.init();
+    const engine = &t.engine;
+    engine.insert("ab cd ef");
+    engine.anchor = 3;
+    engine.cursor = 5;
+    try std.testing.expect(t.run(.move_backward));
+    try std.testing.expectEqual(@as(u32, 3), engine.cursor);
+    try std.testing.expect(!engine.hasSelection());
+    engine.anchor = 3;
+    engine.cursor = 5;
+    try std.testing.expect(t.run(.move_word_forward));
+    try std.testing.expectEqual(@as(u32, 6), engine.cursor);
+    try std.testing.expect(!engine.hasSelection());
+    try std.testing.expect(t.run(.select_text_start));
+    try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
+    try std.testing.expectEqual(@as(u32, 6), engine.selectionEnd());
 }
 
 test "the caret shows after a move, then blinks at 530 ms" {
@@ -1037,37 +1116,37 @@ test "an area moves between lines at the preferred column" {
     const engine = &t.engine;
     engine.insert("abcdef\nxy\nlonger line");
     try std.testing.expectEqual(@as(u32, 21), engine.cursor);
-    try std.testing.expect(t.key(.up, .{}));
+    try std.testing.expect(t.run(.move_up));
     try std.testing.expectEqual(@as(u32, 9), engine.cursor);
-    try std.testing.expect(t.key(.up, .{}));
+    try std.testing.expect(t.run(.move_up));
     try std.testing.expectEqual(@as(u32, 6), engine.cursor);
-    try std.testing.expect(t.key(.down, .{}));
-    try std.testing.expect(t.key(.down, .{}));
+    try std.testing.expect(t.run(.move_down));
+    try std.testing.expect(t.run(.move_down));
     try std.testing.expectEqual(@as(u32, 21), engine.cursor);
-    try std.testing.expect(t.key(.down, .{}));
+    try std.testing.expect(t.run(.move_down));
     try std.testing.expectEqual(@as(u32, 21), engine.cursor);
-    try std.testing.expect(t.key(.up, TestOf(.area).command()));
+    try std.testing.expect(t.run(.move_text_start));
     try std.testing.expectEqual(@as(u32, 0), engine.cursor);
-    try std.testing.expect(t.key(.down, .{ .shift = true }));
+    try std.testing.expect(t.run(.select_down));
     try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
     try std.testing.expectEqual(@as(u32, 7), engine.selectionEnd());
-    try std.testing.expect(t.key(.end, TestOf(.area).command()));
+    try std.testing.expect(t.run(.move_text_end));
     try std.testing.expectEqual(@as(u32, 21), engine.cursor);
-    try std.testing.expect(t.key(.home, TestOf(.area).command()));
+    try std.testing.expect(t.run(.move_text_start));
     try std.testing.expectEqual(@as(u32, 0), engine.cursor);
-    try std.testing.expect(t.key(.end, .{ .shift = true, .ctrl = !uses_cmd, .cmd = uses_cmd }));
+    try std.testing.expect(t.run(.select_text_end));
     try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
     try std.testing.expectEqual(@as(u32, 21), engine.selectionEnd());
-    try std.testing.expect(t.key(.home, TestOf(.area).command()));
-    try std.testing.expect(t.key(.down, .{ .shift = true }));
-    try std.testing.expect(t.key(.right, .{}));
-    try std.testing.expect(t.key(.right, .{}));
+    try std.testing.expect(t.run(.move_text_start));
+    try std.testing.expect(t.run(.select_down));
+    try std.testing.expect(t.run(.move_forward));
+    try std.testing.expect(t.run(.move_forward));
     try std.testing.expectEqual(@as(u32, 8), engine.cursor);
-    try std.testing.expect(t.key(.end, .{}));
+    try std.testing.expect(t.run(.move_line_end));
     try std.testing.expectEqual(@as(u32, 9), engine.cursor);
-    try std.testing.expect(t.key(.left, TestOf(.area).command()));
+    try std.testing.expect(t.run(.move_line_start));
     try std.testing.expectEqual(@as(u32, 7), engine.cursor);
-    try std.testing.expect(t.key(.@"return", .{}));
+    try std.testing.expect(t.run(.newline));
     try std.testing.expectEqualStrings("abcdef\n\nxy\nlonger line", engine.text());
 }
 
@@ -1076,14 +1155,14 @@ test "a vertical move never lands inside a codepoint" {
     t.init();
     const engine = &t.engine;
     engine.insert("ab\n\u{e9}z");
-    try std.testing.expect(t.key(.up, TestOf(.area).command()));
-    try std.testing.expect(t.key(.right, .{}));
-    try std.testing.expect(t.key(.down, .{}));
+    try std.testing.expect(t.run(.move_text_start));
+    try std.testing.expect(t.run(.move_forward));
+    try std.testing.expect(t.run(.move_down));
     try std.testing.expectEqual(@as(u32, 3), engine.cursor);
     var input_test: TestEngine = undefined;
     input_test.init();
-    try std.testing.expect(!input_test.key(.up, .{}));
-    try std.testing.expect(!input_test.key(.@"return", .{}));
+    try std.testing.expect(!input_test.run(.move_up));
+    try std.testing.expect(!input_test.run(.newline));
 }
 
 test "an area scrolls to keep the caret's line in view" {
@@ -1097,21 +1176,21 @@ test "an area scrolls to keep the caret's line in view" {
     engine.scroll_y = 20;
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 20), engine.scroll_y);
-    try std.testing.expect(t.key(.up, .{}));
-    try std.testing.expect(t.key(.up, .{}));
-    try std.testing.expect(t.key(.up, .{}));
-    try std.testing.expect(t.key(.up, .{}));
-    try std.testing.expect(t.key(.up, .{}));
-    try std.testing.expect(t.key(.up, .{}));
+    try std.testing.expect(t.run(.move_up));
+    try std.testing.expect(t.run(.move_up));
+    try std.testing.expect(t.run(.move_up));
+    try std.testing.expect(t.run(.move_up));
+    try std.testing.expect(t.run(.move_up));
+    try std.testing.expect(t.run(.move_up));
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 20), engine.scroll_y);
-    try std.testing.expect(t.key(.up, .{}));
+    try std.testing.expect(t.run(.move_up));
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 20), engine.scroll_y);
-    try std.testing.expect(t.key(.up, .{}));
+    try std.testing.expect(t.run(.move_up));
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 10), engine.scroll_y);
-    try std.testing.expect(t.key(.a, TestOf(.area).command()));
+    engine.selectAll();
     engine.backspace();
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 0), engine.scroll_y);
@@ -1127,12 +1206,12 @@ test "the wheel scrolls an area the way it scrolls a scroll box" {
         .delta = .{ .x = 0, .y = 15 },
         .modifiers = .{},
     } };
-    try std.testing.expect(engine.apply(&event, &t.clipboard));
+    try std.testing.expect(engine.apply(&event));
     const expected: f32 = if (@import("window.zig").wheel_delta_inverted) 85 else 115;
     try std.testing.expectEqual(expected, engine.scroll_y);
     var line: TestOf(.input) = undefined;
     line.init();
-    try std.testing.expect(!line.engine.apply(&event, &line.clipboard));
+    try std.testing.expect(!line.engine.apply(&event));
 }
 
 test "a click finds the nearest codepoint boundary" {
@@ -1157,13 +1236,12 @@ test "an editor's Tab indents as one step, and a line selection takes its newlin
     const engine = &t.engine;
     engine.insert("a");
     engine.insert("b");
-    try std.testing.expect(t.key(.tab, .{}));
+    try std.testing.expect(t.run(.indent));
     try std.testing.expectEqualStrings("ab    ", engine.text());
     engine.undo();
     try std.testing.expectEqualStrings("ab", engine.text());
-    try std.testing.expect(!t.key(.tab, .{ .shift = true }));
     engine.indent = .{ .size = 2, .hard_tabs = true };
-    try std.testing.expect(t.key(.tab, .{}));
+    try std.testing.expect(t.run(.indent));
     try std.testing.expectEqualStrings("ab\t", engine.text());
     engine.insert("\nxy\nz");
     engine.selectLine(4);

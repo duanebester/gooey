@@ -16,7 +16,6 @@ const core_element = @import("../../core/element.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const records = @import("../../core/records.zig");
-const text_engine = @import("../../core/text_engine.zig");
 const limits_mod = @import("../../core/limits.zig");
 const ResourceLimits = limits_mod.ResourceLimits;
 
@@ -148,7 +147,7 @@ pub const Host = struct {
         });
         core.presenter = .{ .context = self, .draw = draw };
         core.bindScreenReader(null, null);
-        text_engine.uses_cmd = imports.isApplePlatform();
+        core_window.useKeymapConvention(core, if (imports.isApplePlatform()) .mac else .pc);
         core.clipboard.service = .{
             .context = self,
             .read = clipboardRead,
