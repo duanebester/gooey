@@ -25,7 +25,12 @@ pub const HarfBuzzShaper = struct {
         self.* = undefined;
     }
 
-    pub fn shape(self: *Self, face: *const FreeTypeFace, text: []const u8, allocator: std.mem.Allocator) !ShapedRun {
+    pub noinline fn shape(
+        self: *Self,
+        face: *const FreeTypeFace,
+        text: []const u8,
+        allocator: std.mem.Allocator,
+    ) !ShapedRun {
         if (text.len == 0) {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
@@ -54,13 +59,11 @@ pub const HarfBuzzShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
-        defer glyph_buffer.deinit(allocator);
-        try glyph_buffer.ensureTotalCapacity(allocator, glyph_count);
+        const glyphs = try allocator.alloc(ShapedGlyph, glyph_count);
 
         var total_width: f32 = 0;
 
-        for (0..glyph_count) |i| {
+        for (glyphs, 0..) |*glyph, i| {
             const info = &glyph_infos[i];
             const pos = glyph_positions[i];
 
@@ -70,7 +73,7 @@ pub const HarfBuzzShaper = struct {
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
             const glyph_id = glyph_id_for_cluster(face, text, info);
-            glyph_buffer.appendAssumeCapacity(.{
+            glyph.* = .{
                 .glyph_id = glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
@@ -79,13 +82,13 @@ pub const HarfBuzzShaper = struct {
                 .cluster = info.cluster,
                 .font_ref = null,
                 .is_color = false,
-            });
+            };
 
             total_width += x_advance;
         }
 
         return ShapedRun{
-            .glyphs = try glyph_buffer.toOwnedSlice(allocator),
+            .glyphs = glyphs,
             .width = total_width,
         };
     }
@@ -125,13 +128,11 @@ pub const HarfBuzzShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
-        defer glyph_buffer.deinit(allocator);
-        try glyph_buffer.ensureTotalCapacity(allocator, glyph_count);
+        const glyphs = try allocator.alloc(ShapedGlyph, glyph_count);
 
         var total_width: f32 = 0;
 
-        for (0..glyph_count) |i| {
+        for (glyphs, 0..) |*glyph, i| {
             const info = &glyph_infos[i];
             const pos = glyph_positions[i];
 
@@ -141,7 +142,7 @@ pub const HarfBuzzShaper = struct {
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
             const glyph_id = glyph_id_for_cluster(face, text, info);
-            glyph_buffer.appendAssumeCapacity(.{
+            glyph.* = .{
                 .glyph_id = glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
@@ -150,13 +151,13 @@ pub const HarfBuzzShaper = struct {
                 .cluster = info.cluster,
                 .font_ref = null,
                 .is_color = false,
-            });
+            };
 
             total_width += x_advance;
         }
 
         return ShapedRun{
-            .glyphs = try glyph_buffer.toOwnedSlice(allocator),
+            .glyphs = glyphs,
             .width = total_width,
         };
     }
