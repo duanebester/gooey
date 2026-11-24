@@ -26,6 +26,7 @@ pub const line_codepoint_count_max: u32 = text_mod.run_codepoint_count_max;
 
 pub const blink_interval_ms: u32 = 530;
 pub const autoscroll_interval_ms: u32 = 16;
+pub const caret_width_px: f32 = 1.5;
 const autoscroll_dt_ms_max: u64 = 100;
 const autoscroll_speed_min_px_per_sec: f32 = 60;
 const autoscroll_speed_gain: f32 = 4;
@@ -57,8 +58,30 @@ pub const Indent = struct {
 pub const PointerOrigin = struct {
     text_x: f32,
     text_y: f32,
+    right_inset: f32,
     viewport_height: f32,
     gutter_end: f32,
+};
+
+const HorizontalMetrics = struct {
+    viewport_width: f32,
+    margin_px: f32,
+};
+
+const ScrollXStep = struct {
+    scroll_x: f32,
+    caret_x: f32,
+    scroll_width: f32,
+    viewport_width: f32,
+    margin_px: f32,
+};
+
+const AutoscrollAxis = struct {
+    coord: f32,
+    min_edge: f32,
+    max_edge: f32,
+    scroll: *f32,
+    scroll_max: f32,
 };
 
 pub const SelectionMode = enum(u8) { char, word, line };
@@ -118,14 +141,17 @@ pub fn Engine(comptime kind: Kind) type {
         history: History,
         caret_moved_ns: u64,
         caret_moved: bool,
+        follow_caret: bool,
         bind: ?*[]const u8,
         preferred_column: ?u32,
+        scroll_x: f32,
         scroll_y: f32,
         pointer: PointerState,
         indent: Indent,
         view: View,
 
         pub const View = EngineView;
+        pub const caret_width: f32 = caret_width_px;
 
         pub fn reset(self: *Self) void {
             assert(self.bytes.len > 0);
@@ -136,8 +162,10 @@ pub fn Engine(comptime kind: Kind) type {
             self.history.clear();
             self.caret_moved_ns = 0;
             self.caret_moved = true;
+            self.follow_caret = true;
             self.bind = null;
             self.preferred_column = null;
+            self.scroll_x = 0;
             self.scroll_y = 0;
             self.pointer = .idle;
             self.indent = .{ .size = 4, .hard_tabs = false };
@@ -189,6 +217,7 @@ pub fn Engine(comptime kind: Kind) type {
             self.preedit_len = 0;
             self.history.clear();
             self.caret_moved = true;
+            self.follow_caret = true;
             self.invalidatePointer();
             assert(self.cursor <= self.len);
         }
@@ -236,6 +265,7 @@ pub fn Engine(comptime kind: Kind) type {
                 self.caret_moved = false;
                 self.caret_moved_ns = now_ns;
             }
+            self.follow_caret = false;
             assert(now_ns >= self.caret_moved_ns);
             self.view.focused = focused;
             self.view.caret_visible = false;
@@ -303,6 +333,7 @@ pub fn Engine(comptime kind: Kind) type {
             @memcpy(self.bytes[start..target], value);
             self.len = target + tail_len;
             self.caret_moved = true;
+            self.follow_caret = true;
             self.preferred_column = null;
             assert(self.len <= self.bytes.len);
         }
@@ -343,6 +374,8 @@ pub fn Engine(comptime kind: Kind) type {
             }
             @memcpy(self.preedit[0..kept], value[0..kept]);
             self.preedit_len = @intCast(kept);
+            self.caret_moved = true;
+            self.follow_caret = true;
             assert(self.preedit_len <= self.preedit.len);
         }
 
@@ -369,6 +402,7 @@ pub fn Engine(comptime kind: Kind) type {
             if (!extend) self.anchor = target;
             self.history.seal();
             self.caret_moved = true;
+            self.follow_caret = true;
             self.preferred_column = null;
         }
 
@@ -525,6 +559,100 @@ pub fn Engine(comptime kind: Kind) type {
             self.scroll_y = std.math.clamp(self.scroll_y, 0, scroll_max);
         }
 
+        pub fn followHorizontal(self: *Self, cx: *Cx, viewport_width: f32) void {
+            comptime assert(kind == .input);
+            assert(std.math.isFinite(viewport_width));
+            assert(viewport_width >= 0);
+            const metrics = cx.fontMetrics();
+            assert(metrics.point_size > 0);
+            const text_system = cx_mod.windowOf(cx).resources.text_system;
+            self.followHorizontalWith(text_system, .{
+                .viewport_width = viewport_width,
+                .margin_px = metrics.point_size,
+            });
+        }
+
+        fn followHorizontalWith(
+            self: *Self,
+            text_system: anytype,
+            options: HorizontalMetrics,
+        ) void {
+            comptime assert(kind == .input);
+            assert(std.math.isFinite(options.viewport_width));
+            assert(options.viewport_width >= 0);
+            assert(std.math.isFinite(options.margin_px));
+            assert(options.margin_px >= 0);
+            assert(std.math.isFinite(self.scroll_x));
+            if (self.len == 0 and self.preedit_len == 0) {
+                self.scroll_x = 0;
+                return;
+            }
+            if (options.viewport_width <= 0) {
+                self.scroll_x = 0;
+                return;
+            }
+            const content_width = self.contentWidthX(text_system);
+            const scroll_width = content_width + caret_width_px;
+            const scroll_max = @max(0, scroll_width - options.viewport_width);
+            const autoscrolling = self.pointer.active and self.pointer.autoscroll_ns != 0;
+            if (self.follow_caret and !autoscrolling) {
+                const caret_x = if (self.preedit_len == 0 and self.cursor == self.len)
+                    content_width
+                else
+                    self.caretOffsetX(text_system);
+                self.scroll_x = nextScrollX(.{
+                    .scroll_x = self.scroll_x,
+                    .caret_x = caret_x,
+                    .scroll_width = scroll_width,
+                    .viewport_width = options.viewport_width,
+                    .margin_px = options.margin_px,
+                });
+            }
+            self.scroll_x = std.math.clamp(self.scroll_x, 0, scroll_max);
+            assert(self.scroll_x >= 0);
+            assert(self.scroll_x <= scroll_max);
+        }
+
+        fn contentWidthX(self: *const Self, text_system: anytype) f32 {
+            comptime assert(kind == .input);
+            assert(self.cursor <= self.len);
+            const text_slice = self.text();
+            const preedit_slice = self.preeditText();
+            if (preedit_slice.len == 0) {
+                const width = measureWidth(text_system, text_slice);
+                assert(width >= 0);
+                return width;
+            }
+            const before = measureWidth(text_system, text_slice[0..self.cursor]);
+            const preedit_width = measureWidth(text_system, preedit_slice);
+            const after = measureWidth(text_system, text_slice[self.cursor..]);
+            const total = before + preedit_width + after;
+            assert(total >= 0);
+            return total;
+        }
+
+        fn caretOffsetX(self: *const Self, text_system: anytype) f32 {
+            comptime assert(kind == .input);
+            assert(self.cursor <= self.len);
+            const before = measureWidth(text_system, self.text()[0..self.cursor]);
+            const preedit_width = measureWidth(text_system, self.preeditText());
+            const offset = before + preedit_width;
+            assert(offset >= 0);
+            return offset;
+        }
+
+        fn scrollMaxX(self: *const Self, text_system: anytype, viewport_width: f32) f32 {
+            comptime assert(kind == .input);
+            assert(std.math.isFinite(viewport_width));
+            assert(viewport_width >= 0);
+            if (viewport_width <= 0) return 0;
+            if (self.len == 0 and self.preedit_len == 0) return 0;
+            const scroll_width = self.contentWidthX(text_system) + caret_width_px;
+            const result = @max(0, scroll_width - viewport_width);
+            assert(result >= 0);
+            return result;
+        }
+
         pub fn onPointerDrag(self: *Self, effects: *handler_mod.Effects) void {
             const drag = effects.pointerDrag() orelse return;
             assert(std.math.isFinite(drag.x));
@@ -574,6 +702,7 @@ pub fn Engine(comptime kind: Kind) type {
         pub fn resolvePointer(self: *Self, cx: *Cx, origin: PointerOrigin) void {
             assert(origin.text_x >= origin.gutter_end);
             assert(origin.text_y >= 0);
+            assert(origin.right_inset >= 0);
             assert(origin.viewport_height > 0);
             const has_work = self.pointer.pending_press != null or
                 self.pointer.pending_move != null or self.pointer.active;
@@ -590,22 +719,23 @@ pub fn Engine(comptime kind: Kind) type {
             };
             const line_height = cx.fontMetrics().line_height;
             assert(line_height > 0);
-            if (comptime kind != .input) {
+            const text_system = cx_mod.windowOf(cx).resources.text_system;
+            if (comptime kind == .input) {
+                const viewport_width = @max(0, bounds.width - origin.text_x - origin.right_inset);
+                const scroll_max = self.scrollMaxX(text_system, viewport_width);
+                self.scroll_x = std.math.clamp(self.scroll_x, 0, scroll_max);
+            } else {
                 const scroll_max = self.scrollMax(line_height, origin.viewport_height);
                 self.scroll_y = std.math.clamp(self.scroll_y, 0, scroll_max);
             }
-            const text_system = cx_mod.windowOf(cx).resources.text_system;
             if (self.pointer.pending_press) |press| {
                 self.pointer.pending_press = null;
                 self.applyPress(text_system, line_height, bounds, origin, press);
             }
-            if (comptime kind != .input) {
-                const dragging = self.pointer.pending_move != null or
-                    self.pointer.autoscroll_ns != 0;
-                if (self.pointer.active and dragging and cx.focused(self.view.id)) {
-                    if (self.stepAutoscroll(cx, bounds, origin, line_height)) {
-                        self.pointer.pending_move = self.pointer.pointer;
-                    }
+            const dragging = self.pointer.pending_move != null or self.pointer.autoscroll_ns != 0;
+            if (self.pointer.active and dragging and cx.focused(self.view.id)) {
+                if (self.stepAutoscroll(cx, text_system, bounds, origin, line_height)) {
+                    self.pointer.pending_move = self.pointer.pointer;
                 }
             }
             if (self.pointer.pending_move) |point| {
@@ -631,6 +761,7 @@ pub fn Engine(comptime kind: Kind) type {
             self.pointer.origin_start = base.start;
             self.pointer.origin_end = base.end;
             self.applyRange(base, hit_range, hit.caret, mode);
+            if (comptime kind == .input) self.follow_caret = false;
             assert(self.cursor <= self.len);
             assert(self.anchor <= self.len);
         }
@@ -654,6 +785,7 @@ pub fn Engine(comptime kind: Kind) type {
                 .end = self.pointer.origin_end,
             };
             self.applyRange(base, hit_range, hit.caret, mode);
+            if (comptime kind == .input) self.follow_caret = false;
             assert(self.cursor <= self.len);
             assert(self.anchor <= self.len);
         }
@@ -675,25 +807,51 @@ pub fn Engine(comptime kind: Kind) type {
         fn stepAutoscroll(
             self: *Self,
             cx: *Cx,
+            text_system: anytype,
             bounds: Rect,
             origin: PointerOrigin,
             line_height: f32,
         ) bool {
-            comptime assert(kind != .input);
             assert(self.pointer.active);
             assert(line_height > 0);
+            if (comptime kind == .input) {
+                const text_left = bounds.x + origin.text_x;
+                const viewport_width = @max(0, bounds.width - origin.text_x - origin.right_inset);
+                const scroll_max = self.scrollMaxX(text_system, viewport_width);
+                return self.stepAutoscrollAxis(cx, .{
+                    .coord = self.pointer.pointer.x,
+                    .min_edge = text_left,
+                    .max_edge = text_left + viewport_width,
+                    .scroll = &self.scroll_x,
+                    .scroll_max = scroll_max,
+                });
+            }
             const text_top = bounds.y + origin.text_y;
-            const text_bottom = text_top + origin.viewport_height;
             const scroll_max = self.scrollMax(line_height, origin.viewport_height);
-            const y = self.pointer.pointer.y;
-            const above = y < text_top and self.scroll_y > 0;
-            const below = y >= text_bottom and self.scroll_y < scroll_max;
-            if (!above and !below) {
+            return self.stepAutoscrollAxis(cx, .{
+                .coord = self.pointer.pointer.y,
+                .min_edge = text_top,
+                .max_edge = text_top + origin.viewport_height,
+                .scroll = &self.scroll_y,
+                .scroll_max = scroll_max,
+            });
+        }
+
+        fn stepAutoscrollAxis(self: *Self, cx: *Cx, axis: AutoscrollAxis) bool {
+            assert(self.pointer.active);
+            assert(axis.max_edge >= axis.min_edge);
+            assert(axis.scroll_max >= 0);
+            const before_edge = axis.coord < axis.min_edge and axis.scroll.* > 0;
+            const after_edge = axis.coord >= axis.max_edge and axis.scroll.* < axis.scroll_max;
+            if (!before_edge and !after_edge) {
                 self.pointer.autoscroll_ns = 0;
                 return false;
             }
             const now = cx.now();
-            const overshoot = if (above) text_top - y else y - text_bottom + 1;
+            const overshoot = if (before_edge)
+                axis.min_edge - axis.coord
+            else
+                axis.coord - axis.max_edge + 1;
             assert(overshoot > 0);
             if (self.pointer.autoscroll_ns == 0) {
                 self.pointer.autoscroll_ns = now;
@@ -713,12 +871,13 @@ pub fn Engine(comptime kind: Kind) type {
                 autoscroll_speed_min_px_per_sec + overshoot * autoscroll_speed_gain,
             );
             const delta = speed * (@as(f32, @floatFromInt(dt_ns)) / @as(f32, std.time.ns_per_s));
-            const before = self.scroll_y;
-            const next = if (above) before - delta else before + delta;
-            self.scroll_y = std.math.clamp(next, 0, scroll_max);
-            const room = (above and self.scroll_y > 0) or (below and self.scroll_y < scroll_max);
+            const before = axis.scroll.*;
+            const next = if (before_edge) before - delta else before + delta;
+            axis.scroll.* = std.math.clamp(next, 0, axis.scroll_max);
+            const room = (before_edge and axis.scroll.* > 0) or
+                (after_edge and axis.scroll.* < axis.scroll_max);
             if (room) cx.requestRenderAfter(autoscroll_interval_ms);
-            return self.scroll_y != before;
+            return axis.scroll.* != before;
         }
 
         fn hitAt(
@@ -733,15 +892,7 @@ pub fn Engine(comptime kind: Kind) type {
             assert(line_height > 0);
             assert(origin.viewport_height > 0);
             if (comptime kind == .input) {
-                const x = point.x - bounds.x - origin.text_x;
-                const column = hitColumn(text_system, self.text(), x);
-                return .{
-                    .caret = column.caret,
-                    .char_at = column.char_at,
-                    .line_start = 0,
-                    .line_end = self.len,
-                    .in_gutter = false,
-                };
+                return self.hitInput(text_system, bounds, origin, point, clamp_edges);
             }
             const text_top = bounds.y + origin.text_y;
             const text_bottom = text_top + origin.viewport_height;
@@ -788,6 +939,51 @@ pub fn Engine(comptime kind: Kind) type {
                 .line_start = start,
                 .line_end = end,
                 .in_gutter = in_gutter,
+            };
+        }
+
+        fn hitInput(
+            self: *const Self,
+            text_system: anytype,
+            bounds: Rect,
+            origin: PointerOrigin,
+            point: Point,
+            clamp_edges: bool,
+        ) PointerHit {
+            comptime assert(kind == .input);
+            assert(std.math.isFinite(point.x));
+            assert(std.math.isFinite(self.scroll_x));
+            const text_left = bounds.x + origin.text_x;
+            const viewport_width = @max(0, bounds.width - origin.text_x - origin.right_inset);
+            const text_right = text_left + viewport_width;
+            const scroll_max = self.scrollMaxX(text_system, viewport_width);
+            if (clamp_edges and point.x < text_left and self.scroll_x <= 0) {
+                return .{
+                    .caret = 0,
+                    .char_at = 0,
+                    .line_start = 0,
+                    .line_end = self.len,
+                    .in_gutter = false,
+                };
+            }
+            if (clamp_edges and point.x >= text_right and self.scroll_x >= scroll_max) {
+                const char_at = if (self.len > 0) previousBoundary(self.text(), self.len) else 0;
+                return .{
+                    .caret = self.len,
+                    .char_at = char_at,
+                    .line_start = 0,
+                    .line_end = self.len,
+                    .in_gutter = false,
+                };
+            }
+            const local_x = std.math.clamp(point.x - text_left, 0, viewport_width);
+            const column = hitColumn(text_system, self.text(), local_x + self.scroll_x);
+            return .{
+                .caret = column.caret,
+                .char_at = column.char_at,
+                .line_start = 0,
+                .line_end = self.len,
+                .in_gutter = false,
             };
         }
 
@@ -1002,6 +1198,32 @@ pub fn Engine(comptime kind: Kind) type {
 pub const InputEngine = Engine(.input);
 pub const AreaEngine = Engine(.area);
 pub const EditorEngine = Engine(.editor);
+
+fn nextScrollX(step: ScrollXStep) f32 {
+    assert(std.math.isFinite(step.scroll_x));
+    assert(std.math.isFinite(step.caret_x));
+    assert(step.caret_x >= 0);
+    assert(step.scroll_width >= 0);
+    assert(step.viewport_width > 0);
+    assert(step.margin_px >= 0);
+    const half = step.viewport_width / 2;
+    const base_margin = @min(step.margin_px, half);
+    const right_margin = @min(@max(base_margin, caret_width_px), step.viewport_width);
+    const left_margin = @min(step.margin_px, step.viewport_width - right_margin);
+    const target_left = @max(0, step.caret_x - left_margin);
+    const target_right = @min(step.scroll_width, step.caret_x + right_margin);
+    const scroll_max = @max(0, step.scroll_width - step.viewport_width);
+    var next = std.math.clamp(step.scroll_x, 0, scroll_max);
+    if (target_left < next) {
+        next = target_left;
+    } else if (target_right > next + step.viewport_width) {
+        next = target_right - step.viewport_width;
+    }
+    const clamped = std.math.clamp(next, 0, scroll_max);
+    assert(clamped >= 0);
+    assert(clamped <= scroll_max);
+    return clamped;
+}
 
 fn modeOf(click_count: u32, in_gutter: bool) SelectionMode {
     if (in_gutter or click_count >= 3) return .line;
@@ -1771,4 +1993,101 @@ test "an editor's Tab indents as one step, and a line selection takes its newlin
     engine.applyRange(middle, first, first.start, .line);
     try std.testing.expectEqual(@as(u32, 7), engine.anchor);
     try std.testing.expectEqual(@as(u32, 0), engine.cursor);
+}
+
+test "nextScrollX keeps one em of margin at both edges and clamps narrow viewports" {
+    const cases = [_][5]f32{
+        .{ 0, 86, 301.5, 100, 0 },
+        .{ 0, 87, 301.5, 100, 1 },
+        .{ 0, 100, 301.5, 100, 14 },
+        .{ 0, 290, 301.5, 100, 201.5 },
+        .{ 100, 150, 301.5, 100, 100 },
+        .{ 100, 114, 301.5, 100, 100 },
+        .{ 100, 113, 301.5, 100, 99 },
+        .{ 100, 100, 301.5, 100, 86 },
+        .{ 100, 10, 301.5, 100, 0 },
+        .{ 0, 50, 201.5, 20, 40 },
+        .{ 0, 50, 201.5, 2, 49.5 },
+    };
+    for (cases) |c| {
+        const actual = nextScrollX(.{
+            .scroll_x = c[0],
+            .caret_x = c[1],
+            .scroll_width = c[2],
+            .viewport_width = c[3],
+            .margin_px = 14,
+        });
+        try std.testing.expectEqual(c[4], actual);
+    }
+}
+
+test "an input scrolls for caret moves, Home/End, shrinking text, preedit, and survives blur" {
+    const Fake = struct {
+        fn measureText(_: @This(), _: anytype, value: []const u8, _: anytype) !f32 {
+            const count = std.unicode.utf8CountCodepoints(value) catch unreachable;
+            return @floatFromInt(count * 10);
+        }
+    };
+    const fake = Fake{};
+    const view = HorizontalMetrics{ .viewport_width = 100, .margin_px = 14 };
+    var bytes: [64]u8 = undefined;
+    var history_bytes: [64]u8 = undefined;
+    var preedit: [16]u8 = undefined;
+    var edits: [8]history_mod.Edit = undefined;
+    var engine: InputEngine = undefined;
+    engine.bytes = &bytes;
+    engine.preedit = &preedit;
+    engine.history = History.init(&edits, &history_bytes);
+    engine.reset();
+
+    engine.insert("0123456789abcdefghij0123456789");
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 201.5), engine.scroll_x);
+    try std.testing.expect(engine.perform(.move_line_start));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 0), engine.scroll_x);
+    try std.testing.expect(engine.perform(.move_line_end));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 201.5), engine.scroll_x);
+
+    try std.testing.expect(engine.perform(.move_line_start));
+    engine.followHorizontalWith(fake, view);
+    for (0..8) |_| try std.testing.expect(engine.perform(.move_forward));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 0), engine.scroll_x);
+    try std.testing.expect(engine.perform(.move_forward));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 4), engine.scroll_x);
+    try std.testing.expect(engine.perform(.move_forward));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 14), engine.scroll_x);
+    for (0..7) |_| try std.testing.expect(engine.perform(.move_backward));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 14), engine.scroll_x);
+    try std.testing.expect(engine.perform(.move_backward));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 6), engine.scroll_x);
+
+    try std.testing.expect(engine.perform(.select_line_end));
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 201.5), engine.scroll_x);
+    _ = engine.prepare(false, 1000);
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 201.5), engine.scroll_x);
+
+    engine.anchor = 15;
+    engine.cursor = 30;
+    engine.backspace();
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 51.5), engine.scroll_x);
+    engine.setPreedit("abcde");
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 101.5), engine.scroll_x);
+    engine.setPreedit("");
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 51.5), engine.scroll_x);
+    engine.selectAll();
+    engine.backspace();
+    engine.followHorizontalWith(fake, view);
+    try std.testing.expectEqual(@as(f32, 0), engine.scroll_x);
 }
