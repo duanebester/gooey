@@ -44,6 +44,7 @@ pub const ActionsModel = struct {
     focus: ElementId,
     press_path: [press_path_len_max]ElementId,
     press_len: u32,
+    capture_button: ?input.MouseButton,
     pending: [pending_count_max]Action,
     pending_count: u32,
     composing: bool,
@@ -89,6 +90,7 @@ pub const ActionsModel = struct {
         self.message = .none;
         self.focus = .root;
         self.press_len = 0;
+        self.capture_button = null;
         self.pending_count = 0;
         self.composing = false;
         self.counts = .zero;
@@ -115,6 +117,7 @@ pub const ActionsModel = struct {
     pub fn beginDrain(self: *ActionsModel, window: *Window) void {
         assert(window.phase == .idle);
         self.focus = window.focus;
+        self.capture_button = if (window.capture.id != .root) window.capture.button else null;
         const engine = findEngine(window) orelse {
             self.composing = false;
             return;
@@ -166,9 +169,15 @@ pub const ActionsModel = struct {
     fn route(self: *ActionsModel, frame: *const records.Frame, event: *const Event) void {
         switch (event.*) {
             .down => |event_press| self.press(frame, event_press),
-            .up => |up| if (up.button == .left) self.release(frame, up.point),
+            .up => |up| {
+                if (self.capture_button == up.button) self.capture_button = null;
+                if (up.button == .left) self.release(frame, up.point);
+            },
             .key_down => |chord| self.key(frame, chord),
-            .pointer_cancelled => self.press_len = 0,
+            .pointer_cancelled => {
+                self.press_len = 0;
+                self.capture_button = null;
+            },
             .moved, .key_up, .other => {},
         }
     }
@@ -212,6 +221,11 @@ pub const ActionsModel = struct {
     }
 
     fn key(self: *ActionsModel, frame: *const records.Frame, chord: Action.Chord) void {
+        if (chord.key == .escape and self.capture_button != null) {
+            self.capture_button = null;
+            self.press_len = 0;
+            return;
+        }
         if (self.boundAction(frame, chord)) |message| return self.fire(message);
         const focused = vopr_frame.findHit(frame, self.focus);
         if (chord.key == .tab) {
@@ -229,6 +243,7 @@ pub const ActionsModel = struct {
         const left = event.button == .left;
         if (left) self.press_len = 0;
         var focus_id: ElementId = .root;
+        var captured = false;
         var index = vopr_frame.hitIndex(frame, event.point.x, event.point.y) orelse
             records.index_none;
         var depth: u32 = 0;
@@ -236,10 +251,12 @@ pub const ActionsModel = struct {
             assert(depth < press_path_len_max);
             const record = &frame.hits[index];
             if (focus_id == .root and record.focusable) focus_id = record.id;
+            if (record.on_pointer_drag != records.index_none) captured = true;
             if (left) self.press_path[depth] = record.id;
             index = record.parent;
         }
         if (left) self.press_len = depth;
+        if (self.capture_button == null and captured) self.capture_button = event.button;
         self.focus = focus_id;
     }
 

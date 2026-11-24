@@ -1923,9 +1923,11 @@ pub const TextInput = struct {
         engine.resolvePointer(cx, .{
             .text_x = inset,
             .text_y = inset,
+            .right_inset = inset,
             .viewport_height = metrics.line_height,
             .gutter_end = 0,
         });
+        engine.followHorizontal(cx, self.viewportWidth(cx, id, inset));
         const engine_actions = EngineActions.of(cx, InputEngine, handle, engine.hasSelection());
         engine.blink(cx, focused);
         cx.render(ui.box(.{
@@ -1968,8 +1970,19 @@ pub const TextInput = struct {
         assert(engine.len == 0);
     }
 
+    fn viewportWidth(self: TextInput, cx: *Cx, id: gooey.ElementId, inset: f32) f32 {
+        assert(inset >= 0);
+        if (cx.bounds(id)) |bounds| return @max(0, bounds.width - inset * 2);
+        if (self.width) |width| {
+            assert(width >= 0);
+            return @max(0, width - inset * 2);
+        }
+        return 0;
+    }
+
     fn paintSelection(engine: *const InputEngine, painter: *ui.Painter, size: u16) void {
         assert(engine.view.focused);
+        assert(std.math.isFinite(engine.scroll_x));
         if (!engine.hasSelection()) return;
         const bounds = painter.bounds;
         const line_height = painter.fontMetrics().line_height;
@@ -1979,7 +1992,7 @@ pub const TextInput = struct {
         const end = painter.measureText(text[0..engine.selectionEnd()], style);
         assert(end >= start);
         painter.fill(.{
-            .x = bounds.x + start,
+            .x = bounds.x + start - engine.scroll_x,
             .y = bounds.y + (bounds.height - line_height) / 2,
             .width = end - start,
             .height = line_height,
@@ -1992,18 +2005,21 @@ pub const TextInput = struct {
         const metrics = painter.fontMetrics();
         const size: u16 = @intFromFloat(metrics.point_size);
         const baseline = metrics.calcBaseline(bounds.y, bounds.height);
+        assert(std.math.isFinite(engine.scroll_x));
+        assert(engine.scroll_x >= 0);
         painter.pushClip(bounds);
         defer painter.popClip();
         if (view.focused) paintSelection(engine, painter, size);
         const text = engine.text();
         const preedit = engine.preeditText();
+        const origin_x = bounds.x - engine.scroll_x;
         if (text.len == 0 and preedit.len == 0) {
             const style = ui.PaintText{ .size = size, .color = view.placeholder_color };
             _ = painter.textOnBaseline(view.placeholder, bounds.x, baseline, style);
         } else {
             const style = ui.PaintText{ .size = size, .color = view.text_color };
             const before = text[0..engine.cursor];
-            var pen = bounds.x + painter.textOnBaseline(before, bounds.x, baseline, style);
+            var pen = origin_x + painter.textOnBaseline(before, origin_x, baseline, style);
             if (preedit.len > 0) {
                 const width = painter.textOnBaseline(preedit, pen, baseline, style);
                 const underline = ui.Rect{
@@ -2019,12 +2035,12 @@ pub const TextInput = struct {
         }
         if (!view.focused) return;
         const caret_style = ui.PaintText{ .size = size, .color = view.caret_color };
-        const caret_x = bounds.x + painter.measureText(text[0..engine.cursor], caret_style);
+        const caret_x = origin_x + painter.measureText(text[0..engine.cursor], caret_style);
         const preedit_width = painter.measureText(preedit, caret_style);
         const caret = ui.Rect{
             .x = caret_x,
             .y = bounds.y + (bounds.height - metrics.line_height) / 2,
-            .width = 1.5,
+            .width = InputEngine.caret_width,
             .height = metrics.line_height,
         };
         if (preedit.len == 0 and view.caret_visible) painter.fill(caret, view.caret_color);
@@ -2129,6 +2145,7 @@ pub const TextArea = struct {
         engine.resolvePointer(cx, .{
             .text_x = inset,
             .text_y = inset,
+            .right_inset = inset,
             .viewport_height = viewport_height,
             .gutter_end = 0,
         });
@@ -2345,6 +2362,7 @@ pub const CodeEditor = struct {
         engine.resolvePointer(cx, .{
             .text_x = self.border_width + gutter + separator + self.padding,
             .text_y = self.border_width + self.padding,
+            .right_inset = self.border_width + self.padding,
             .viewport_height = viewport_height,
             .gutter_end = self.border_width + gutter,
         });

@@ -740,7 +740,10 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectApproxEqAbs(text_y + line_height, query.imeCursorRect().?.y, 0.001);
 }
 
-const InputState = struct { value: []const u8 = "one two  three" };
+const InputState = struct {
+    value: []const u8 = "one two  three",
+    width: f32 = 240,
+};
 
 const InputApp = gooey.App(InputState, inputRender, .{
     .keymap = gooey.keymaps.text_default,
@@ -752,10 +755,17 @@ const InputApp = gooey.App(InputState, inputRender, .{
 
 fn inputRender(cx: *Cx) void {
     const state = cx.state(InputState);
-    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
-        components.TextInput{ .key = "field", .bind = &state.value, .width = 240 },
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .gap = 8,
+    } }, .{
+        components.TextInput{ .key = "field", .bind = &state.value, .width = state.width },
+        components.Button{ .label = "Blur", .on_click = cx.on(inputNoop, .{}) },
     }));
 }
+
+fn inputNoop(_: *InputState, _: *gooey.Effects) void {}
 
 fn pointerEvent(x: f32, y: f32, click_count: u32, shift: bool) gooey.input.MouseEvent {
     return .{
@@ -850,6 +860,140 @@ test "a TextInput places its caret on press, drags past edges, and handles multi
     now += 1;
     app.tick(now);
     try expectSelection(query, 0, 14);
+}
+
+fn findInputEngine(window: *internals.window.Window) *const internals.text_engine.InputEngine {
+    const frame = window.rendered();
+    const node = for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .textbox) break node;
+    } else unreachable;
+    const type_id = internals.handler.typeId(internals.text_engine.InputEngine);
+    const slot = window.inputs.slab.find(node.id, type_id).?;
+    return @ptrCast(@alignCast(window.inputs.slab.slotBytes(slot).ptr));
+}
+
+test "a TextInput scrolls horizontally, keeps its offset on blur, and hit-tests scrolled clicks" {
+    const app = try testing.allocator.create(InputApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.width = 120;
+    app.state.value = "0123456789abcdefghij0123456789";
+    const query = internals.Query{ .window = &app.window };
+    const inset: f32 = 9;
+    const viewport_width: f32 = app.state.width - inset * 2;
+    const y: f32 = inset + 5;
+    var now: u64 = 0;
+    app.tick(now);
+
+    pushPointer(app, .down, inset + 20, y, 1, false);
+    pushPointer(app, .up, inset + 20, y, 1, false);
+    now += 1;
+    app.tick(now);
+    const engine = findInputEngine(&app.window);
+    try testing.expectEqual(@as(f32, 0), engine.scroll_x);
+
+    const mac = builtin.os.tag == .macos;
+    const end_key = if (mac) chord(.right, .{ .cmd = true }) else chord(.end, .{});
+    const home_key = if (mac) chord(.left, .{ .cmd = true }) else chord(.home, .{});
+    app.window.queue.push(.{ .input = .{ .key_down = end_key } });
+    now += 1;
+    app.tick(now);
+    const scrolled_end = engine.scroll_x;
+    try testing.expect(scrolled_end > 50);
+    const end_caret = query.imeCursorRect().?;
+    try testing.expect(end_caret.x >= inset);
+    try testing.expect(end_caret.x + end_caret.width <= inset + viewport_width + 0.01);
+
+    const blur = nodeNamed(&app.window, .button, "Blur").?.bounds;
+    pushPointer(app, .down, blur.x + 5, blur.y + 5, 1, false);
+    pushPointer(app, .up, blur.x + 5, blur.y + 5, 1, false);
+    now += 1;
+    app.tick(now);
+    try testing.expect(query.imeOwner() == null);
+    try testing.expectEqual(scrolled_end, engine.scroll_x);
+
+    pushPointer(app, .down, inset + 30, y, 1, false);
+    pushPointer(app, .up, inset + 30, y, 1, false);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(scrolled_end, engine.scroll_x);
+    try testing.expect(query.imeSelectedRange().?.offset > 15);
+    try testing.expectApproxEqAbs(inset + 30, query.imeCursorRect().?.x, 6);
+
+    app.window.queue.push(.{ .input = .{ .key_down = home_key } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(f32, 0), engine.scroll_x);
+    try testing.expectApproxEqAbs(inset, query.imeCursorRect().?.x, 0.01);
+
+    app.window.queue.push(.{ .input = .{ .key_down = end_key } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(scrolled_end, engine.scroll_x);
+    app.state.value = "short";
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(f32, 0), engine.scroll_x);
+}
+
+test "a TextInput drag autoscrolls past both horizontal edges" {
+    const app = try testing.allocator.create(InputApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.width = 120;
+    app.state.value = "0123456789abcdefghij0123456789klmnopqrst";
+    const query = internals.Query{ .window = &app.window };
+    const ms = std.time.ns_per_ms;
+    const inset: f32 = 9;
+    const y: f32 = inset + 5;
+    var now: u64 = 0;
+    app.tick(now);
+
+    pushPointer(app, .down, inset + 2 * 8, y, 1, false);
+    now += 1;
+    app.tick(now);
+    const engine = findInputEngine(&app.window);
+    const start_offset = query.imeSelectedRange().?.offset;
+    try testing.expectEqual(@as(f32, 0), engine.scroll_x);
+
+    pushPointer(app, .drag, app.state.width + 60, y, 0, false);
+    now += 1;
+    app.tick(now);
+    try testing.expect(query.imeSelectedRange().?.len < app.state.value.len - start_offset);
+
+    var ticks: u32 = 0;
+    while (ticks < 60) : (ticks += 1) {
+        now += 16 * ms;
+        app.tick(now);
+    }
+    try testing.expect(engine.scroll_x > 100);
+    try expectSelection(query, start_offset, @intCast(app.state.value.len - start_offset));
+
+    pushPointer(app, .up, app.state.width + 60, y, 1, false);
+    now += 1;
+    app.tick(now);
+    const scrolled_right = engine.scroll_x;
+
+    pushPointer(app, .down, inset + 40, y, 1, false);
+    pushPointer(app, .drag, -60, y, 0, false);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(scrolled_right, engine.scroll_x);
+
+    ticks = 0;
+    while (ticks < 60) : (ticks += 1) {
+        now += 16 * ms;
+        app.tick(now);
+    }
+    try testing.expectEqual(@as(f32, 0), engine.scroll_x);
+    try testing.expectEqual(@as(u32, 0), query.imeSelectedRange().?.offset);
+    try testing.expect(query.imeSelectedRange().?.len > 20);
+    pushPointer(app, .up, -60, y, 1, false);
+    now += 1;
+    app.tick(now);
 }
 
 test "a TextArea selects words and lines and keeps its Shift anchor after Copy" {
