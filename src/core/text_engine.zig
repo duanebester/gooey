@@ -735,15 +735,20 @@ fn previousWord(bytes: []const u8, index: u32) u32 {
     var position = index;
     while (position > 0 and isSpace(bytes[position - 1])) position -= 1;
     while (position > 0 and !isSpace(bytes[position - 1])) position -= 1;
+    assert(position <= index);
     return position;
 }
 
 fn nextWord(bytes: []const u8, index: u32) u32 {
+    assert(bytes.len <= std.math.maxInt(u32));
     assert(index <= bytes.len);
+    const length: u32 = @intCast(bytes.len);
     var position = index;
-    while (position < bytes.len and !isSpace(bytes[position])) position += 1;
-    while (position < bytes.len and isSpace(bytes[position])) position += 1;
-    return @intCast(position);
+    while (position < length and isSpace(bytes[position])) position += 1;
+    while (position < length and !isSpace(bytes[position])) position += 1;
+    assert(position >= index);
+    assert(position <= length);
+    return position;
 }
 
 pub fn Pool(comptime kind: Kind) type {
@@ -1050,7 +1055,7 @@ test "delete commands remove a word or a line's part, or the newline at its edge
     try std.testing.expect(t.run(.delete_word_backward));
     try std.testing.expectEqualStrings("two  three\nfour", engine.text());
     try std.testing.expect(t.run(.delete_word_forward));
-    try std.testing.expectEqualStrings("three\nfour", engine.text());
+    try std.testing.expectEqualStrings("  three\nfour", engine.text());
     try std.testing.expect(t.run(.delete_line_end));
     try std.testing.expectEqualStrings("\nfour", engine.text());
     try std.testing.expect(t.run(.delete_line_end));
@@ -1083,11 +1088,68 @@ test "only a character move collapses a selection to its edge" {
     engine.anchor = 3;
     engine.cursor = 5;
     try std.testing.expect(t.run(.move_word_forward));
-    try std.testing.expectEqual(@as(u32, 6), engine.cursor);
+    try std.testing.expectEqual(@as(u32, 8), engine.cursor);
     try std.testing.expect(!engine.hasSelection());
     try std.testing.expect(t.run(.select_text_start));
     try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
-    try std.testing.expectEqual(@as(u32, 6), engine.selectionEnd());
+    try std.testing.expectEqual(@as(u32, 8), engine.selectionEnd());
+}
+
+test "word forward stops at word ends across spaces, newlines, and UTF-8" {
+    const sample = "one two  three";
+    const expected = [_][2]u32{
+        .{ 0, 3 },
+        .{ 1, 3 },
+        .{ 3, 7 },
+        .{ 4, 7 },
+        .{ 7, 14 },
+        .{ 8, 14 },
+        .{ 9, 14 },
+        .{ 14, 14 },
+    };
+    for (expected) |pair| {
+        try std.testing.expectEqual(pair[1], nextWord(sample, pair[0]));
+    }
+    try std.testing.expectEqual(@as(u32, 0), nextWord("", 0));
+    try std.testing.expectEqual(@as(u32, 3), nextWord("   ", 0));
+    try std.testing.expectEqual(@as(u32, 5), nextWord("  one", 0));
+    try std.testing.expectEqual(@as(u32, 3), nextWord("one   ", 0));
+    try std.testing.expectEqual(@as(u32, 6), nextWord("one   ", 3));
+    const lines = "one\ntwo\n\nthree";
+    try std.testing.expectEqual(@as(u32, 3), nextWord(lines, 0));
+    try std.testing.expectEqual(@as(u32, 7), nextWord(lines, 3));
+    try std.testing.expectEqual(@as(u32, 14), nextWord(lines, 7));
+    const utf8 = "caf\u{e9} \u{6771}\u{4eac}";
+    try std.testing.expectEqual(@as(u32, 5), nextWord(utf8, 0));
+    try std.testing.expectEqual(@as(u32, 12), nextWord(utf8, 5));
+    try std.testing.expectEqual(@as(u32, 6), previousWord(utf8, 12));
+    try std.testing.expectEqual(@as(u32, 0), previousWord(utf8, 6));
+}
+
+test "select and delete word forward follow word ends without eating trailing spaces" {
+    var t: TestOf(.area) = undefined;
+    t.init();
+    const engine = &t.engine;
+    engine.insert("one two  three   ");
+    try std.testing.expect(t.run(.move_text_start));
+    try std.testing.expect(t.run(.select_word_forward));
+    try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
+    try std.testing.expectEqual(@as(u32, 3), engine.selectionEnd());
+    try std.testing.expect(t.run(.select_word_forward));
+    try std.testing.expectEqual(@as(u32, 7), engine.selectionEnd());
+    try std.testing.expect(t.run(.select_word_backward));
+    try std.testing.expectEqual(@as(u32, 4), engine.selectionEnd());
+    try std.testing.expect(t.run(.move_text_start));
+    try std.testing.expect(t.run(.delete_word_forward));
+    try std.testing.expectEqualStrings(" two  three   ", engine.text());
+    try std.testing.expect(t.run(.delete_word_forward));
+    try std.testing.expectEqualStrings("  three   ", engine.text());
+    try std.testing.expect(t.run(.delete_word_forward));
+    try std.testing.expectEqualStrings("   ", engine.text());
+    try std.testing.expect(t.run(.delete_word_forward));
+    try std.testing.expectEqualStrings("", engine.text());
+    try std.testing.expect(t.run(.delete_word_forward));
+    try std.testing.expectEqualStrings("", engine.text());
 }
 
 test "the caret shows after a move, then blinks at 530 ms" {

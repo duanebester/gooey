@@ -665,7 +665,7 @@ pub const TextAreaModel = struct {
             .backward => if (at > 0) previousBoundary(text, at) else 0,
             .forward => if (at < field.len) nextBoundary(text, at) else field.len,
             .word_backward => previousWordStart(text, at),
-            .word_forward => nextWordStart(text, at),
+            .word_forward => nextWordEnd(text, at),
             .line_start => lineStart(text, at),
             .line_end => lineEnd(text, at),
             .text_start => 0,
@@ -1055,9 +1055,11 @@ fn previousWordStart(text: []const u8, index: u32) u32 {
     return position;
 }
 
-fn nextWordStart(text: []const u8, index: u32) u32 {
+fn nextWordEnd(text: []const u8, index: u32) u32 {
+    assert(index <= text.len);
     var position = index;
-    while (position < text.len and !isSpace(text[position])) position += 1;
     while (position < text.len and isSpace(text[position])) position += 1;
+    while (position < text.len and !isSpace(text[position])) position += 1;
+    assert(position <= text.len);
     return position;
 }
