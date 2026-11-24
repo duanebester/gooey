@@ -101,6 +101,8 @@ pub const DirectWriteShaper = struct {
 
         const glyphs = try allocator.alloc(ShapedGlyph, glyph_count);
         const width = writeShapedGlyphs(
+            face,
+            text,
             self.glyph_indices[0..glyph_count],
             self.glyph_advances[0..glyph_count],
             self.glyph_offsets[0..glyph_count],
@@ -318,6 +320,8 @@ fn computeGlyphClusters(
 }
 
 fn writeShapedGlyphs(
+    face: *const DirectWriteFace,
+    text: []const u8,
     glyph_indices: []const u16,
     glyph_advances: []const f32,
     glyph_offsets: []const dw.DWRITE_GLYPH_OFFSET,
@@ -337,8 +341,9 @@ fn writeShapedGlyphs(
         offset,
         cluster,
     | {
+        assert(cluster < text.len);
         glyph.* = .{
-            .glyph_id = glyph_id,
+            .glyph_id = if (text[cluster] == '\t') face.glyphIndex(' ') else glyph_id,
             .x_offset = offset.advanceOffset,
             .y_offset = -offset.ascenderOffset,
             .x_advance = advance,

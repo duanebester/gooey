@@ -386,3 +386,48 @@ pub fn placeTextPrefix(
     std.debug.assert(width >= 0);
     return width;
 }
+
+const TestGlyphSink = struct {
+    count: u32 = 0,
+    first_x: f32 = 0,
+
+    fn glyph(self: *TestGlyphSink, placed: PlacedGlyph) void {
+        std.debug.assert(placed.width > 0);
+        if (self.count == 0) self.first_x = placed.x;
+        self.count += 1;
+    }
+};
+
+test "a tab draws no glyph and the next glyph sits at the tab's advance" {
+    const testing = std.testing;
+    var uploads: @import("atlas.zig").AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 1 << 20,
+        .consumer_count_max = 1,
+    });
+    defer uploads.deinit();
+
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    const limits = &text_system_mod.TextLimits.standard;
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, limits, .{
+        .size = 512,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 16);
+
+    var plain: TestGlyphSink = .{};
+    _ = try placeText(text_system, "A", 0, 20, 1.0, 16, .app, .regular, &plain);
+    try testing.expectEqual(@as(u32, 1), plain.count);
+
+    var tabbed: TestGlyphSink = .{};
+    const width = try placeText(text_system, "\tA", 0, 20, 1.0, 16, .app, .regular, &tabbed);
+    const tab_advance = try text_system.measureText(.app, "\t", .regular);
+    try testing.expect(tab_advance > 0);
+    try testing.expectEqual(@as(u32, 1), tabbed.count);
+    try testing.expectApproxEqAbs(plain.first_x + tab_advance, tabbed.first_x, 1.0);
+    const letter_advance = try text_system.measureText(.app, "A", .regular);
+    try testing.expectApproxEqAbs(tab_advance, width - letter_advance, 0.01);
+}

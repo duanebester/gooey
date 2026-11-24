@@ -25,7 +25,12 @@ pub const HarfBuzzShaper = struct {
         self.* = undefined;
     }
 
-    pub fn shape(self: *Self, face: *const FreeTypeFace, text: []const u8, allocator: std.mem.Allocator) !ShapedRun {
+    pub noinline fn shape(
+        self: *Self,
+        face: *const FreeTypeFace,
+        text: []const u8,
+        allocator: std.mem.Allocator,
+    ) !ShapedRun {
         if (text.len == 0) {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
@@ -54,14 +59,12 @@ pub const HarfBuzzShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
-        defer glyph_buffer.deinit(allocator);
-        try glyph_buffer.ensureTotalCapacity(allocator, glyph_count);
+        const glyphs = try allocator.alloc(ShapedGlyph, glyph_count);
 
         var total_width: f32 = 0;
 
-        for (0..glyph_count) |i| {
-            const info = glyph_infos[i];
+        for (glyphs, 0..) |*glyph, i| {
+            const info = &glyph_infos[i];
             const pos = glyph_positions[i];
 
             const x_advance = ft.f26dot6ToFloat(pos.x_advance);
@@ -69,8 +72,9 @@ pub const HarfBuzzShaper = struct {
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
-            glyph_buffer.appendAssumeCapacity(.{
-                .glyph_id = @intCast(info.codepoint),
+            const glyph_id = glyph_id_for_cluster(face, text, info);
+            glyph.* = .{
+                .glyph_id = glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
                 .x_advance = x_advance,
@@ -78,13 +82,13 @@ pub const HarfBuzzShaper = struct {
                 .cluster = info.cluster,
                 .font_ref = null,
                 .is_color = false,
-            });
+            };
 
             total_width += x_advance;
         }
 
         return ShapedRun{
-            .glyphs = try glyph_buffer.toOwnedSlice(allocator),
+            .glyphs = glyphs,
             .width = total_width,
         };
     }
@@ -124,14 +128,12 @@ pub const HarfBuzzShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
-        defer glyph_buffer.deinit(allocator);
-        try glyph_buffer.ensureTotalCapacity(allocator, glyph_count);
+        const glyphs = try allocator.alloc(ShapedGlyph, glyph_count);
 
         var total_width: f32 = 0;
 
-        for (0..glyph_count) |i| {
-            const info = glyph_infos[i];
+        for (glyphs, 0..) |*glyph, i| {
+            const info = &glyph_infos[i];
             const pos = glyph_positions[i];
 
             const x_advance = ft.f26dot6ToFloat(pos.x_advance);
@@ -139,8 +141,9 @@ pub const HarfBuzzShaper = struct {
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
-            glyph_buffer.appendAssumeCapacity(.{
-                .glyph_id = @intCast(info.codepoint),
+            const glyph_id = glyph_id_for_cluster(face, text, info);
+            glyph.* = .{
+                .glyph_id = glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
                 .x_advance = x_advance,
@@ -148,14 +151,27 @@ pub const HarfBuzzShaper = struct {
                 .cluster = info.cluster,
                 .font_ref = null,
                 .is_color = false,
-            });
+            };
 
             total_width += x_advance;
         }
 
         return ShapedRun{
-            .glyphs = try glyph_buffer.toOwnedSlice(allocator),
+            .glyphs = glyphs,
             .width = total_width,
         };
+    }
+
+    inline fn glyph_id_for_cluster(
+        face: *const FreeTypeFace,
+        text: []const u8,
+        info: *const ft.hb_glyph_info_t,
+    ) u16 {
+        if (info.codepoint == 0) {
+            @branchHint(.unlikely);
+            std.debug.assert(info.cluster < text.len);
+            if (text[info.cluster] == '\t') return face.glyphIndex(' ');
+        }
+        return @intCast(info.codepoint);
     }
 };
