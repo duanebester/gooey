@@ -61,7 +61,7 @@ pub const HarfBuzzShaper = struct {
         var total_width: f32 = 0;
 
         for (0..glyph_count) |i| {
-            const info = glyph_infos[i];
+            const info = &glyph_infos[i];
             const pos = glyph_positions[i];
 
             const x_advance = ft.f26dot6ToFloat(pos.x_advance);
@@ -69,8 +69,9 @@ pub const HarfBuzzShaper = struct {
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
+            const glyph_id = glyph_id_for_cluster(face, text, info);
             glyph_buffer.appendAssumeCapacity(.{
-                .glyph_id = @intCast(info.codepoint),
+                .glyph_id = glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
                 .x_advance = x_advance,
@@ -131,7 +132,7 @@ pub const HarfBuzzShaper = struct {
         var total_width: f32 = 0;
 
         for (0..glyph_count) |i| {
-            const info = glyph_infos[i];
+            const info = &glyph_infos[i];
             const pos = glyph_positions[i];
 
             const x_advance = ft.f26dot6ToFloat(pos.x_advance);
@@ -139,8 +140,9 @@ pub const HarfBuzzShaper = struct {
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
+            const glyph_id = glyph_id_for_cluster(face, text, info);
             glyph_buffer.appendAssumeCapacity(.{
-                .glyph_id = @intCast(info.codepoint),
+                .glyph_id = glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
                 .x_advance = x_advance,
@@ -157,5 +159,18 @@ pub const HarfBuzzShaper = struct {
             .glyphs = try glyph_buffer.toOwnedSlice(allocator),
             .width = total_width,
         };
+    }
+
+    inline fn glyph_id_for_cluster(
+        face: *const FreeTypeFace,
+        text: []const u8,
+        info: *const ft.hb_glyph_info_t,
+    ) u16 {
+        if (info.codepoint == 0) {
+            @branchHint(.unlikely);
+            std.debug.assert(info.cluster < text.len);
+            if (text[info.cluster] == '\t') return face.glyphIndex(' ');
+        }
+        return @intCast(info.codepoint);
     }
 };
