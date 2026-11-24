@@ -1,6 +1,6 @@
 # Gooey
 
-A GPU-accelerated UI framework for Zig. It targets macOS (Metal), Linux (Wayland with
+A GPU-accelerated UI library for Zig. It targets macOS (Metal), Linux (Wayland with
 Vulkan or a CPU renderer, or the kernel framebuffer), Windows (Win32 with Vulkan or
 Direct3D 11), and the browser (WASM with WebGPU).
 
