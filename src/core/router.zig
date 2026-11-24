@@ -264,6 +264,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
                 .start_y = point.y,
                 .moved = false,
                 .cursor = cursorOf(frame, target),
+                .click_count = event.mouse_down.click_count,
             };
         } else {
             armDrag(window, record, event.mouse_down.button, point);
@@ -592,6 +593,7 @@ fn deliverCapture(
         .start_y = capture.start_y,
         .button = capture.button,
         .modifiers = modifiersOf(event),
+        .click_count = capture.click_count,
     };
     call(window, handler.?, &effects);
     if (effects.click_request) |id| clickRequested(window, id, event);

@@ -8,6 +8,7 @@ const input = @import("../input/mod.zig");
 const cx_mod = @import("cx.zig");
 const Cx = cx_mod.Cx;
 const Color = @import("../geometry/geometry.zig").Color;
+const Rect = @import("records.zig").Rect;
 const Point = @import("router.zig").Point;
 const wheelOffset = @import("window.zig").wheelOffset;
 const text_mod = @import("../text/mod.zig");
@@ -24,6 +25,11 @@ const Motion = actions_mod.Motion;
 pub const line_codepoint_count_max: u32 = text_mod.run_codepoint_count_max;
 
 pub const blink_interval_ms: u32 = 530;
+pub const autoscroll_interval_ms: u32 = 16;
+const autoscroll_dt_ms_max: u64 = 100;
+const autoscroll_speed_min_px_per_sec: f32 = 60;
+const autoscroll_speed_gain: f32 = 4;
+const autoscroll_speed_max_px_per_sec: f32 = 900;
 
 pub const EngineView = struct {
     id: ElementId,
@@ -48,7 +54,56 @@ pub const Indent = struct {
     pub const size_max: u8 = 16;
 };
 
-pub const ClickOrigin = struct { text_x: f32, text_y: f32, gutter_end: f32 };
+pub const PointerOrigin = struct {
+    text_x: f32,
+    text_y: f32,
+    viewport_height: f32,
+    gutter_end: f32,
+};
+
+pub const SelectionMode = enum(u8) { char, word, line };
+
+const Range = struct { start: u32, end: u32 };
+
+const ColumnHit = struct { caret: u32, char_at: u32 };
+
+const PointerHit = struct {
+    caret: u32,
+    char_at: u32,
+    line_start: u32,
+    line_end: u32,
+    in_gutter: bool,
+};
+
+const PendingPress = struct {
+    point: Point,
+    click_count: u32,
+    shift: bool,
+};
+
+const PointerState = struct {
+    active: bool,
+    has_origin: bool,
+    mode: SelectionMode,
+    origin_start: u32,
+    origin_end: u32,
+    pointer: Point,
+    autoscroll_ns: u64,
+    pending_press: ?PendingPress,
+    pending_move: ?Point,
+
+    const idle: PointerState = .{
+        .active = false,
+        .has_origin = false,
+        .mode = .char,
+        .origin_start = 0,
+        .origin_end = 0,
+        .pointer = .{ .x = 0, .y = 0 },
+        .autoscroll_ns = 0,
+        .pending_press = null,
+        .pending_move = null,
+    };
+};
 
 pub fn Engine(comptime kind: Kind) type {
     return struct {
@@ -66,7 +121,7 @@ pub fn Engine(comptime kind: Kind) type {
         bind: ?*[]const u8,
         preferred_column: ?u32,
         scroll_y: f32,
-        pending_click: ?Point,
+        pointer: PointerState,
         indent: Indent,
         view: View,
 
@@ -84,7 +139,7 @@ pub fn Engine(comptime kind: Kind) type {
             self.bind = null;
             self.preferred_column = null;
             self.scroll_y = 0;
-            self.pending_click = null;
+            self.pointer = .idle;
             self.indent = .{ .size = 4, .hard_tabs = false };
             self.view = .{
                 .id = .root,
@@ -134,7 +189,20 @@ pub fn Engine(comptime kind: Kind) type {
             self.preedit_len = 0;
             self.history.clear();
             self.caret_moved = true;
+            self.invalidatePointer();
             assert(self.cursor <= self.len);
+        }
+
+        fn invalidatePointer(self: *Self) void {
+            self.pointer.has_origin = false;
+            self.pointer.origin_start = 0;
+            self.pointer.origin_end = 0;
+            if (self.pointer.pending_press == null) {
+                self.pointer.active = false;
+                self.pointer.autoscroll_ns = 0;
+                self.pointer.pending_move = null;
+            }
+            assert(!self.pointer.has_origin);
         }
 
         pub fn syncBound(self: *Self, binding: *[]const u8) void {
@@ -148,6 +216,7 @@ pub fn Engine(comptime kind: Kind) type {
                 self.anchor = @min(self.anchor, self.len);
                 self.preedit_len = 0;
                 self.history.clear();
+                self.invalidatePointer();
                 return;
             }
             if (value.len == self.len and std.mem.eql(u8, value, self.text())) return;
@@ -184,6 +253,10 @@ pub fn Engine(comptime kind: Kind) type {
 
         pub fn blink(self: *Self, cx: *Cx, focused: bool) void {
             assert(cx_mod.windowOf(cx).phase == .build);
+            if (!focused) {
+                self.pointer.active = false;
+                self.pointer.autoscroll_ns = 0;
+            }
             if (!focused and self.preedit_len > 0) {
                 self.commitPreedit();
                 cx.requestRenderAfter(0);
@@ -387,15 +460,6 @@ pub fn Engine(comptime kind: Kind) type {
             self.insert(spaces[0..self.indent.size]);
         }
 
-        fn selectLine(self: *Self, start: u32) void {
-            comptime assert(kind == .editor);
-            assert(start == self.lineStart(start));
-            const end = self.lineEnd(start);
-            self.moveTo(start, false);
-            self.anchor = if (end < self.len) end + 1 else end;
-            assert(self.anchor <= self.len);
-        }
-
         fn moveLine(self: *Self, down: bool, extend: bool) void {
             const start = self.lineStart(self.cursor);
             const column = self.preferred_column orelse self.cursor - start;
@@ -437,13 +501,21 @@ pub fn Engine(comptime kind: Kind) type {
             return @intCast(std.mem.count(u8, self.bytes[0..index], "\n"));
         }
 
-        pub fn follow(self: *Self, line_height: f32, viewport_height: f32) void {
+        fn scrollMax(self: *const Self, line_height: f32, viewport_height: f32) f32 {
             comptime assert(kind != .input);
             assert(line_height > 0);
             assert(viewport_height > 0);
             const lines: f32 = @floatFromInt(std.mem.count(u8, self.text(), "\n") + 1);
-            const scroll_max = @max(0, lines * line_height - viewport_height);
-            if (self.caret_moved) {
+            return @max(0, lines * line_height - viewport_height);
+        }
+
+        pub fn follow(self: *Self, line_height: f32, viewport_height: f32) void {
+            comptime assert(kind != .input);
+            assert(line_height > 0);
+            assert(viewport_height > 0);
+            const scroll_max = self.scrollMax(line_height, viewport_height);
+            const autoscrolling = self.pointer.active and self.pointer.autoscroll_ns != 0;
+            if (self.caret_moved and !autoscrolling) {
                 const top = @as(f32, @floatFromInt(self.lineOf(self.cursor))) * line_height;
                 if (top < self.scroll_y) self.scroll_y = top;
                 if (top + line_height > self.scroll_y + viewport_height) {
@@ -453,33 +525,304 @@ pub fn Engine(comptime kind: Kind) type {
             self.scroll_y = std.math.clamp(self.scroll_y, 0, scroll_max);
         }
 
-        pub fn onClick(self: *Self, effects: *handler_mod.Effects) void {
-            comptime assert(kind != .input);
-            const event = effects.inputEvent() orelse return;
-            const mouse = switch (event.*) {
-                .mouse_down, .mouse_up => |mouse| mouse,
-                else => return,
-            };
-            self.pending_click = .{
-                .x = @floatCast(mouse.position.x),
-                .y = @floatCast(mouse.position.y),
-            };
-            effects.requestRender();
+        pub fn onPointerDrag(self: *Self, effects: *handler_mod.Effects) void {
+            const drag = effects.pointerDrag() orelse return;
+            assert(std.math.isFinite(drag.x));
+            assert(std.math.isFinite(drag.y));
+            if (drag.button != .left) return;
+            const point = Point{ .x = drag.x, .y = drag.y };
+            switch (drag.phase) {
+                .begin => {
+                    self.pointer.active = true;
+                    self.pointer.pointer = point;
+                    self.pointer.autoscroll_ns = 0;
+                    self.pointer.pending_press = .{
+                        .point = point,
+                        .click_count = drag.click_count,
+                        .shift = drag.modifiers.shift,
+                    };
+                    self.pointer.pending_move = null;
+                    effects.requestRender();
+                },
+                .move => {
+                    if (!self.pointer.active) return;
+                    self.pointer.pointer = point;
+                    self.pointer.pending_move = point;
+                    effects.requestRender();
+                },
+                .end => {
+                    if (!self.pointer.active) return;
+                    const moved = point.x != self.pointer.pointer.x or
+                        point.y != self.pointer.pointer.y;
+                    self.pointer.active = false;
+                    self.pointer.autoscroll_ns = 0;
+                    self.pointer.pointer = point;
+                    if (moved) {
+                        self.pointer.pending_move = point;
+                        effects.requestRender();
+                    }
+                },
+                .cancel => {
+                    self.pointer.active = false;
+                    self.pointer.autoscroll_ns = 0;
+                    self.pointer.pending_press = null;
+                    self.pointer.pending_move = null;
+                },
+            }
         }
 
-        pub fn resolveClick(self: *Self, cx: *Cx, origin: ClickOrigin) void {
-            comptime assert(kind != .input);
+        pub fn resolvePointer(self: *Self, cx: *Cx, origin: PointerOrigin) void {
             assert(origin.text_x >= origin.gutter_end);
             assert(origin.text_y >= 0);
-            const click = self.pending_click orelse return;
-            self.pending_click = null;
+            assert(origin.viewport_height > 0);
+            const has_work = self.pointer.pending_press != null or
+                self.pointer.pending_move != null or self.pointer.active;
+            if (!has_work) return;
             const frame = cx_mod.windowOf(cx).rendered();
             const bounds = for (frame.hits[0..frame.hit_count]) |*hit| {
                 if (hit.id == self.view.id) break hit.bounds;
-            } else return;
+            } else {
+                self.pointer.active = false;
+                self.pointer.autoscroll_ns = 0;
+                self.pointer.pending_press = null;
+                self.pointer.pending_move = null;
+                return;
+            };
             const line_height = cx.fontMetrics().line_height;
-            const y = click.y - bounds.y - origin.text_y + self.scroll_y;
-            const row: u32 = if (y > 0) @intFromFloat(y / line_height) else 0;
+            assert(line_height > 0);
+            if (comptime kind != .input) {
+                const scroll_max = self.scrollMax(line_height, origin.viewport_height);
+                self.scroll_y = std.math.clamp(self.scroll_y, 0, scroll_max);
+            }
+            const text_system = cx_mod.windowOf(cx).resources.text_system;
+            if (self.pointer.pending_press) |press| {
+                self.pointer.pending_press = null;
+                self.applyPress(text_system, line_height, bounds, origin, press);
+            }
+            if (comptime kind != .input) {
+                const dragging = self.pointer.pending_move != null or
+                    self.pointer.autoscroll_ns != 0;
+                if (self.pointer.active and dragging and cx.focused(self.view.id)) {
+                    if (self.stepAutoscroll(cx, bounds, origin, line_height)) {
+                        self.pointer.pending_move = self.pointer.pointer;
+                    }
+                }
+            }
+            if (self.pointer.pending_move) |point| {
+                self.pointer.pending_move = null;
+                self.applyDragMove(text_system, line_height, bounds, origin, point);
+            }
+        }
+
+        fn applyPress(
+            self: *Self,
+            text_system: anytype,
+            line_height: f32,
+            bounds: Rect,
+            origin: PointerOrigin,
+            press: PendingPress,
+        ) void {
+            const hit = self.hitAt(text_system, line_height, bounds, origin, press.point, false);
+            const mode = modeOf(press.click_count, hit.in_gutter);
+            const hit_range = self.selectionRangeFor(mode, hit);
+            const base = if (press.shift) self.shiftOrigin(hit.caret, mode) else hit_range;
+            self.pointer.mode = mode;
+            self.pointer.has_origin = true;
+            self.pointer.origin_start = base.start;
+            self.pointer.origin_end = base.end;
+            self.applyRange(base, hit_range, hit.caret, mode);
+            assert(self.cursor <= self.len);
+            assert(self.anchor <= self.len);
+        }
+
+        fn applyDragMove(
+            self: *Self,
+            text_system: anytype,
+            line_height: f32,
+            bounds: Rect,
+            origin: PointerOrigin,
+            point: Point,
+        ) void {
+            if (!self.pointer.has_origin) return;
+            assert(self.pointer.origin_start <= self.pointer.origin_end);
+            assert(self.pointer.origin_end <= self.len);
+            const hit = self.hitAt(text_system, line_height, bounds, origin, point, true);
+            const mode = self.pointer.mode;
+            const hit_range = self.selectionRangeFor(mode, hit);
+            const base = Range{
+                .start = self.pointer.origin_start,
+                .end = self.pointer.origin_end,
+            };
+            self.applyRange(base, hit_range, hit.caret, mode);
+            assert(self.cursor <= self.len);
+            assert(self.anchor <= self.len);
+        }
+
+        fn shiftOrigin(self: *const Self, caret: u32, mode: SelectionMode) Range {
+            assert(caret <= self.len);
+            assert(self.anchor <= self.len);
+            const keep = self.pointer.has_origin and
+                self.pointer.origin_start <= self.pointer.origin_end and
+                self.pointer.origin_end <= self.len and
+                self.pointer.origin_start >= self.selectionStart() and
+                self.pointer.origin_end <= self.selectionEnd();
+            if (!keep) return .{ .start = self.anchor, .end = self.anchor };
+            const inside = caret > self.pointer.origin_start and caret < self.pointer.origin_end;
+            if (mode == .char and inside) return .{ .start = self.anchor, .end = self.anchor };
+            return .{ .start = self.pointer.origin_start, .end = self.pointer.origin_end };
+        }
+
+        fn stepAutoscroll(
+            self: *Self,
+            cx: *Cx,
+            bounds: Rect,
+            origin: PointerOrigin,
+            line_height: f32,
+        ) bool {
+            comptime assert(kind != .input);
+            assert(self.pointer.active);
+            assert(line_height > 0);
+            const text_top = bounds.y + origin.text_y;
+            const text_bottom = text_top + origin.viewport_height;
+            const scroll_max = self.scrollMax(line_height, origin.viewport_height);
+            const y = self.pointer.pointer.y;
+            const above = y < text_top and self.scroll_y > 0;
+            const below = y >= text_bottom and self.scroll_y < scroll_max;
+            if (!above and !below) {
+                self.pointer.autoscroll_ns = 0;
+                return false;
+            }
+            const now = cx.now();
+            const overshoot = if (above) text_top - y else y - text_bottom + 1;
+            assert(overshoot > 0);
+            if (self.pointer.autoscroll_ns == 0) {
+                self.pointer.autoscroll_ns = now;
+                cx.requestRenderAfter(autoscroll_interval_ms);
+                return false;
+            }
+            assert(now >= self.pointer.autoscroll_ns);
+            const dt_max = autoscroll_dt_ms_max * std.time.ns_per_ms;
+            const dt_ns = @min(now - self.pointer.autoscroll_ns, dt_max);
+            self.pointer.autoscroll_ns = now;
+            if (dt_ns == 0) {
+                cx.requestRenderAfter(autoscroll_interval_ms);
+                return false;
+            }
+            const speed = @min(
+                autoscroll_speed_max_px_per_sec,
+                autoscroll_speed_min_px_per_sec + overshoot * autoscroll_speed_gain,
+            );
+            const delta = speed * (@as(f32, @floatFromInt(dt_ns)) / @as(f32, std.time.ns_per_s));
+            const before = self.scroll_y;
+            const next = if (above) before - delta else before + delta;
+            self.scroll_y = std.math.clamp(next, 0, scroll_max);
+            const room = (above and self.scroll_y > 0) or (below and self.scroll_y < scroll_max);
+            if (room) cx.requestRenderAfter(autoscroll_interval_ms);
+            return self.scroll_y != before;
+        }
+
+        fn hitAt(
+            self: *const Self,
+            text_system: anytype,
+            line_height: f32,
+            bounds: Rect,
+            origin: PointerOrigin,
+            point: Point,
+            clamp_edges: bool,
+        ) PointerHit {
+            assert(line_height > 0);
+            assert(origin.viewport_height > 0);
+            if (comptime kind == .input) {
+                const x = point.x - bounds.x - origin.text_x;
+                const column = hitColumn(text_system, self.text(), x);
+                return .{
+                    .caret = column.caret,
+                    .char_at = column.char_at,
+                    .line_start = 0,
+                    .line_end = self.len,
+                    .in_gutter = false,
+                };
+            }
+            const text_top = bounds.y + origin.text_y;
+            const text_bottom = text_top + origin.viewport_height;
+            const scroll_max = self.scrollMax(line_height, origin.viewport_height);
+            if (clamp_edges and point.y < text_top and self.scroll_y <= 0) {
+                return .{
+                    .caret = 0,
+                    .char_at = 0,
+                    .line_start = 0,
+                    .line_end = self.lineEnd(0),
+                    .in_gutter = false,
+                };
+            }
+            if (clamp_edges and point.y >= text_bottom and self.scroll_y >= scroll_max) {
+                const start = self.lineStart(self.len);
+                const char_at = if (start < self.len)
+                    previousBoundary(self.text(), self.len)
+                else
+                    self.len;
+                return .{
+                    .caret = self.len,
+                    .char_at = char_at,
+                    .line_start = start,
+                    .line_end = self.len,
+                    .in_gutter = false,
+                };
+            }
+            const row = self.rowAt(
+                point.y,
+                text_top,
+                text_bottom,
+                line_height,
+                origin,
+                clamp_edges,
+            );
+            const start = self.lineAtRow(row);
+            const end = self.lineEnd(start);
+            const in_gutter = kind == .editor and point.x - bounds.x < origin.gutter_end;
+            const x = point.x - bounds.x - origin.text_x;
+            const column = hitColumn(text_system, self.bytes[start..end], x);
+            return .{
+                .caret = start + column.caret,
+                .char_at = start + column.char_at,
+                .line_start = start,
+                .line_end = end,
+                .in_gutter = in_gutter,
+            };
+        }
+
+        fn rowAt(
+            self: *const Self,
+            point_y: f32,
+            text_top: f32,
+            text_bottom: f32,
+            line_height: f32,
+            origin: PointerOrigin,
+            clamp_edges: bool,
+        ) u32 {
+            comptime assert(kind != .input);
+            assert(line_height > 0);
+            assert(origin.viewport_height > 0);
+            if (clamp_edges and point_y < text_top) {
+                if (origin.viewport_height >= 2 * line_height) {
+                    return @intFromFloat(@ceil(self.scroll_y / line_height));
+                }
+                return @intFromFloat(@floor(self.scroll_y / line_height));
+            }
+            if (clamp_edges and point_y >= text_bottom) {
+                const inset_y = if (origin.viewport_height >= 2 * line_height)
+                    line_height
+                else
+                    1;
+                const bottom = @max(0, self.scroll_y + origin.viewport_height - inset_y);
+                return @intFromFloat(@floor(bottom / line_height));
+            }
+            const y = point_y - text_top + self.scroll_y;
+            return if (y > 0) @intFromFloat(y / line_height) else 0;
+        }
+
+        fn lineAtRow(self: *const Self, row: u32) u32 {
+            comptime assert(kind != .input);
             var start: u32 = 0;
             var line: u32 = 0;
             while (line < row) : (line += 1) {
@@ -487,13 +830,62 @@ pub fn Engine(comptime kind: Kind) type {
                 if (end == self.len) break;
                 start = end + 1;
             }
-            if (kind == .editor and click.x - bounds.x < origin.gutter_end) {
-                return self.selectLine(start);
+            assert(start <= self.len);
+            assert(start == self.lineStart(start));
+            return start;
+        }
+
+        fn selectionRangeFor(self: *const Self, mode: SelectionMode, hit: PointerHit) Range {
+            assert(hit.line_start <= hit.line_end);
+            assert(hit.line_end <= self.len);
+            return switch (mode) {
+                .char => .{ .start = hit.caret, .end = hit.caret },
+                .word => wordRange(self.text(), hit.line_start, hit.line_end, hit.char_at),
+                .line => self.lineRange(hit.line_start),
+            };
+        }
+
+        fn lineRange(self: *const Self, start: u32) Range {
+            assert(start <= self.len);
+            assert(start == self.lineStart(start));
+            const end = self.lineEnd(start);
+            return .{ .start = start, .end = if (end < self.len) end + 1 else end };
+        }
+
+        fn applyRange(
+            self: *Self,
+            origin: Range,
+            hit: Range,
+            caret: u32,
+            mode: SelectionMode,
+        ) void {
+            assert(origin.start <= origin.end);
+            assert(origin.end <= self.len);
+            assert(hit.start <= hit.end);
+            assert(hit.end <= self.len);
+            if (hit.start < origin.start and hit.end > origin.end) {
+                if (caret < origin.start) {
+                    self.anchor = origin.end;
+                    self.moveTo(hit.start, true);
+                } else {
+                    self.anchor = origin.start;
+                    self.moveTo(hit.end, true);
+                }
+            } else if (hit.end > origin.end) {
+                self.anchor = origin.start;
+                self.moveTo(hit.end, true);
+            } else if (hit.start < origin.start) {
+                self.anchor = origin.end;
+                self.moveTo(hit.start, true);
+            } else if (mode == .line) {
+                self.moveTo(origin.start, false);
+                self.anchor = origin.end;
+            } else {
+                self.anchor = origin.start;
+                self.moveTo(origin.end, true);
             }
-            const x = click.x - bounds.x - origin.text_x;
-            const text_system = cx_mod.windowOf(cx).resources.text_system;
-            const column = columnAt(text_system, self.bytes[start..self.lineEnd(start)], x);
-            self.moveTo(start + column, false);
+            assert(self.cursor <= self.len);
+            assert(self.anchor <= self.len);
         }
 
         pub fn undo(self: *Self) void {
@@ -589,7 +981,7 @@ pub fn Engine(comptime kind: Kind) type {
             if (!self.performAction(effects.action, effects.action_arg, effects.clipboard.?)) {
                 return;
             }
-            self.pending_click = null;
+            if (effects.action != actions_mod.copy) self.pointer = .idle;
             if (self.bind) |binding| binding.* = self.text();
             effects.requestRender();
             effects.stopPropagation();
@@ -599,7 +991,7 @@ pub fn Engine(comptime kind: Kind) type {
             const event = effects.inputEvent() orelse return;
             if (self.bind) |binding| self.syncBound(binding);
             if (!self.apply(event)) return;
-            self.pending_click = null;
+            self.pointer = .idle;
             if (self.bind) |binding| binding.* = self.text();
             effects.requestRender();
             effects.stopPropagation();
@@ -611,8 +1003,39 @@ pub const InputEngine = Engine(.input);
 pub const AreaEngine = Engine(.area);
 pub const EditorEngine = Engine(.editor);
 
-fn columnAt(text_system: anytype, line: []const u8, x: f32) u32 {
+fn modeOf(click_count: u32, in_gutter: bool) SelectionMode {
+    if (in_gutter or click_count >= 3) return .line;
+    if (click_count == 2) return .word;
+    return .char;
+}
+
+fn isLineSpace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\r';
+}
+
+fn wordRange(bytes: []const u8, line_start: u32, line_end: u32, char_at: u32) Range {
+    assert(line_start <= line_end);
+    assert(line_end <= bytes.len);
+    if (line_start == line_end) return .{ .start = line_start, .end = line_start };
+    assert(char_at >= line_start);
+    assert(char_at < line_end);
+    const space = isLineSpace(bytes[char_at]);
+    var start = char_at;
+    while (start > line_start and isLineSpace(bytes[start - 1]) == space) start -= 1;
+    var end = char_at + 1;
+    while (end < line_end and isLineSpace(bytes[end]) == space) end += 1;
+    assert(start >= line_start);
+    assert(end <= line_end);
+    assert(start < end);
+    assert(start == line_start or !isContinuation(bytes[start]));
+    assert(end == line_end or !isContinuation(bytes[end]));
+    return .{ .start = start, .end = end };
+}
+
+fn hitColumn(text_system: anytype, line: []const u8, x: f32) ColumnHit {
     assert(line.len <= std.math.maxInt(u32));
+    assert(std.math.isFinite(x));
+    if (line.len == 0 or x <= 0) return .{ .caret = 0, .char_at = 0 };
     var low: u32 = 0;
     var high: u32 = @intCast(line.len);
     while (low < high) {
@@ -627,11 +1050,16 @@ fn columnAt(text_system: anytype, line: []const u8, x: f32) u32 {
         }
     }
     assert(low == line.len or !isContinuation(line[low]));
-    if (low == line.len) return low;
+    if (low == line.len) {
+        return .{ .caret = low, .char_at = previousBoundary(line, low) };
+    }
     const next = nextBoundary(line, low);
     const left = measureWidth(text_system, line[0..low]);
     const right = measureWidth(text_system, line[0..next]);
-    return if (x - left > right - x) next else low;
+    const caret = if (x - left > right - x) next else low;
+    assert(caret <= line.len);
+    assert(low < line.len);
+    return .{ .caret = caret, .char_at = low };
 }
 
 fn measureWidth(text_system: anytype, value: []const u8) f32 {
@@ -1275,7 +1703,7 @@ test "the wheel scrolls an area the way it scrolls a scroll box" {
     try std.testing.expect(!line.engine.apply(&event));
 }
 
-test "a click finds the nearest codepoint boundary" {
+test "a click finds the nearest codepoint boundary and containing codepoint" {
     const Fake = struct {
         fn measureText(_: @This(), _: anytype, value: []const u8, _: anytype) !f32 {
             const count = std.unicode.utf8CountCodepoints(value) catch unreachable;
@@ -1283,12 +1711,35 @@ test "a click finds the nearest codepoint boundary" {
         }
     };
     const fake = Fake{};
-    try std.testing.expectEqual(@as(u32, 0), columnAt(fake, "a\u{e9}b", -5));
-    try std.testing.expectEqual(@as(u32, 1), columnAt(fake, "a\u{e9}b", 14));
-    try std.testing.expectEqual(@as(u32, 3), columnAt(fake, "a\u{e9}b", 16));
-    try std.testing.expectEqual(@as(u32, 3), columnAt(fake, "a\u{e9}b", 24));
-    try std.testing.expectEqual(@as(u32, 4), columnAt(fake, "a\u{e9}b", 1000));
-    try std.testing.expectEqual(@as(u32, 0), columnAt(fake, "", 12));
+    const sample = "a\u{e9}b";
+    try std.testing.expectEqual(ColumnHit{ .caret = 0, .char_at = 0 }, hitColumn(fake, sample, -5));
+    try std.testing.expectEqual(ColumnHit{ .caret = 1, .char_at = 1 }, hitColumn(fake, sample, 14));
+    try std.testing.expectEqual(ColumnHit{ .caret = 3, .char_at = 1 }, hitColumn(fake, sample, 16));
+    try std.testing.expectEqual(ColumnHit{ .caret = 3, .char_at = 3 }, hitColumn(fake, sample, 24));
+    try std.testing.expectEqual(
+        ColumnHit{ .caret = 4, .char_at = 3 },
+        hitColumn(fake, sample, 1000),
+    );
+    try std.testing.expectEqual(ColumnHit{ .caret = 0, .char_at = 0 }, hitColumn(fake, "", 12));
+}
+
+test "word ranges isolate words and space runs within a line across UTF-8" {
+    const sample = "one two  caf\u{e9}\nnext";
+    try std.testing.expectEqual(Range{ .start = 0, .end = 3 }, wordRange(sample, 0, 14, 0));
+    try std.testing.expectEqual(Range{ .start = 0, .end = 3 }, wordRange(sample, 0, 14, 2));
+    try std.testing.expectEqual(Range{ .start = 3, .end = 4 }, wordRange(sample, 0, 14, 3));
+    try std.testing.expectEqual(Range{ .start = 4, .end = 7 }, wordRange(sample, 0, 14, 5));
+    try std.testing.expectEqual(Range{ .start = 7, .end = 9 }, wordRange(sample, 0, 14, 7));
+    try std.testing.expectEqual(Range{ .start = 7, .end = 9 }, wordRange(sample, 0, 14, 8));
+    try std.testing.expectEqual(Range{ .start = 9, .end = 14 }, wordRange(sample, 0, 14, 12));
+    try std.testing.expectEqual(Range{ .start = 15, .end = 19 }, wordRange(sample, 15, 19, 15));
+    try std.testing.expectEqual(Range{ .start = 4, .end = 4 }, wordRange("abc\n\ndef", 4, 4, 4));
+    try std.testing.expectEqual(SelectionMode.char, modeOf(0, false));
+    try std.testing.expectEqual(SelectionMode.char, modeOf(1, false));
+    try std.testing.expectEqual(SelectionMode.word, modeOf(2, false));
+    try std.testing.expectEqual(SelectionMode.line, modeOf(3, false));
+    try std.testing.expectEqual(SelectionMode.line, modeOf(4, false));
+    try std.testing.expectEqual(SelectionMode.line, modeOf(1, true));
 }
 
 test "an editor's Tab indents as one step, and a line selection takes its newline" {
@@ -1305,9 +1756,18 @@ test "an editor's Tab indents as one step, and a line selection takes its newlin
     try std.testing.expect(t.run(.indent));
     try std.testing.expectEqualStrings("ab\t", engine.text());
     engine.insert("\nxy\nz");
-    engine.selectLine(4);
+    const middle = engine.lineRange(4);
+    engine.applyRange(middle, middle, middle.start, .line);
     try std.testing.expectEqual(@as(u32, 4), engine.cursor);
     try std.testing.expectEqual(@as(u32, 7), engine.anchor);
-    engine.selectLine(7);
+    const last = engine.lineRange(7);
+    engine.applyRange(last, last, last.start, .line);
     try std.testing.expectEqual(@as(u32, 8), engine.anchor);
+    engine.applyRange(middle, last, last.end, .line);
+    try std.testing.expectEqual(@as(u32, 4), engine.anchor);
+    try std.testing.expectEqual(@as(u32, 8), engine.cursor);
+    const first = engine.lineRange(0);
+    engine.applyRange(middle, first, first.start, .line);
+    try std.testing.expectEqual(@as(u32, 7), engine.anchor);
+    try std.testing.expectEqual(@as(u32, 0), engine.cursor);
 }

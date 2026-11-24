@@ -740,6 +740,256 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectApproxEqAbs(text_y + line_height, query.imeCursorRect().?.y, 0.001);
 }
 
+const InputState = struct { value: []const u8 = "one two  three" };
+
+const InputApp = gooey.App(InputState, inputRender, .{
+    .keymap = gooey.keymaps.text_default,
+    .title = "Input",
+    .width = 300,
+    .height = 120,
+    .limits = .small,
+});
+
+fn inputRender(cx: *Cx) void {
+    const state = cx.state(InputState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
+        components.TextInput{ .key = "field", .bind = &state.value, .width = 240 },
+    }));
+}
+
+fn pointerEvent(x: f32, y: f32, click_count: u32, shift: bool) gooey.input.MouseEvent {
+    return .{
+        .position = .{ .x = x, .y = y },
+        .button = .left,
+        .click_count = click_count,
+        .modifiers = .{ .shift = shift },
+    };
+}
+
+fn pushPointer(
+    app: anytype,
+    kind: enum { down, drag, up },
+    x: f32,
+    y: f32,
+    click_count: u32,
+    shift: bool,
+) void {
+    const event = pointerEvent(x, y, click_count, shift);
+    app.window.queue.push(.{ .input = switch (kind) {
+        .down => .{ .mouse_down = event },
+        .drag => .{ .mouse_dragged = event },
+        .up => .{ .mouse_up = event },
+    } });
+}
+
+fn expectSelection(query: internals.Query, offset: u32, len: u32) !void {
+    const range = query.imeSelectedRange().?;
+    try testing.expectEqual(offset, range.offset);
+    try testing.expectEqual(len, range.len);
+}
+
+test "a TextInput places its caret on press, drags past edges, and handles multi-clicks and Shift" {
+    const app = try testing.allocator.create(InputApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const query = internals.Query{ .window = &app.window };
+    var now: u64 = 0;
+    app.tick(now);
+    const inset: f32 = 9;
+    const y: f32 = inset + 5;
+
+    pushPointer(app, .down, inset + 4 * 8, y, 1, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 4, 0);
+
+    pushPointer(app, .drag, inset + 7 * 8, y, 0, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 4, 3);
+
+    pushPointer(app, .drag, 500, y + 60, 0, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 4, 10);
+
+    pushPointer(app, .drag, -40, y - 40, 0, false);
+    pushPointer(app, .up, -40, y - 40, 1, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 4);
+
+    pushPointer(app, .down, inset + 2.75 * 8, y, 2, false);
+    pushPointer(app, .up, inset + 2.75 * 8, y, 2, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 3);
+
+    pushPointer(app, .down, inset + 5.5 * 8, y, 2, false);
+    pushPointer(app, .drag, inset + 10.5 * 8, y, 0, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 4, 10);
+
+    pushPointer(app, .drag, inset + 1.5 * 8, y, 0, false);
+    pushPointer(app, .up, inset + 1.5 * 8, y, 2, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 7);
+
+    const x_11 = try app.window.resources.text_system.measureText(.app, "one two  th", .regular);
+    pushPointer(app, .down, inset + x_11, y, 1, true);
+    pushPointer(app, .up, inset + x_11, y, 1, true);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 4, 7);
+
+    pushPointer(app, .down, inset + 5 * 8, y, 3, false);
+    pushPointer(app, .up, inset + 5 * 8, y, 3, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 14);
+}
+
+test "a TextArea selects words and lines and keeps its Shift anchor after Copy" {
+    const app = try testing.allocator.create(AreaApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.notes = "alpha beta\ngamma delta\nline three\nline four\nline five\nline six";
+    const query = internals.Query{ .window = &app.window };
+    var now: u64 = 0;
+    app.tick(now);
+    const inset: f32 = 9;
+
+    pushPointer(app, .down, inset + 6 * 8, inset + 4, 2, false);
+    pushPointer(app, .up, inset + 6 * 8, inset + 4, 2, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 6, 4);
+    const line_height = query.imeCursorRect().?.height;
+
+    pushPointer(app, .down, inset + 2 * 8, inset + 4, 3, false);
+    pushPointer(app, .up, inset + 2 * 8, inset + 4, 3, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 11);
+
+    app.window.queue.push(.{ .input = .{ .key_down = chord(.c, .{
+        .cmd = builtin.os.tag == .macos,
+        .ctrl = builtin.os.tag != .macos,
+    }) } });
+    now += 1;
+    app.tick(now);
+
+    const gamma_width = try app.window.resources.text_system.measureText(.app, "gamma", .regular);
+    pushPointer(app, .down, inset + gamma_width, inset + line_height + 4, 1, true);
+    pushPointer(app, .up, inset + gamma_width, inset + line_height + 4, 1, true);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 16);
+
+    pushPointer(app, .down, inset + 2 * 8, inset + 4, 3, false);
+    pushPointer(app, .drag, inset + 2 * 8, inset + line_height + 4, 0, false);
+    pushPointer(app, .up, inset + 2 * 8, inset + line_height + 4, 3, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 23);
+}
+
+test "a TextArea drag autoscrolls past both viewport edges" {
+    const app = try testing.allocator.create(AreaApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.notes = "alpha beta\ngamma delta\nline three\nline four\nline five\nline six";
+    const query = internals.Query{ .window = &app.window };
+    const ms = std.time.ns_per_ms;
+    const inset: f32 = 9;
+    var now: u64 = 0;
+    app.tick(now);
+
+    pushPointer(app, .down, inset + 2 * 8, inset + 4, 1, false);
+    now += 1;
+    app.tick(now);
+    const line_height = query.imeCursorRect().?.height;
+    pushPointer(app, .drag, inset + 4 * 8, inset + 2 * line_height + 40, 0, false);
+    now += 1;
+    app.tick(now);
+    var ticks: u32 = 0;
+    while (ticks < 40) : (ticks += 1) {
+        now += 16 * ms;
+        app.tick(now);
+    }
+    try expectSelection(query, 2, @intCast(app.state.notes.len - 2));
+
+    pushPointer(app, .up, inset + 4 * 8, inset + 2 * line_height + 40, 1, false);
+    now += 1;
+    app.tick(now);
+    const bottom_caret_y = query.imeCursorRect().?.y;
+
+    pushPointer(app, .down, inset + 4 * 8, bottom_caret_y + 2, 1, false);
+    pushPointer(app, .drag, inset + 2 * 8, -30, 0, false);
+    now += 1;
+    app.tick(now);
+    ticks = 0;
+    while (ticks < 40) : (ticks += 1) {
+        now += 16 * ms;
+        app.tick(now);
+    }
+    try testing.expectEqual(@as(u32, 0), query.imeSelectedRange().?.offset);
+    try testing.expect(query.imeSelectedRange().?.len > 40);
+    pushPointer(app, .up, inset + 2 * 8, -30, 1, false);
+    now += 1;
+    app.tick(now);
+}
+
+test "a CodeEditor drags from text and gutter and auto-scrolls" {
+    const app = try testing.allocator.create(EditorApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.source = "fn main() {\n    const a = 1;\n    const b = 2;\n}";
+    const query = internals.Query{ .window = &app.window };
+    const ms = std.time.ns_per_ms;
+    var now: u64 = 0;
+    app.tick(now);
+    const text_x: f32 = 1 + 50 + 1 + 8;
+    const text_y: f32 = 1 + 8;
+
+    pushPointer(app, .down, text_x + 4 * 8, text_y + 4, 2, false);
+    pushPointer(app, .up, text_x + 4 * 8, text_y + 4, 2, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 3, 6);
+    const line_height = query.imeCursorRect().?.height;
+
+    pushPointer(app, .down, text_x + 11 * 8, text_y + 4, 1, true);
+    pushPointer(app, .up, text_x + 11 * 8, text_y + 4, 1, true);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 3, 8);
+
+    pushPointer(app, .down, 20, text_y + 4, 1, false);
+    now += 1;
+    app.tick(now);
+    try expectSelection(query, 0, 12);
+
+    pushPointer(app, .drag, 20, text_y + line_height + 50, 0, false);
+    now += 1;
+    app.tick(now);
+    var ticks: u32 = 0;
+    while (ticks < 40) : (ticks += 1) {
+        now += 16 * ms;
+        app.tick(now);
+    }
+    try expectSelection(query, 0, @intCast(app.state.source.len));
+    pushPointer(app, .up, 20, text_y + line_height + 50, 1, false);
+    now += 1;
+    app.tick(now);
+}
+
 const ScrollApp = gooey.App(struct {}, scrollRender, .{
     .title = "Scroll",
     .width = 300,

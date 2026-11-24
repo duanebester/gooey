@@ -44,6 +44,8 @@ pub const TextAreaModel = struct {
     focus: ElementId,
     press_path: [press_path_len_max]ElementId,
     press_len: u32,
+    capture_button: ?input.MouseButton,
+    dragging: bool,
     click_pending: bool,
     assigned: ?[]const u8,
     platform: Clip,
@@ -204,6 +206,8 @@ pub const TextAreaModel = struct {
         self.field.caret_known = true;
         self.focus = .root;
         self.press_len = 0;
+        self.capture_button = null;
+        self.dragging = false;
         self.click_pending = false;
         self.assigned = null;
         self.platform.set(clipboard_seed);
@@ -362,15 +366,18 @@ pub const TextAreaModel = struct {
             .text => |value| if (self.focus == area_id) {
                 self.sync();
                 self.insert(value);
+                self.dragging = false;
                 self.click_pending = false;
             },
             .compose => |value| if (self.focus == area_id) {
                 self.sync();
                 self.setPreedit(value);
+                self.dragging = false;
                 self.click_pending = false;
             },
             .scroll => |scroll| if (wheelReaches(frame, area_id, scroll)) {
                 self.sync();
+                self.dragging = false;
                 self.click_pending = false;
             },
             .resize => {
@@ -378,7 +385,16 @@ pub const TextAreaModel = struct {
                 if (self.field.cursor != self.field.anchor) self.counts.resizes_selecting += 1;
             },
             .cancel => |cancel| {
-                if (cancel.kind != .focus_lost) self.press_len = 0;
+                if (cancel.kind != .focus_lost) {
+                    self.press_len = 0;
+                    if (self.capture_button != null) {
+                        self.capture_button = null;
+                        if (self.dragging) {
+                            self.dragging = false;
+                            self.click_pending = false;
+                        }
+                    }
+                }
                 const releases = cancel.kind != .pointer_cancelled and cancel.key_held != null;
                 if (releases and self.focus == area_id) self.sync();
             },
@@ -396,14 +412,26 @@ pub const TextAreaModel = struct {
         const point: Point = .{ .x = action.x, .y = action.y };
         const left = action.button == .left;
         const scrollbar = on_scrollbar and left;
-        if (action.releases_held and left) self.release(frame, area_id, point);
+        if (action.releases_held) {
+            if (self.dragging) self.click_pending = true;
+            self.release(frame, area_id, point, action.button);
+        }
         switch (action.kind) {
-            .move => {},
-            .press => self.press(frame, point, left, scrollbar),
-            .release => if (left) self.release(frame, area_id, point),
+            .move => if (self.dragging) {
+                self.click_pending = true;
+            },
+            .press => {
+                if (self.dragging) self.click_pending = true;
+                self.press(frame, area_id, point, action.button, scrollbar);
+            },
+            .release => {
+                if (self.dragging) self.click_pending = true;
+                self.release(frame, area_id, point, action.button);
+            },
             .click => {
-                self.press(frame, point, left, scrollbar);
-                if (left) self.release(frame, area_id, point);
+                if (self.dragging) self.click_pending = true;
+                self.press(frame, area_id, point, action.button, scrollbar);
+                self.release(frame, area_id, point, action.button);
             },
         }
     }
@@ -411,25 +439,38 @@ pub const TextAreaModel = struct {
     fn press(
         self: *TextAreaModel,
         frame: *const records.Frame,
+        area_id: ElementId,
         point: Point,
-        left: bool,
+        button: input.MouseButton,
         scrollbar: bool,
     ) void {
+        const left = button == .left;
         assert(left or !scrollbar);
         if (left) self.press_len = 0;
         if (scrollbar) return;
         var focus_id: ElementId = .root;
+        var gesture_id: ?ElementId = null;
         var index = hitIndex(frame, point.x, point.y) orelse records.index_none;
         var depth: u32 = 0;
         while (index != records.index_none) : (depth += 1) {
             assert(depth < press_path_len_max);
             const record = &frame.hits[index];
             if (focus_id == .root and record.focusable) focus_id = record.id;
+            if (gesture_id == null and record.on_pointer_drag != records.index_none) {
+                gesture_id = record.id;
+            }
             if (left) self.press_path[depth] = record.id;
             index = record.parent;
         }
         if (left) self.press_len = depth;
         self.focus = focus_id;
+        if (self.capture_button == null and gesture_id != null) {
+            self.capture_button = button;
+            if (left and gesture_id.? == area_id) {
+                self.dragging = true;
+                self.click_pending = true;
+            }
+        }
     }
 
     fn release(
@@ -437,7 +478,16 @@ pub const TextAreaModel = struct {
         frame: *const records.Frame,
         area_id: ElementId,
         point: Point,
+        button: input.MouseButton,
     ) void {
+        if (self.capture_button == button) {
+            self.capture_button = null;
+            if (self.dragging) {
+                self.dragging = false;
+                self.click_pending = true;
+            }
+        }
+        if (button != .left) return;
         const pressed = self.press_path[0..self.press_len];
         self.press_len = 0;
         if (pressed.len == 0) return;
@@ -465,10 +515,19 @@ pub const TextAreaModel = struct {
         area_id: ElementId,
         chord: Action.Chord,
     ) void {
+        if (chord.key == .escape and self.capture_button != null) {
+            self.capture_button = null;
+            self.dragging = false;
+            self.click_pending = false;
+            return;
+        }
         if (self.focus == area_id) {
             self.sync();
             if (self.applyKey(chord)) {
-                self.click_pending = false;
+                if (commandOf(chord).? != .copy) {
+                    self.dragging = false;
+                    self.click_pending = false;
+                }
                 return;
             }
         }
@@ -729,6 +788,8 @@ pub const TextAreaModel = struct {
             self.click_pending = false;
             self.field.caret_known = false;
             self.moved = true;
+        } else if (self.dragging) {
+            self.field.caret_known = false;
         }
     }
 
