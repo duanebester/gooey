@@ -1170,11 +1170,12 @@ fn previousWord(bytes: []const u8, index: u32) u32 {
 fn nextWord(bytes: []const u8, index: u32) u32 {
     assert(bytes.len <= std.math.maxInt(u32));
     assert(index <= bytes.len);
+    const length: u32 = @intCast(bytes.len);
     var position = index;
-    while (position < bytes.len and isSpace(bytes[position])) position += 1;
-    while (position < bytes.len and !isSpace(bytes[position])) position += 1;
+    while (position < length and isSpace(bytes[position])) position += 1;
+    while (position < length and !isSpace(bytes[position])) position += 1;
     assert(position >= index);
-    assert(position <= bytes.len);
+    assert(position <= length);
     return position;
 }
 
