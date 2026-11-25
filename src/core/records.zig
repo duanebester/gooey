@@ -82,8 +82,6 @@ pub const Record = union(enum) {
     clip_pop,
 };
 
-/// A custom-shader fill. `shader` is the ShaderId (index in `App.shaders`) and
-/// `params_slot` the slot `Frame.claimParams` returned for its Params bytes.
 pub const Custom = struct {
     bounds: Rect,
     corners: Corners,
@@ -401,9 +399,7 @@ pub const FrameCapacity = struct {
     announcements: Announcements.Capacity,
     text_bytes_max: u32,
     mesh_point_count_max: u32,
-    /// Custom-fill params slots (ResourceLimits.paint.custom_draw_count_frame_max).
     params_slot_count_max: u32,
-    /// Bytes per params slot (ResourceLimits.paint.shader_params_bytes_max).
     params_stride: u32,
 };
 
@@ -611,8 +607,6 @@ pub const Frame = struct {
         return range;
     }
 
-    /// Copy one custom fill's Params into the next slot, zeroing the slot's tail so no
-    /// earlier frame's bytes reach the GPU, and return the slot index.
     pub fn claimParams(self: *Frame, bytes: []const u8) u32 {
         assert(bytes.len > 0);
         assert(bytes.len <= self.params_stride);
@@ -636,7 +630,6 @@ pub const Frame = struct {
         return slot;
     }
 
-    /// The params bytes in use, whole slots: what the renderer uploads.
     pub fn paramsUsed(self: *const Frame) []const u8 {
         assert(self.params_count * self.params_stride <= self.params.len);
         return self.params[0 .. self.params_count * self.params_stride];

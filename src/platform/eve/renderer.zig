@@ -221,7 +221,6 @@ pub const EveRenderer = struct {
                 packed_draw.count,
                 packed_draw.pipeline,
             }),
-            // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
             .custom => unreachable,
         }
     }

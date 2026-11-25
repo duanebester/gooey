@@ -55,9 +55,6 @@ pub fn Config(comptime State: type) type {
         min_width: u32 = 0,
         min_height: u32 = 0,
         jobs: []const type = &.{},
-        /// `gooey.Shader` types used by `Style.fill`. Each compiles to a pipeline at init
-        /// (ResourceLimits.paint.shader_count_max), and every host's backend must have a
-        /// source for each one.
         shaders: []const type = &.{},
         on_init: ?*const fn (state: *State, init: Init, effects: *Effects) void = null,
         on_deinit: ?*const fn (state: *State) void = null,
@@ -198,7 +195,6 @@ fn checkEntities(comptime State: type, comptime types: []const type) void {
     }
 }
 
-/// The renderer `App.main` draws with on the build target.
 fn hostBackend() shader_mod.Backend {
     return switch (builtin.os.tag) {
         .macos => .metal,

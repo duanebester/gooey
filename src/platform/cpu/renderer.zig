@@ -240,7 +240,6 @@ const Walk = struct {
             },
             .sprite => self.drawSprites(packed_draw, clip),
             .mesh => self.drawMeshes(packed_draw, clip),
-            // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
             .custom => unreachable,
         }
     }

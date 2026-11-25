@@ -1,11 +1,3 @@
-// Built-in linear gradient (gooey.shaders.LinearGradient). The gradient line passes
-// through the element's center along `direction`, and its length makes the end colors
-// reach the corners, as CSS linear-gradient does.
-//
-// Both modes mix premultiplied by alpha, as CSS Color 4 does, so a transparent stop adds
-// no color. interpolation 0 (srgb) mixes the sRGB-encoded stops. interpolation 1 (oklab)
-// decodes each stop to linear light, converts it to OKLab (Ottosson's matrices), mixes,
-// converts back, clips to the sRGB gamut in linear light, and re-encodes.
 struct Params {
     float4 start;
     float4 end;
@@ -14,11 +6,8 @@ struct Params {
     uint _pad;
 };
 
-// gooey.shaders.GradientInterpolation; any other value mixes as srgb.
 constant uint interpolation_oklab = 1;
 
-// IEC 61966-2-1 transfer functions. Encoding takes clipped linear light, so pow never
-// sees a negative base.
 float3 srgb_decode(float3 c) {
     return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
 }
@@ -27,8 +16,6 @@ float3 srgb_encode(float3 c) {
     return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
 }
 
-// MSL has no cbrt, and pow is undefined for a negative base, so the cube root keeps the
-// sign itself: stops outside 0-1 can give negative LMS.
 float3 signed_cbrt(float3 x) {
     return copysign(pow(abs(x), 1.0 / 3.0), x);
 }
@@ -56,11 +43,6 @@ float3 linear_from_oklab(float3 lab) {
         -0.0041960863 * lms.x - 0.7034186147 * lms.y + 1.7076147010 * lms.z);
 }
 
-// Straight-alpha stops in, straight-alpha color out; alpha mixes linearly. Mixing
-// premultiplied and dividing by the mixed alpha equals a straight mix at the weight
-// w = t * end.a / alpha, one scalar divide instead of premultiplying both stops and
-// dividing the color. Opaque stops give w = t exactly, so their pixels are a plain mix.
-// Where the mixed alpha is 0 the color is undefined, so it is 0.
 float4 mix_premultiplied(float4 start, float4 end, float t) {
     float alpha = mix(start.a, end.a, t);
     float3 color = mix(start.rgb, end.rgb, t * end.a / alpha);

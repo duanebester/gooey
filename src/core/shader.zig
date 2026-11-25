@@ -1,11 +1,3 @@
-//! Custom fill shaders: a fragment-only `shade` function per backend, drawn as a
-//! packed-frame pipeline. Gooey supplies the vertex stage and applies the element's
-//! rounded-rect coverage, clip, and opacity after the user's function, so a custom fill
-//! behaves like `.background` everywhere except the color it computes.
-//!
-//! Declaration is comptime: `Shader` checks `Params` and the source table, `App` checks
-//! the count and params size against `ResourceLimits.paint`, and each host's `main`
-//! requires a source for its backend (`requireSources`). Pipelines compile at init.
 const std = @import("std");
 const limits_mod = @import("limits.zig");
 const geometry = @import("../geometry/geometry.zig");
@@ -14,15 +6,10 @@ const assert = std.debug.assert;
 
 pub const name_bytes_max: u32 = 48;
 
-/// Per-backend shader sources. A backend that learns custom fills adds its field here;
-/// an app that targets it and declares a shader without that field fails to compile.
 pub const Source = struct {
-    /// Metal Shading Language defining `struct Params` and
-    /// `float4 shade(ShadeInput in, constant Params& p)`, returning straight-alpha color.
     msl: ?[]const u8 = null,
 };
 
-/// The backends a host can draw with, and the `Source` field each reads.
 pub const Backend = enum {
     metal,
     vulkan,
@@ -39,8 +26,6 @@ pub const Backend = enum {
     }
 };
 
-/// What the renderer needs about one declared shader. Apps refer to shaders by the
-/// address of their `spec`, which is unique per `Shader` type.
 pub const Spec = struct {
     name: []const u8,
     params_size: u32,
@@ -48,7 +33,6 @@ pub const Spec = struct {
     source: Source,
 };
 
-/// A custom fill: the shader and its params bytes, ready for `Style.fill`.
 pub const Fill = struct {
     spec: *const Spec,
     params: [limits_mod.MAX_SHADER_PARAMS_BYTES]u8 align(limits_mod.shader_params_alignment),
@@ -67,9 +51,6 @@ pub const Options = struct {
     source: Source,
 };
 
-/// Declare a custom fill shader. `Params` must be an `extern struct` whose size is a
-/// nonzero multiple of 16 bytes and at most MAX_SHADER_PARAMS_BYTES, matching the MSL
-/// `struct Params` member for member.
 pub fn Shader(comptime options: Options) type {
     comptime checkOptions(options);
     return struct {
@@ -125,8 +106,6 @@ fn checkOptions(comptime options: Options) void {
     if (present == 0) @compileError(prefix ++ "source has no backend sources");
 }
 
-/// MSL namespaces and file names are built from the name: lowercase ASCII letters,
-/// digits, and underscores, starting with a letter.
 fn checkName(comptime name: []const u8) void {
     if (name.len == 0 or name.len > name_bytes_max) {
         @compileError(std.fmt.comptimePrint("gooey.Shader: name \"{s}\" must be 1 to {d} " ++
@@ -144,8 +123,6 @@ fn checkName(comptime name: []const u8) void {
     }
 }
 
-/// The app's shader list as specs, in declaration order: a shader's index is its
-/// ShaderId in packed draws.
 pub fn specList(comptime types: []const type) []const *const Spec {
     comptime {
         var specs: [types.len]*const Spec = undefined;
@@ -161,7 +138,6 @@ pub fn specList(comptime types: []const type) []const *const Spec {
     }
 }
 
-/// Comptime budget checks for `App.shaders`.
 pub fn checkList(comptime types: []const type, comptime paint: *const limits_mod.PaintLimits) void {
     comptime {
         if (types.len > paint.shader_count_max) {
@@ -191,7 +167,6 @@ pub fn checkList(comptime types: []const type, comptime paint: *const limits_mod
     }
 }
 
-/// Fail compilation when a declared shader has no source for the host's backend.
 pub fn requireSources(comptime types: []const type, comptime backend: Backend) void {
     comptime {
         for (specList(types)) |spec| {
@@ -210,9 +185,6 @@ pub fn requireSources(comptime types: []const type, comptime backend: Backend) v
     }
 }
 
-/// Seconds since the window's clock started, wrapped at `time_period_s` so `f32` keeps
-/// sub-millisecond precision. Shaders that need continuity across the wrap take their
-/// own phase through Params.
 pub const time_period_s: u32 = 3_600;
 
 pub fn timeSeconds(now_ns: u64) f32 {
@@ -220,7 +192,6 @@ pub fn timeSeconds(now_ns: u64) f32 {
     const wrapped_ns = now_ns % period_ns;
     assert(wrapped_ns < period_ns);
     const exact: f32 = @floatCast(@as(f64, @floatFromInt(wrapped_ns)) / std.time.ns_per_s);
-    // Rounding to f32 can carry the last nanoseconds of a period up to the period itself.
     const period: f32 = @floatFromInt(time_period_s);
     const seconds = @min(exact, std.math.nextAfter(f32, period, 0));
     assert(seconds >= 0);
@@ -228,11 +199,6 @@ pub fn timeSeconds(now_ns: u64) f32 {
     return seconds;
 }
 
-/// The first built-in shader: a two-stop linear gradient along an angle, like CSS
-/// `linear-gradient`. Stops are straight-alpha colors; both interpolation spaces mix them
-/// premultiplied by alpha, as CSS Color 4 does, so fading to a transparent stop keeps the
-/// other stop's color instead of darkening toward transparent black. Opaque stops mix
-/// exactly as a straight mix does.
 pub const LinearGradient = Shader(.{
     .name = "linear_gradient",
     .Params = LinearGradientParams,
@@ -242,18 +208,11 @@ pub const LinearGradient = Shader(.{
 pub const LinearGradientParams = extern struct {
     start: [4]f32,
     end: [4]f32,
-    /// Unit direction in element space: (1, 0) runs left to right, (0, 1) top to bottom.
     direction: [2]f32,
-    /// `@intFromEnum` of a `GradientInterpolation`; MSL reads it as `uint`.
     interpolation: u32,
     _pad: u32 = 0,
 };
 
-/// How a gradient mixes its stops. `.srgb` mixes the sRGB-encoded stops, as CSS does for
-/// legacy colors, and is the default. `.oklab` mixes in Ottosson's OKLab, so
-/// complementary stops keep their lightness instead of dipping to a dull grey; colors
-/// outside the sRGB gamut are clipped per channel in linear light. On an M2 Max a
-/// fragment-bound OKLab gradient costs about 2.1x an sRGB one.
 pub const GradientInterpolation = enum(u32) {
     srgb = 0,
     oklab = 1,
@@ -262,7 +221,6 @@ pub const GradientInterpolation = enum(u32) {
 pub const Gradient = struct {
     start: geometry.Color,
     end: geometry.Color,
-    /// Clockwise from "to right": 0 runs left to right, 90 top to bottom.
     angle_degrees: f32 = 0,
     interpolation: GradientInterpolation = .srgb,
 };
@@ -281,7 +239,6 @@ pub fn linearGradient(gradient: Gradient) Fill {
     });
 }
 
-// The MSL `struct Params` in linear_gradient.metal declares these members at these offsets.
 comptime {
     assert(@sizeOf(LinearGradientParams) == 48);
     assert(@offsetOf(LinearGradientParams, "end") == 16);
@@ -314,8 +271,6 @@ test "linearGradient stores interpolation at offset 40, defaults to srgb, zeroes
     var oklab = stops;
     oklab.interpolation = .oklab;
     const fills = [2]Fill{ linearGradient(stops), linearGradient(oklab) };
-    // The default must be byte-identical to the layout before the field existed: offsets
-    // 40-47 were zero padding, so srgb fills and goldens keep their bytes.
     for (fills[0].params[40..]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
     const interpolation = std.mem.readInt(u32, fills[1].params[40..44], .little);
     try std.testing.expectEqual(@as(u32, 1), interpolation);

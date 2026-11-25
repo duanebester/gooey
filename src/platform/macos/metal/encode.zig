@@ -127,8 +127,6 @@ pub fn bindFrame(encoder: objc.Object, bindings: struct {
         .bytes = std.mem.asBytes(&bindings.viewport_logical),
         .index = shaders.buffer_viewport,
     });
-    // Custom fills read params by instance from one buffer; fragment bindings persist
-    // across pipeline changes, so the frame binds them once.
     encoder.msgSend(void, "setFragmentBuffer:offset:atIndex:", .{
         bindings.params.value,
         @as(c_ulong, 0),

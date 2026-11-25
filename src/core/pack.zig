@@ -208,8 +208,6 @@ const Packer = struct {
         target.custom_count += 1;
     }
 
-    /// Extend the last draw when pipeline, shader, and clip match, so a run of one
-    /// shader under one clip is a single instanced draw.
     fn appendDraw(self: *Packer, pipeline: Pipeline, shader: u8, first: u32) void {
         const target = self.target;
         const clip = self.currentClip();
@@ -559,10 +557,6 @@ test "pack fills its draws and clips exactly at the paint record budget" {
 }
 
 test "pack merges custom fills by shader and clip, culls, and keeps each params slot" {
-    // Method: the shader sequence 0,0,1,0 under one clip must give three draws (a shader
-    // change splits a run, returning to shader 0 does not rejoin it), a clip change must
-    // split even with the same shader, and a fill outside its clip or fully transparent
-    // must take no instance. Params slots are claimed in a different order from packing.
     const testing = std.testing;
     var frame: records.Frame = undefined;
     var capacity = testFrameCapacity(16, 0);

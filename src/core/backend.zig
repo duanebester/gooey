@@ -78,8 +78,6 @@ pub const RenderLimits = struct {
     paint: limits_mod.PaintLimits,
     frame: limits_mod.FrameLimits,
     atlas: limits_mod.AtlasLimits,
-    /// The app's declared shaders, at most `paint.shader_count_max`. A renderer that
-    /// draws custom fills compiles one pipeline per entry at init.
     shaders: []const *const shader_mod.Spec,
 
     pub fn fromResourceLimits(resource_limits: *const limits_mod.ResourceLimits) RenderLimits {
@@ -98,7 +96,6 @@ pub const RenderLimits = struct {
 
 pub const Capabilities = struct {
     meshes: bool,
-    /// Draws `.custom` pipelines with the shaders from `RenderLimits.shaders`.
     custom_shaders: bool,
 };
 

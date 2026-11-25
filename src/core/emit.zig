@@ -738,7 +738,6 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect, clip: ?Rect)
             .shader = fill.shader,
             .params_slot = fill.params_slot,
         } });
-        // The border draws over the fill as a transparent quad with the same corners.
         if (node.border.width == 0) return;
     }
     frame.appendPaint(.{ .quad = .{

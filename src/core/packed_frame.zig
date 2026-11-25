@@ -42,9 +42,6 @@ pub const Mesh = extern struct {
 
 pub const MeshPoint = geometry.GpuPoint;
 
-/// One custom-shader fill instance. `params_index` selects the instance's slot in the
-/// frame's params bytes (stride `PaintLimits.shader_params_bytes_max`); the draw names
-/// the shader.
 pub const Custom = extern struct {
     bounds: Rect,
     corners: [4]f32,
@@ -77,11 +74,8 @@ pub const Pipeline = enum(u8) {
 
 pub const Kind = enum { quad, sprite, mesh, custom };
 
-/// Pipelines every renderer builds at init. `.custom` is last and per app: a renderer
-/// with Capabilities.custom_shaders builds one pipeline per declared shader instead.
 pub const builtin_pipeline_count: u32 = @typeInfo(Pipeline).@"enum".field_names.len - 1;
 
-/// The pipelines a renderer builds the same way for every app, with Pipeline's values.
 pub const BuiltinPipeline = enum(u8) {
     quad,
     glyph,
@@ -101,7 +95,6 @@ comptime {
     }
 }
 
-/// `shader` is the ShaderId (index in `App.shaders`) of a `.custom` draw, else 0.
 pub const Draw = extern struct {
     pipeline: Pipeline,
     shader: u8 = 0,
@@ -171,10 +164,8 @@ pub const PackedFrame = struct {
     mesh_points: []const MeshPoint,
     customs: []Custom,
     custom_count: u32,
-    /// The records frame's params bytes, `params_stride` per slot, set by pack.
     params: []const u8,
     params_stride: u32,
-    /// `ShadeInput.time`: seconds from the frame clock, wrapped (shader.timeSeconds).
     shader_time_s: f32,
     clips: []Rect,
     clip_count: u32,
@@ -315,8 +306,6 @@ pub const PackedFrame = struct {
         return self.customs[0..self.custom_count];
     }
 
-    /// The params bytes of one custom instance: a whole slot, zero past the shader's
-    /// Params.
     pub fn customParams(self: *const PackedFrame, custom: *const Custom) []const u8 {
         assert(self.params_stride > 0);
         const offset = @as(u64, custom.params_index) * self.params_stride;

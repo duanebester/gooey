@@ -104,7 +104,6 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
                 draw_calls += 1;
             },
             .mesh => draw_calls += recordMeshes(target, frame, draw),
-            // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
             .custom => unreachable,
         }
     }

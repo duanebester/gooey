@@ -1,8 +1,3 @@
-//! Custom fill shaders on Metal: a card filled by the built-in linear gradient, a
-//! skeleton shimmer from an app-defined animated shader clipped by its container, and
-//! a row of gradient swatches that pack into one instanced draw, and the same stops
-//! interpolated in sRGB and in OKLab side by side, and fades to transparent stops over
-//! a white panel, which both spaces mix premultiplied by alpha.
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -92,8 +87,6 @@ const GradientCard = struct {
     }
 };
 
-/// The shimmer is wider than its clipping container, so its right end and rounded
-/// corners on that side are cut by the clip.
 const ShimmerStrip = struct {
     pub fn render(_: ShimmerStrip, cx: *Cx) void {
         cx.render(ui.box(.{ .style = .{
@@ -123,8 +116,6 @@ const Swatches = struct {
     }
 };
 
-/// Swatch fills are computed at comptime: the same params bytes on every host, so
-/// the golden does not depend on a platform's `cos` and `sin`.
 const swatch_fills = fills: {
     var fills: [swatch_count]ui.Fill = undefined;
     for (&fills, 0..) |*fill, index| {
@@ -153,9 +144,6 @@ const Swatch = struct {
     }
 };
 
-/// Complementary pairs, where sRGB mixing dips hardest: yellow to blue passes through
-/// a flat mid grey (0.5, 0.5, 0.5) in sRGB, while OKLab keeps the midpoint's lightness
-/// between the stops'.
 pub const compare_pairs = [_][2]Color{
     .{ Color.rgba(1, 1, 0, 1), Color.rgba(0, 0, 1, 1) },
     .{ Color.rgba(1, 0, 0, 1), Color.rgba(0, 1, 1, 1) },
@@ -210,9 +198,6 @@ const ComparisonBar = struct {
     }
 };
 
-/// Fades to transparent: straight-alpha mixing would pull the midpoint toward the
-/// transparent stop's color (red to transparent black darkens), premultiplied keeps the
-/// opaque stop's color and only lowers alpha.
 pub const fade_pairs = [_][2]Color{
     .{ Color.rgba(1, 0, 0, 1), Color.rgba(0, 0, 0, 0) },
     .{ Color.rgba(1, 1, 1, 1), Color.rgba(0, 0, 1, 0) },

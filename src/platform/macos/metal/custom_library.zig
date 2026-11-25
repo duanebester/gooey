@@ -1,14 +1,3 @@
-//! Assembles Gooey's MSL library with the app's custom fill shaders, as one source for
-//! one `newLibraryWithSource:` call at init.
-//!
-//! Layout, from experiments 1 and 2 of the custom-shader design note:
-//!   shaders.source, shaders.custom_prelude, the params stride constant, then for each
-//!   shader: `namespace user_<name> {` + `#line 1 "<name>.metal"` + its MSL + `}`, and
-//!   `#line 1 "<name>.gooey_wrapper.metal"` + its wrapped fragment function.
-//! Every segment carries its own `#line`: without one, a user shader inherits the
-//! previous wrapper's file name and its errors blame the wrong shader. One concatenated
-//! library compiles about 6x faster per shader than one library each (1.4 ms against
-//! 8 ms on an M2 Max), and any error fails init anyway.
 const std = @import("std");
 const assert = std.debug.assert;
 const shaders = @import("shaders.zig");
@@ -22,10 +11,9 @@ pub const Options = struct {
 
 const stride_format = "constant uint custom_params_stride = {d};\n";
 
-// Arguments: name x3, params size, name x5.
 const wrapper_format =
     \\
-    \\}} // namespace user_{s}
+    \\}}
     \\#line 1 "{s}.gooey_wrapper.metal"
     \\static_assert(sizeof(user_{s}::Params) == {d},
     \\    "{s}: the MSL Params size differs from the Zig Params size");
@@ -35,7 +23,6 @@ const wrapper_format =
     \\    constant uchar *params [[buffer(1)]],
     \\    constant ShadeFrame &shade_frame [[buffer(2)]]
     \\) {{
-    \\    // Derivatives first: they are undefined after a non-uniform discard.
     \\    float2 pixel = float2(length(float2(dfdx(in.local.x), dfdy(in.local.x))),
     \\                          length(float2(dfdx(in.local.y), dfdy(in.local.y))));
     \\    if (outside_clip(in.screen_pos, clip)) discard_fragment();
@@ -52,16 +39,15 @@ const wrapper_format =
 
 const head_format = "namespace user_{s} {{\n#line 1 \"{s}.metal\"\n";
 
-const name_uses_max: u32 = 10;
+const name_uses_max: u32 = 9;
 const digits_max: u32 = 20;
 
-/// Upper bound on the assembled source, so init reserves it exactly once.
 pub fn sourceBytesMax(options: *const Options) u64 {
     assert(options.shaders.len <= limits_mod.MAX_SHADERS);
     var bytes: u64 = shaders.source.len + shaders.custom_prelude.len + stride_format.len +
         digits_max;
     for (options.shaders) |spec| {
-        const msl = spec.source.msl orelse unreachable; // App.main requires .msl on macOS.
+        const msl = spec.source.msl orelse unreachable;
         bytes += msl.len + head_format.len + wrapper_format.len +
             name_uses_max * shader_mod.name_bytes_max + 2 * digits_max;
     }
@@ -69,12 +55,11 @@ pub fn sourceBytesMax(options: *const Options) u64 {
     return bytes;
 }
 
-/// Write the whole library into `buffer` (at least `sourceBytesMax` bytes).
 pub fn write(buffer: []u8, options: *const Options) []const u8 {
     assert(buffer.len >= sourceBytesMax(options));
     assert(options.params_stride % limits_mod.shader_params_alignment == 0);
     var writer = std.Io.Writer.fixed(buffer);
-    writeAll(&writer, options) catch unreachable; // The buffer holds sourceBytesMax.
+    writeAll(&writer, options) catch unreachable;
     const written = writer.buffered();
     assert(written.len > shaders.source.len);
     assert(written.len <= buffer.len);
@@ -92,16 +77,15 @@ fn writeAll(writer: *std.Io.Writer, options: *const Options) std.Io.Writer.Error
         try writer.print(head_format, .{ name, name });
         try writer.writeAll(spec.source.msl orelse unreachable);
         try writer.print(wrapper_format, .{
-            name, name, name, spec.params_size, name, name, name, name, name,
+            name, name, spec.params_size, name, name, name, name, name,
         });
     }
 }
 
-/// The fragment function name of a shader, for `newFunctionWithName:`.
 pub fn fragmentName(buffer: []u8, spec: *const shader_mod.Spec) [:0]const u8 {
     assert(buffer.len > "custom_fragment_".len + spec.name.len);
     const name = std.fmt.bufPrintSentinel(buffer, "custom_fragment_{s}", .{spec.name}, 0) catch
-        unreachable; // Asserted above.
+        unreachable;
     assert(name.len > spec.name.len);
     return name;
 }

@@ -37,7 +37,6 @@ comptime {
     assert(@sizeOf(ShadeFrame) == 16);
 }
 
-/// Per-frame inputs every custom fill sees (`ShadeFrame` in `custom_prelude`).
 pub const ShadeFrame = extern struct {
     time_s: f32,
     scale: f32,
@@ -751,12 +750,7 @@ const point_cloud =
     \\
 ;
 
-/// MSL for custom fills, placed after `source` and before the user shaders: the
-/// `ShadeInput` contract, the instance layout, the vertex stage, and the coverage the
-/// wrapped fragment applies after `shade`. custom_library.zig writes the params stride
-/// constant after it and one wrapped fragment per shader.
 pub const custom_prelude =
-    \\// packed_frame.Custom (48 B).
     \\struct CustomFill {
     \\    float4 bounds;
     \\    float4 corners;
@@ -765,16 +759,12 @@ pub const custom_prelude =
     \\    float2 _pad;
     \\};
     \\
-    \\// shaders.ShadeFrame (16 B).
     \\struct ShadeFrame {
     \\    float time;
     \\    float scale;
     \\    float2 _pad;
     \\};
     \\
-    \\// What a user `shade` function receives. uv is 0-1 inside the element; size and
-    \\// position are element-local logical pixels; time is seconds, wrapped at 3600;
-    \\// scale is device pixels per logical pixel.
     \\struct ShadeInput {
     \\    float2 uv;
     \\    float2 size;
@@ -793,7 +783,6 @@ pub const custom_prelude =
     \\    uint params_index [[flat]];
     \\};
     \\
-    \\// The same one-pixel fringe as quad_vertex, so partly covered pixels rasterize.
     \\vertex CustomOut custom_vertex(
     \\    uint vid [[vertex_id]],
     \\    uint iid [[instance_id]],
@@ -817,8 +806,6 @@ pub const custom_prelude =
     \\    return out;
     \\}
     \\
-    \\// Coverage of the pixel by the element's rounded rectangle, as quad_color computes
-    \\// it for a borderless quad.
     \\float custom_coverage(CustomOut in, float2 pixel) {
     \\    float2 half_size = in.size / 2.0;
     \\    float2 centered = in.local - half_size;

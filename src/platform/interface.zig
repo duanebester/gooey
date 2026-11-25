@@ -118,8 +118,6 @@ pub const WindowOptions = struct {
 
     limits: ResourceLimits,
 
-    /// The app's declared custom shaders (`App.shaders`). Only renderers with
-    /// Capabilities.custom_shaders read it; App.main rejects shaders elsewhere.
     shaders: []const *const shader_mod.Spec = &.{},
 };
 

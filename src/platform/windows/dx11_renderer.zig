@@ -87,7 +87,6 @@ fn pipelineState(pipeline: Pipeline) PipelineState {
         .triangles => .{ .vertex = .triangles, .pixel = .mesh, .premultiplied = true },
         .strip_expanded => .{ .vertex = .strip, .pixel = .mesh, .premultiplied = true },
         .point_instanced => .{ .vertex = .points, .pixel = .mesh, .premultiplied = true },
-        // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
         .custom => unreachable,
     };
 }
@@ -409,7 +408,6 @@ pub const Dx11Renderer = struct {
                     packed_draw.first,
                 ),
                 .mesh => drawMeshes(context, frame, packed_draw),
-                // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
                 .custom => unreachable,
             }
         }

@@ -52,9 +52,6 @@ const specs = std.EnumArray(BuiltinPipeline, Spec).init(.{
 
 pub const Options = custom_library.Options;
 
-/// Gooey's pipelines plus one per declared custom shader, from one library compiled at
-/// init. Cold, that costs about 100 ms plus about 4.5 ms per shader on an M2 Max; the
-/// Metal cache brings a relaunch to about 1.5 ms.
 pub const Pipelines = struct {
     states: [pipeline_count]objc.Object,
     custom_states: [custom_count_max]objc.Object,
@@ -100,7 +97,6 @@ pub const Pipelines = struct {
         self.* = undefined;
     }
 
-    /// The state for a draw: a builtin pipeline, or the `.custom` draw's shader.
     pub fn state(self: *const Pipelines, pipeline: Pipeline, shader: u8) objc.Object {
         const index = @backingInt(pipeline);
         if (pipeline == .custom) {
@@ -119,9 +115,6 @@ fn nsString(text: [:0]const u8) objc.Object {
     return NSString.msgSend(objc.Object, "stringWithUTF8String:", .{text.ptr});
 }
 
-/// Compile Gooey's source with every custom shader as one library. The assembled source
-/// lives in a reservation released before init returns. A failed compile logs Metal's
-/// message, whose `#line` file names point at the shader and its own lines.
 fn compileLibrary(device: objc.Object, options: *const Options) !objc.Object {
     assert(shaders.source.len > 0);
     const bytes_max: u32 = @intCast(custom_library.sourceBytesMax(options));
@@ -284,8 +277,6 @@ pub fn frameBufferContents(comptime T: type, buffer: objc.Object) [*]T {
 }
 
 test "Pipelines.init compiles Gooey's library with the built-in custom shaders" {
-    // Only a device compile catches MSL errors in a built-in shader; without this, a
-    // broken shader would first fail at app init. Hosts without Metal skip.
     const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse return error.SkipZigTest;
     const device = objc.Object.fromId(device_ptr);
     defer device.release();

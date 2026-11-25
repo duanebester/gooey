@@ -338,7 +338,6 @@ fn recordDraws(
                 packed_draw.first,
             ),
             .mesh => recordMeshes(frame, packed_draw),
-            // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
             .custom => unreachable,
         }
     }

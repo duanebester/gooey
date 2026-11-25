@@ -90,9 +90,6 @@ pub const grid = trace.Trace{
     },
 };
 
-/// Custom fills: an animated shader keeps the window ticking, so each step's frame
-/// advances `t`, the six swatches stay one batched draw, and the OKLab bars carry
-/// interpolation = 1 at params offset 40, and the fades carry stops with alpha below 1.
 pub const shaders = trace.Trace{
     .name = "shaders",
     .width = 640,

@@ -133,9 +133,6 @@ fn writeQuad(out: *TextBuffer, quad: *const packed_mod.Quad, clip: packed_mod.Re
     out.print("\n", .{});
 }
 
-/// One line per instance under its draw's header: bounds, corners, opacity, and the
-/// params bytes in hex without trailing zero words, so goldens show both how fills
-/// batch and what each instance carries.
 fn writeCustom(out: *TextBuffer, frame: *const PackedFrame, custom: *const packed_mod.Custom) void {
     assert(custom.opacity > 0);
     assert(custom.opacity <= 1);

@@ -6,10 +6,8 @@ const text_mod = @import("text/mod.zig");
 const accessibility_mod = @import("accessibility/mod.zig");
 
 pub const App = core.App;
-/// Declare a custom fill shader; see `src/core/shader.zig`.
 pub const Shader = core.Shader;
 
-/// Built-in custom fill shaders. List the ones an app uses in `App.shaders`.
 pub const shaders = struct {
     pub const LinearGradient = core.shader.LinearGradient;
     pub const LinearGradientParams = core.shader.LinearGradientParams;

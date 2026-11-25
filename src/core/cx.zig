@@ -855,8 +855,6 @@ fn resolveAppearance(window: *Window, node: *Node, style: *const element.Style) 
     }
 }
 
-/// Claim the fill's params slot now, while its bytes are at hand, so emit and pack
-/// only move indices. An animated shader asks for the next frame.
 fn resolveFill(window: *Window, node: *Node, fill: *const element.Fill, has_background: bool) void {
     assert(node.fill == null);
     if (has_background) {

@@ -1,5 +1,3 @@
-// Skeleton-loader shimmer: a soft highlight band sweeps left to right across the
-// element once every 1 / speed seconds.
 struct Params {
     float4 base;
     float4 highlight;

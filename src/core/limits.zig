@@ -23,14 +23,10 @@ pub const MAX_POINT_CLOUDS_PER_FRAME: u32 = 4096;
 
 pub const MAX_CLIP_STACK_DEPTH: u32 = 32;
 
-/// Shaders an app may declare. Each one costs a pipeline state at init: on Apple M2 Max,
-/// about 4.5 ms cold (first launch or after a shader changes) and about 0.05 ms once the
-/// Metal cache holds it.
 pub const MAX_SHADERS: u32 = 64;
 
 pub const MAX_CUSTOM_DRAWS_PER_FRAME: u32 = 16_384;
 
-/// One custom draw's Params, and the stride of the per-frame params buffer.
 pub const MAX_SHADER_PARAMS_BYTES: u32 = 64;
 
 pub const shader_params_alignment: u32 = 16;
@@ -273,7 +269,6 @@ pub const ResourceLimits = struct {
         return self.checkPaintRecordRelationships();
     }
 
-    /// Every custom fill is one paint record, and every element may paint at least one.
     fn checkPaintRecordRelationships(self: *const ResourceLimits) ?Violation {
         const record_count = self.records.paint_record_count_frame_max;
         if (self.paint.custom_draw_count_frame_max > record_count) {
@@ -406,12 +401,8 @@ pub const PaintLimits = struct {
     polyline_point_count_frame_max: u32,
     point_count_frame_max: u32,
     clip_depth_max: u32,
-    /// Shaders the app may declare in `App.shaders`. See MAX_SHADERS for the init cost.
     shader_count_max: u32,
-    /// Custom-shader fill instances per frame; also the params slots per frame.
     custom_draw_count_frame_max: u32,
-    /// Params bytes per custom draw, a multiple of 16. Per frame in flight the params
-    /// buffer is custom_draw_count_frame_max * shader_params_bytes_max bytes.
     shader_params_bytes_max: u32,
 
     pub const nano: PaintLimits = .{
@@ -570,7 +561,6 @@ pub const PaintLimits = struct {
         const packed_bytes = packed_frame.paintBytes(self);
         const point_bytes = @as(u64, packed_frame.meshPointCapacity(self)) *
             @sizeOf(packed_frame.MeshPoint);
-        // Each of the two record frames holds its own mesh points and params slots.
         const params_bytes = @as(u64, self.custom_draw_count_frame_max) *
             self.shader_params_bytes_max;
         const bytes = packed_bytes + 2 * point_bytes + 2 * params_bytes;
@@ -2085,8 +2075,6 @@ test "derived budget quantities" {
     const nano_bytes = 272 * 96 + 1_044 * 96 + 24 * 32 + 341 * 4 + 1_537 * 20 + 2 * 3_072 * 8 +
         nano_custom_bytes;
     try std.testing.expectEqual(@as(u64, nano_bytes), PaintLimits.nano.paintBytes());
-    // Custom fills add 48 B per instance and two frames of 64 B params per instance:
-    // 44 KiB on small, 176 KiB on standard and 704 KiB on large.
     try std.testing.expect(PaintLimits.small.paintBytes() < 1_186 * 1024);
     try std.testing.expect(paint.paintBytes() < 3_070 * 1024);
     try std.testing.expect(PaintLimits.large.paintBytes() < 35 * 1024 * 1024);

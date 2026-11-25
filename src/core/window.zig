@@ -112,7 +112,6 @@ pub const Node = struct {
     source: debugger_mod.NodeSource,
 };
 
-/// A resolved `Style.fill`: the ShaderId and the frame params slot holding its Params.
 pub const NodeFill = struct { shader: u8, params_slot: u32 };
 
 pub const FocusPlace = struct {
@@ -487,7 +486,6 @@ pub const WakeService = images_mod.WakeService;
 pub const Window = struct {
     gpa: std.mem.Allocator,
     limits: ResourceLimits,
-    /// `App.shaders` in declaration order; a spec's index is its ShaderId.
     shaders: []const *const shader_mod.Spec,
     theme: *const element.Theme,
     keymap: []const keymap_mod.Compiled,
@@ -681,8 +679,6 @@ pub const Window = struct {
         return &self.editors;
     }
 
-    /// The ShaderId of a fill's shader. A shader missing from `App.shaders` has no
-    /// pipeline, so drawing it is a programmer error.
     pub fn shaderId(self: *const Window, spec: *const shader_mod.Spec) u8 {
         assert(self.shaders.len <= limits_mod.MAX_SHADERS);
         for (self.shaders, 0..) |declared, index| {

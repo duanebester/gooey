@@ -832,8 +832,6 @@ fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*gooey.Cx) 
     app.tick(1);
 }
 
-// One more gradient fill than nano's params slots: the emit that claims the extra slot
-// must name the pool and its ResourceLimits field instead of dropping the fill.
 fn coreShaderParams(gpa: std.mem.Allocator, io: std.Io) void {
     const config: gooey.Config(CoreState) = .{
         .title = "fail-fast",

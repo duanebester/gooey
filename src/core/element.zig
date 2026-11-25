@@ -184,8 +184,6 @@ pub const Style = struct {
     grid: ?Grid = null,
     cell: Cell = .{},
     background: ?ColorToken = null,
-    /// A custom-shader fill (`MyShader.fill(params)`), drawn in place of `background`
-    /// with the same corners, clip and opacity. Setting both is a programmer error.
     fill: ?Fill = null,
     border: ?Border = null,
     corner_radius: Corners = .zero,
