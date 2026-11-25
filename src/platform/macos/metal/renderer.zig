@@ -54,7 +54,11 @@ pub const Renderer = struct {
         const layer = objc.Object.fromId(native);
         configureLayer(layer, device, surface.size_px);
 
-        self.pipelines = try pipelines_mod.Pipelines.init(device);
+        assert(render_limits.shaders.len <= render_limits.paint.shader_count_max);
+        self.pipelines = try pipelines_mod.Pipelines.init(device, &.{
+            .shaders = render_limits.shaders,
+            .params_stride = render_limits.paint.shader_params_bytes_max,
+        });
         errdefer self.pipelines.deinit();
         self.atlas = try atlas_textures.AtlasTextures.init(device, &render_limits.atlas);
         errdefer self.atlas.deinit();
@@ -87,7 +91,7 @@ pub const Renderer = struct {
     pub fn capabilities(self: *const Self) backend.Capabilities {
         assert(self.device.value != null);
         assert(self.slots.count > 0);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = true };
     }
 
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
@@ -153,16 +157,22 @@ pub const Renderer = struct {
             return;
         };
         render_pass.setViewport(pass.encoder, viewport.size_px);
-        self.bindFrame(pass.encoder, viewport);
+        self.bindFrame(pass.encoder, viewport, frame.shader_time_s);
         encode.encodeDraws(pass.encoder, frame, &self.pipelines);
         render_pass.finishAndPresent(pass.encoder, command_buffer, pass.drawable);
         self.last_drawable = pass.drawable;
         self.retireFrame(command_buffer);
     }
 
-    fn bindFrame(self: *const Self, encoder: objc.Object, viewport: backend.Viewport) void {
+    fn bindFrame(
+        self: *const Self,
+        encoder: objc.Object,
+        viewport: backend.Viewport,
+        shader_time_s: f32,
+    ) void {
         assert(viewport.size_px.width > 0);
         assert(viewport.size_px.height > 0);
+        assert(shader_time_s >= 0);
         const index = self.slots.index;
         const scale = viewport.scale_factor;
         encode.bindFrame(encoder, .{
@@ -170,6 +180,9 @@ pub const Renderer = struct {
             .sprites = self.slots.sprites.at(index),
             .points = self.slots.points.at(index),
             .edge_modes = self.slots.edge_modes.at(index),
+            .customs = self.slots.customs.at(index),
+            .params = self.slots.params.at(index),
+            .shade_frame = .{ .time_s = shader_time_s, .scale = scale },
             .textures = .{ self.atlas.glyph, self.atlas.svg, self.atlas.image },
             .viewport_logical = .{
                 @as(f32, @floatFromInt(viewport.size_px.width)) / scale,

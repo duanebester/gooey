@@ -2,6 +2,7 @@ const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const TitleBar = @import("../core/events.zig").TitleBar;
+const shader_mod = @import("../core/shader.zig");
 const window_registry = @import("window_registry.zig");
 
 pub const WindowId = window_registry.WindowId;
@@ -116,6 +117,8 @@ pub const WindowOptions = struct {
     title_bar: TitleBar = .standard,
 
     limits: ResourceLimits,
+
+    shaders: []const *const shader_mod.Spec = &.{},
 };
 
 pub fn minSize(width: u32, height: u32) ?geometry.Size(f64) {

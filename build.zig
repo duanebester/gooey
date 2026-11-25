@@ -184,6 +184,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
             .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
+            .{ .name = "shaders", .source = "src/examples/shaders.zig" },
         };
         var todo_exe: ?*std.Build.Step.Compile = null;
         for (native_examples) |example| {
@@ -1102,6 +1103,7 @@ fn addMacosCoreExampleTypecheck(
         "drag_drop",
         "text_area",
         "background",
+        "shaders",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1331,6 +1333,9 @@ fn addFailFastChecks(
         .{ .mode = "core-pack-clips", .stderr = "Packed pool 'clips' exhausted: capacity 9 " ++
             "(ResourceLimits.records.paint_record_count_frame_max + 1), 9 in use, 1 requested, " ++
             "frame 1." },
+        .{ .mode = "core-shader-params", .stderr = "record frame pool 'shader params' " ++
+            "exhausted: capacity 64 (ResourceLimits.paint.custom_draw_count_frame_max), " ++
+            "64 in use, 1 requested, frame 1." },
         .{ .mode = "core-capabilities-meshes", .stderr = "Packed frame 1 holds 1 meshes, but " ++
             "its renderer reports Capabilities.meshes = false." },
         .{ .mode = "chart-points", .stderr = "chart series 'rev' full: capacity 4 points, " ++
@@ -2029,6 +2034,12 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const shaders_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const charts_mod = b.createModule(.{
         .root_source_file = b.path("charts/src/root.zig"),
         .target = target,
@@ -2122,6 +2133,7 @@ fn goldensImports(
         .{ .name = "dynamic_counters_example", .module = dynamic_counters_mod },
         .{ .name = "grid_layout_example", .module = grid_layout_mod },
         .{ .name = "text_truncation_example", .module = text_truncation_mod },
+        .{ .name = "shaders_example", .module = shaders_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

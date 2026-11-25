@@ -116,7 +116,7 @@ pub const EveRenderer = struct {
     pub fn capabilities(self: *const Self) backend.Capabilities {
         assert(self.chip != null);
         assert(self.size_px.width > 0);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = false };
     }
 
     pub fn draw(
@@ -221,6 +221,7 @@ pub const EveRenderer = struct {
                 packed_draw.count,
                 packed_draw.pipeline,
             }),
+            .custom => unreachable,
         }
     }
 
@@ -631,6 +632,7 @@ const test_limits = backend.RenderLimits{
     .window = .{ .framebuffer_width_max = 1024, .framebuffer_height_max = 600 },
     .frame = limits_mod.FrameLimits.nano,
     .atlas = limits_mod.AtlasLimits.nano,
+    .shaders = &.{},
 };
 
 const test_viewport = backend.Viewport{

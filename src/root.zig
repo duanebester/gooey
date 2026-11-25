@@ -6,6 +6,17 @@ const text_mod = @import("text/mod.zig");
 const accessibility_mod = @import("accessibility/mod.zig");
 
 pub const App = core.App;
+pub const Shader = core.Shader;
+
+pub const shaders = struct {
+    pub const LinearGradient = core.shader.LinearGradient;
+    pub const LinearGradientParams = core.shader.LinearGradientParams;
+    pub const Gradient = core.shader.Gradient;
+    pub const GradientInterpolation = core.shader.GradientInterpolation;
+    pub const linearGradient = core.shader.linearGradient;
+    pub const Source = core.shader.Source;
+    pub const time_period_s = core.shader.time_period_s;
+};
 pub const Config = core.Config;
 pub const Init = core.Init;
 pub const Job = core.Job;
@@ -114,6 +125,7 @@ pub const internals = struct {
     pub const keymap = core.keymap;
     pub const keymaps = core.keymaps;
     pub const actions = core.actions;
+    pub const shader = core.shader;
     pub const text_history = @import("core/text_history.zig");
     pub const debugger = core.debugger;
     pub const limits = @import("core/limits.zig");

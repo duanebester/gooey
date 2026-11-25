@@ -326,7 +326,7 @@ pub const VulkanRenderer = struct {
     pub fn capabilities(self: *const Self) backend.Capabilities {
         assert(self.initialized);
         assert(self.pipelines[@backingInt(Pipeline.triangles)] != null);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = false };
     }
 
     fn beginCommands(self: *Self) *FrameResources {

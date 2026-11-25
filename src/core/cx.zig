@@ -661,6 +661,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .actions_len = 0,
         .a11y = null,
         .background = null,
+        .fill = null,
         .border = .none,
         .corners = .zero,
         .shadow = null,
@@ -842,6 +843,7 @@ fn styleOpacity(window: *const Window, opacity: f32) f32 {
 fn resolveAppearance(window: *Window, node: *Node, style: *const element.Style) void {
     const theme = window.theme;
     if (style.background) |background| node.background = background.resolve(theme);
+    if (style.fill) |*fill| resolveFill(window, node, fill, style.background != null);
     if (style.border) |border| {
         assert(border.width >= 0);
         node.border = .{ .width = border.width, .color = border.color.resolve(theme) };
@@ -851,6 +853,21 @@ fn resolveAppearance(window: *Window, node: *Node, style: *const element.Style) 
         node.shadow = shadow;
         node.shadow_color = shadow.color.resolve(theme);
     }
+}
+
+fn resolveFill(window: *Window, node: *Node, fill: *const element.Fill, has_background: bool) void {
+    assert(node.fill == null);
+    if (has_background) {
+        std.debug.panic("Style sets both .background and .fill (shader \"{s}\", frame {d}); " ++
+            ".fill replaces .background, so set one.", .{ fill.spec.name, window.frame_number });
+    }
+    const shader = window.shaderId(fill.spec);
+    const slot = window.built().claimParams(fill.paramsBytes());
+    node.fill = .{ .shader = shader, .params_slot = slot };
+    if (fill.spec.animated) {
+        window.build_deadline_ns = @min(window.build_deadline_ns, window.now_ns);
+    }
+    assert(node.fill.?.shader < window.shaders.len);
 }
 
 fn layoutFailed(window: *const Window, err: anyerror) noreturn {

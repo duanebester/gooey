@@ -54,6 +54,7 @@ const Mode = enum {
     @"core-pack-polylines",
     @"core-pack-draws",
     @"core-pack-clips",
+    @"core-shader-params",
     @"core-capabilities-meshes",
     @"chart-points",
     @"chart-categories",
@@ -117,6 +118,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-pack-polylines" => coreTick(init.gpa, init.io, CoreApp.manyPolylines),
         .@"core-pack-draws" => corePackRecords(init.gpa, .draws),
         .@"core-pack-clips" => corePackRecords(init.gpa, .clips),
+        .@"core-shader-params" => coreShaderParams(init.gpa, init.io),
         .@"core-capabilities-meshes" => coreCapabilitiesMeshes(init.gpa),
         .@"chart-points" => chartPoints(),
         .@"chart-categories" => chartCategories(),
@@ -492,6 +494,19 @@ const CoreApp = struct {
         for (0..count) |_| cx.render(gooey.ui.box(.{}, .{}));
     }
 
+    fn manyFills(cx: *gooey.Cx) void {
+        const count = gooey.ResourceLimits.nano.paint.custom_draw_count_frame_max + 1;
+        for (0..count) |_| cx.render(gooey.ui.box(.{ .style = .{
+            .width = .{ .fixed = 1 },
+            .height = .{ .fixed = 1 },
+            .fill = gooey.shaders.linearGradient(.{
+                .start = gooey.ui.Color.white,
+                .end = gooey.ui.Color.black,
+                .angle_degrees = 0,
+            }),
+        } }, .{}));
+    }
+
     fn manyLayers(cx: *gooey.Cx) void {
         const count = gooey.ResourceLimits.nano.build.layer_count_frame_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{
@@ -817,6 +832,19 @@ fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*gooey.Cx) 
     app.tick(1);
 }
 
+fn coreShaderParams(gpa: std.mem.Allocator, io: std.Io) void {
+    const config: gooey.Config(CoreState) = .{
+        .title = "fail-fast",
+        .width = 100,
+        .height = 100,
+        .limits = .nano,
+        .shaders = &.{gooey.shaders.LinearGradient},
+    };
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.manyFills, config), gpa, io);
+    std.debug.assert(gooey.ResourceLimits.nano.paint.custom_draw_count_frame_max > 0);
+    app.tick(1);
+}
+
 fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
     const internals = gooey.internals;
     const records = internals.records;
@@ -832,6 +860,8 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 1,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     }) catch |err| {
         std.debug.panic("setup: records.Frame.initInPlace failed: {s}", .{@errorName(err)});
     };
@@ -889,6 +919,8 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 2,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     }) catch |err| {
         std.debug.panic("setup: records.Frame.initInPlace failed: {s}", .{@errorName(err)});
     };
@@ -913,7 +945,7 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         .width = 2,
     } });
     internals.pack.pack(frame, target);
-    internals.backend.checkCapabilities(.{ .meshes = false }, target);
+    internals.backend.checkCapabilities(.{ .meshes = false, .custom_shaders = false }, target);
 }
 
 fn chartPoints() void {

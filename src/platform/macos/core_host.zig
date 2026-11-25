@@ -61,6 +61,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
         .min_size = interface.minSize(App.min_width, App.min_height),
         .title_bar = App.title_bar,
         .limits = App.limits_reserved,
+        .shaders = App.shaders,
     });
     defer window.deinit();
     try platform.installMainMenu(window.ns_window, std.fmt.comptimePrint("Quit {s}", .{App.title}));

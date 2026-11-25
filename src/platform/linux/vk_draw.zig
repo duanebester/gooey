@@ -12,7 +12,7 @@ const Pipeline = packed_mod.Pipeline;
 const FrameBuffer = vk_types.FrameBuffer;
 const FrameCapacity = vk_types.FrameCapacity;
 
-pub const pipeline_count: u32 = @typeInfo(Pipeline).@"enum".field_names.len;
+pub const pipeline_count: u32 = packed_mod.builtin_pipeline_count;
 
 const instance_vertex_count: u32 = 6;
 
@@ -104,6 +104,7 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
                 draw_calls += 1;
             },
             .mesh => draw_calls += recordMeshes(target, frame, draw),
+            .custom => unreachable,
         }
     }
     return draw_calls;
@@ -142,7 +143,7 @@ fn recordMeshes(
             .point_instanced => {
                 vk.vkCmdDraw(target.command, instance_vertex_count, mesh.count, 0, 0);
             },
-            .quad, .glyph, .svg, .image => unreachable,
+            .quad, .glyph, .svg, .image, .custom => unreachable,
         }
     }
     return draw.count;

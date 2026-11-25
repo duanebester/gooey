@@ -43,6 +43,10 @@ test "core truncation matches its golden" {
     try expectGolden("core_truncation", golden, core.captureTruncation);
 }
 
+test "core shaders matches its golden" {
+    try expectGolden("core_shaders", @embedFile("core_shaders.txt"), core.captureShaders);
+}
+
 test "a replayed trace is byte-identical" {
     const first = try std.testing.allocator.alloc(u8, golden_bytes_max);
     defer std.testing.allocator.free(first);

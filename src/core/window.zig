@@ -20,6 +20,7 @@ const A11ySystem = @import("a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
 const debugger_mod = @import("debugger.zig");
 const frame_trace = @import("frame_trace.zig");
+const shader_mod = @import("shader.zig");
 const input_mod = @import("../input/mod.zig");
 
 const assert = std.debug.assert;
@@ -93,6 +94,7 @@ pub const Node = struct {
     actions_len: u32,
     a11y: ?A11yBuilt,
     background: ?records.Color,
+    fill: ?NodeFill,
     border: records.Border,
     corners: records.Corners,
     shadow: ?element.Shadow,
@@ -109,6 +111,8 @@ pub const Node = struct {
     layer: ?element.Layer,
     source: debugger_mod.NodeSource,
 };
+
+pub const NodeFill = struct { shader: u8, params_slot: u32 };
 
 pub const FocusPlace = struct {
     id: ElementId,
@@ -482,6 +486,7 @@ pub const WakeService = images_mod.WakeService;
 pub const Window = struct {
     gpa: std.mem.Allocator,
     limits: ResourceLimits,
+    shaders: []const *const shader_mod.Spec,
     theme: *const element.Theme,
     keymap: []const keymap_mod.Compiled,
     keymap_tables: keymap_mod.Tables,
@@ -674,6 +679,15 @@ pub const Window = struct {
         return &self.editors;
     }
 
+    pub fn shaderId(self: *const Window, spec: *const shader_mod.Spec) u8 {
+        assert(self.shaders.len <= limits_mod.MAX_SHADERS);
+        for (self.shaders, 0..) |declared, index| {
+            if (declared == spec) return @intCast(index);
+        }
+        std.debug.panic("Style.fill uses shader \"{s}\", which is not in App.shaders " ++
+            "(frame {d}). Add it to the app's .shaders list.", .{ spec.name, self.frame_number });
+    }
+
     pub fn node(self: *Window, index: u32) *Node {
         assert(index < self.node_count);
         return &self.nodes[index];
@@ -690,6 +704,7 @@ pub const Options = struct {
     store: *handler_mod.Store,
     resources: *AppResources,
     job_types: []const usize = &.{},
+    shaders: []const *const shader_mod.Spec,
     image_decodes: images_mod.Mode,
     job_runs: jobs_mod.Mode,
 };
@@ -713,6 +728,8 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.keymap = options.keymap.of(keymap_mod.native);
     self.store = options.store;
     self.resources = options.resources;
+    assert(options.shaders.len <= limits.paint.shader_count_max);
+    self.shaders = options.shaders;
     try initBuildStorage(self, gpa, limits);
     errdefer deinitBuildStorage(self, gpa);
     try initRuntimeStorage(self, gpa, options);
@@ -810,6 +827,8 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
         .text_bytes_max = limits.build.text_bytes_frame_max,
         .mesh_point_count_max = limits.paint.path_vertex_count_frame_max +
             limits.paint.polyline_point_count_frame_max + limits.paint.point_count_frame_max,
+        .params_slot_count_max = limits.paint.custom_draw_count_frame_max,
+        .params_stride = limits.paint.shader_params_bytes_max,
     };
     try self.frames[0].initInPlace(gpa, &frame_capacity);
     errdefer self.frames[0].deinit(gpa);

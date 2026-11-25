@@ -16,6 +16,7 @@ const entities_mod = @import("entities.zig");
 const text_engine = @import("text_engine.zig");
 const jobs_mod = @import("jobs.zig");
 const images = @import("images.zig");
+const shader_mod = @import("shader.zig");
 
 const assert = std.debug.assert;
 
@@ -54,6 +55,7 @@ pub fn Config(comptime State: type) type {
         min_width: u32 = 0,
         min_height: u32 = 0,
         jobs: []const type = &.{},
+        shaders: []const type = &.{},
         on_init: ?*const fn (state: *State, init: Init, effects: *Effects) void = null,
         on_deinit: ?*const fn (state: *State) void = null,
     };
@@ -193,6 +195,22 @@ fn checkEntities(comptime State: type, comptime types: []const type) void {
     }
 }
 
+fn hostBackend() shader_mod.Backend {
+    return switch (builtin.os.tag) {
+        .macos => .metal,
+        .linux => switch (@import("../platform/linux_backend.zig").selected) {
+            .wayland_vulkan => .vulkan,
+            .wayland_cpu, .fbdev => .cpu,
+            .eve => .eve,
+        },
+        .windows => switch (@import("../platform/windows/renderer.zig").selected) {
+            .vulkan => .vulkan,
+            .dx11 => .d3d11,
+        },
+        else => unreachable,
+    };
+}
+
 pub fn App(
     comptime State: type,
     comptime render_fn: fn (cx: *Cx) void,
@@ -213,6 +231,7 @@ pub fn App(
         }
         checkEntities(State, config.entities);
         checkJobs(config.jobs, &config.limits);
+        shader_mod.checkList(config.shaders, &config.limits.paint);
         assert(config.width > 0);
         assert(config.height > 0);
         checkFonts(State, config);
@@ -232,7 +251,10 @@ pub fn App(
         const Self = @This();
 
         comptime {
-            if (builtin.cpu.arch.isWasm()) _ = web_host.Exports(Self);
+            if (builtin.cpu.arch.isWasm()) {
+                shader_mod.requireSources(config.shaders, .webgpu);
+                _ = web_host.Exports(Self);
+            }
         }
 
         pub const limits = config.limits;
@@ -246,6 +268,7 @@ pub fn App(
         pub const height = config.height;
         pub const font_limits = config.limits.text.fonts;
         pub const keymap = keymap_mod.compileBoth(config.keymap);
+        pub const shaders = shader_mod.specList(config.shaders);
 
         pub fn render(cx: *Cx) void {
             render_fn(cx);
@@ -283,6 +306,7 @@ pub fn App(
                 else => @compileError("gooey.App.main runs on macOS, Linux, Windows, " ++
                     "and the web"),
             };
+            comptime shader_mod.requireSources(config.shaders, hostBackend());
             const self = try init.gpa.create(Self);
             defer init.gpa.destroy(self);
             self.process = .{ .io = init.io, .environ = init.environ_map };
@@ -332,6 +356,7 @@ pub fn App(
                 .store = &self.store,
                 .resources = &self.resources,
                 .job_types = &self.job_type_ids,
+                .shaders = shaders,
                 .image_decodes = options.image_decodes,
                 .job_runs = options.job_runs,
             });

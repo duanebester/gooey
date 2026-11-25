@@ -77,8 +77,17 @@ pub const Record = union(enum) {
     quad: Quad,
     sprite: Sprite,
     mesh: Mesh,
+    custom: Custom,
     clip_push: Rect,
     clip_pop,
+};
+
+pub const Custom = struct {
+    bounds: Rect,
+    corners: Corners,
+    opacity: f32,
+    shader: u8,
+    params_slot: u32,
 };
 
 pub const Quad = struct {
@@ -135,6 +144,7 @@ pub fn fade(record: Record, opacity: f32) Record {
             },
         },
         .mesh => |*mesh| mesh.fill = fadeColor(mesh.fill, opacity),
+        .custom => |*custom| custom.opacity *= opacity,
         .clip_push, .clip_pop => {},
     }
     return faded;
@@ -389,6 +399,8 @@ pub const FrameCapacity = struct {
     announcements: Announcements.Capacity,
     text_bytes_max: u32,
     mesh_point_count_max: u32,
+    params_slot_count_max: u32,
+    params_stride: u32,
 };
 
 pub const Frame = struct {
@@ -407,6 +419,11 @@ pub const Frame = struct {
     mesh_points: []MeshPoint,
     mesh_point_count: u32,
     mesh_point_counts: [3]u32,
+    params: []u8,
+    params_count: u32,
+    params_stride: u32,
+    params_high_water: u32,
+    shader_time_s: f32,
     triangle_mesh_count: u32,
     ime: ?Ime,
     paint_opacity: f32,
@@ -435,6 +452,14 @@ pub const Frame = struct {
         self.text_bytes = try gpa.alloc(u8, capacity.text_bytes_max);
         errdefer gpa.free(self.text_bytes);
         self.mesh_points = try gpa.alloc(MeshPoint, capacity.mesh_point_count_max);
+        errdefer gpa.free(self.mesh_points);
+        assert(capacity.params_stride % 16 == 0);
+        if (capacity.params_slot_count_max > 0) assert(capacity.params_stride > 0);
+        const params_bytes = @as(usize, capacity.params_slot_count_max) * capacity.params_stride;
+        self.params = try gpa.alloc(u8, params_bytes);
+        self.params_stride = capacity.params_stride;
+        self.params_high_water = 0;
+        self.params_count = 0;
         self.frame_number = 0;
         self.reset(0, .{ .width = 0, .height = 0, .scale_factor = 1 });
         assert(self.paint_count == 0);
@@ -442,6 +467,9 @@ pub const Frame = struct {
 
     pub fn deinit(self: *Frame, gpa: std.mem.Allocator) void {
         assert(self.paint_count <= self.paint.len);
+        self.noteParamsHighWater();
+        @memset(self.params[0 .. self.params_high_water * self.params_stride], 0);
+        gpa.free(self.params);
         gpa.free(self.mesh_points);
         gpa.free(self.text_bytes);
         self.announcements.deinit(gpa);
@@ -466,6 +494,9 @@ pub const Frame = struct {
         self.text_len = 0;
         self.mesh_point_count = 0;
         self.mesh_point_counts = @splat(0);
+        self.noteParamsHighWater();
+        self.params_count = 0;
+        self.shader_time_s = 0;
         self.triangle_mesh_count = 0;
         self.ime = null;
         self.modal_hit_start = 0;
@@ -576,6 +607,39 @@ pub const Frame = struct {
         return range;
     }
 
+    pub fn claimParams(self: *Frame, bytes: []const u8) u32 {
+        assert(bytes.len > 0);
+        assert(bytes.len <= self.params_stride);
+        const slot_count = @divExact(self.params.len, self.params_stride);
+        assert(self.params_count <= slot_count);
+        if (self.params_count == slot_count) {
+            std.debug.panic("record frame pool 'shader params' exhausted: capacity {d} " ++
+                "(ResourceLimits.paint.custom_draw_count_frame_max), {d} in use, 1 requested, " ++
+                "frame {d}. Raise the app's ResourceLimits.", .{
+                slot_count,
+                self.params_count,
+                self.frame_number,
+            });
+        }
+        const slot = self.params_count;
+        const target = self.params[slot * self.params_stride ..][0..self.params_stride];
+        @memcpy(target[0..bytes.len], bytes);
+        @memset(target[bytes.len..], 0);
+        self.params_count += 1;
+        assert(self.params_count <= slot_count);
+        return slot;
+    }
+
+    pub fn paramsUsed(self: *const Frame) []const u8 {
+        assert(self.params_count * self.params_stride <= self.params.len);
+        return self.params[0 .. self.params_count * self.params_stride];
+    }
+
+    fn noteParamsHighWater(self: *Frame) void {
+        assert(self.params_count * self.params_stride <= self.params.len);
+        self.params_high_water = @max(self.params_high_water, self.params_count);
+    }
+
     pub fn meshPoints(self: *const Frame, range: MeshRange) []MeshPoint {
         assert(range.count > 0);
         assert(range.first + range.count <= self.mesh_point_count);
@@ -615,6 +679,8 @@ test "Frame copies text and bounds every pool" {
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 8 },
         .text_bytes_max = 8,
         .mesh_point_count_max = 0,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     });
     defer frame.deinit(std.testing.allocator);
     var source = "label".*;

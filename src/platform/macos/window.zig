@@ -95,7 +95,8 @@ pub const Window = struct {
         assert(self.size_limits_scale == self.scale_factor);
 
         try self.setupMetalLayer();
-        const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        var render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        render_limits.shaders = options.shaders;
         const viewport = framebufferViewport(.{
             .width = self.size.width,
             .height = self.size.height,

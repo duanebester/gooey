@@ -6147,6 +6147,7 @@ test "Style.opacity fades every record its subtree draws, nested opacities multi
                 try testing.expectEqual(@as(u32, 6), mesh.range.count);
                 meshes += 1;
             },
+            .custom => unreachable,
             .clip_push, .clip_pop => {},
         }
     }

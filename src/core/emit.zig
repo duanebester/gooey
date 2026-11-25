@@ -725,9 +725,20 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect, clip: ?Rect)
             .offset_y = shadow.offset_y,
         } });
     }
-    if (node.background == null and node.border.width == 0) return;
+    if (node.background == null and node.fill == null and node.border.width == 0) return;
     if (clip) |rect| {
         if (!bounds.overlaps(rect)) return;
+    }
+    if (node.fill) |fill| {
+        assert(node.background == null);
+        frame.appendPaint(.{ .custom = .{
+            .bounds = bounds,
+            .corners = node.corners,
+            .opacity = 1,
+            .shader = fill.shader,
+            .params_slot = fill.params_slot,
+        } });
+        if (node.border.width == 0) return;
     }
     frame.appendPaint(.{ .quad = .{
         .bounds = bounds,

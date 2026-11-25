@@ -670,6 +670,8 @@ const PackFixture = struct {
             .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
             .text_bytes_max = 1,
             .mesh_point_count_max = mesh_point_count_max,
+            .params_slot_count_max = 0,
+            .params_stride = 0,
         });
         errdefer self.frame.deinit(gpa);
         try self.target.initInPlace(&.{

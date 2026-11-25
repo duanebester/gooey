@@ -10,8 +10,9 @@ const assert = std.debug.assert;
 
 const PackedFrame = packed_mod.PackedFrame;
 const Pipeline = packed_mod.Pipeline;
+const BuiltinPipeline = packed_mod.BuiltinPipeline;
 
-const pipeline_count: u32 = @typeInfo(Pipeline).@"enum".field_names.len;
+const pipeline_count: u32 = packed_mod.builtin_pipeline_count;
 
 const FrameBuffer = enum(u8) { quads, sprites, meshes, mesh_points, edge_modes, viewport };
 
@@ -41,7 +42,7 @@ const EntryPoints = struct {
     premultiplied: bool,
 };
 
-const entry_points = std.EnumArray(Pipeline, EntryPoints).init(.{
+const entry_points = std.EnumArray(BuiltinPipeline, EntryPoints).init(.{
     .quad = .{ .vertex = "quad_vertex", .fragment = "quad_fragment", .premultiplied = false },
     .glyph = .{ .vertex = "text_vertex", .fragment = "text_fragment", .premultiplied = false },
     .svg = .{ .vertex = "icon_vertex", .fragment = "svg_fragment", .premultiplied = true },
@@ -136,8 +137,9 @@ pub const WebRenderer = struct {
         assert(layout != 0);
         const module = imports.createShaderModule(shader_source.ptr, shader_source.len);
         assert(module != 0);
-        for (std.enums.values(Pipeline)) |pipeline| {
-            const entry = entry_points.get(pipeline);
+        for (std.enums.values(BuiltinPipeline)) |builtin_pipeline| {
+            const entry = entry_points.get(builtin_pipeline);
+            const pipeline: Pipeline = @fromBackingInt(@backingInt(builtin_pipeline));
             const handle = imports.createPackedPipeline(
                 layout,
                 module,
@@ -186,7 +188,7 @@ pub const WebRenderer = struct {
     pub fn capabilities(self: *const Self) backend.Capabilities {
         assert(self.bind_group != 0);
         assert(self.pipelines[@backingInt(Pipeline.triangles)] != 0);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = false };
     }
 
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
@@ -336,6 +338,7 @@ fn recordDraws(
                 packed_draw.first,
             ),
             .mesh => recordMeshes(frame, packed_draw),
+            .custom => unreachable,
         }
     }
 }
@@ -356,7 +359,7 @@ fn recordMeshes(frame: *const PackedFrame, packed_draw: *const packed_mod.Draw) 
                 break :count instance_vertex_count * (mesh.count - 1);
             },
             .point_instanced => instance_vertex_count * mesh.count,
-            .quad, .glyph, .svg, .image => unreachable,
+            .quad, .glyph, .svg, .image, .custom => unreachable,
         };
         imports.draw(vertex_count, 1, 0, @intCast(index));
     }

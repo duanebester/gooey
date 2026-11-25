@@ -307,7 +307,7 @@ fn countPaint(frame: *const records.Frame, state: *Debugger) void {
                 .glyph, .glyph_color => glyphs += 1,
                 .svg, .image => {},
             },
-            .mesh, .clip_push, .clip_pop => {},
+            .mesh, .custom, .clip_push, .clip_pop => {},
         }
     }
     state.quad_count = quads;

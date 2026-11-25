@@ -6,6 +6,7 @@ const layers = @import("layers.zig");
 const geometry = @import("../geometry/geometry.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const ui_theme = @import("theme.zig");
+const shader_mod = @import("shader.zig");
 
 const assert = std.debug.assert;
 
@@ -14,6 +15,7 @@ pub const Handler = handler_mod.Handler;
 pub const Color = geometry.Color;
 pub const Theme = ui_theme.Theme;
 pub const Corners = records.Corners;
+pub const Fill = shader_mod.Fill;
 pub const Layer = layers.Layer;
 pub const Anchor = layers.Anchor;
 pub const Role = a11y_types.Role;
@@ -182,6 +184,7 @@ pub const Style = struct {
     grid: ?Grid = null,
     cell: Cell = .{},
     background: ?ColorToken = null,
+    fill: ?Fill = null,
     border: ?Border = null,
     corner_radius: Corners = .zero,
     shadow: ?Shadow = null,

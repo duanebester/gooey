@@ -81,6 +81,8 @@ test "the bridge is polled on the first frame and then once per interval" {
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 0,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     });
     defer frame.deinit(std.testing.allocator);
     var poll: Poll = .{};
@@ -117,6 +119,8 @@ test "a full nano frame publishes every node and announcement into a nano tree" 
         },
         .text_bytes_max = 2,
         .mesh_point_count_max = 0,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     });
     defer frame.deinit(gpa);
 

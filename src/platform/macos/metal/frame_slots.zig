@@ -11,12 +11,15 @@ const Quad = packed_frame.Quad;
 const Sprite = packed_frame.Sprite;
 const MeshPoint = packed_frame.MeshPoint;
 const EdgeModes = packed_frame.EdgeModes;
+const Custom = packed_frame.Custom;
 
 pub const Capacity = struct {
     quads: u32,
     sprites: u32,
     points: u32,
     triangles: u32,
+    customs: u32,
+    params_bytes: u32,
     staging_bytes: u32,
 
     pub fn fromLimits(limits: *const backend.RenderLimits) Capacity {
@@ -28,6 +31,8 @@ pub const Capacity = struct {
             .sprites = packed_frame.spriteCapacity(paint),
             .points = @max(packed_frame.meshPointCapacity(paint), 1),
             .triangles = packed_frame.triangleCapacity(paint),
+            .customs = paint.custom_draw_count_frame_max,
+            .params_bytes = paint.custom_draw_count_frame_max * paint.shader_params_bytes_max,
             .staging_bytes = limits.atlas.upload_bytes_frame_max,
         };
     }
@@ -37,6 +42,7 @@ pub const Capacity = struct {
             @as(u64, self.sprites) * @sizeOf(packed_frame.Sprite) +
             @as(u64, self.points) * @sizeOf(packed_frame.MeshPoint) +
             @as(u64, self.triangles) * @sizeOf(packed_frame.EdgeModes) +
+            @as(u64, self.customs) * @sizeOf(packed_frame.Custom) + self.params_bytes +
             self.staging_bytes;
         assert(bytes > self.staging_bytes);
         return bytes;
@@ -48,6 +54,8 @@ pub const FrameSlots = struct {
     sprites: FrameBuffers,
     points: FrameBuffers,
     edge_modes: FrameBuffers,
+    customs: FrameBuffers,
+    params: FrameBuffers,
     staging: FrameBuffers,
     command_buffers: [pipelines.frame_count_max]?objc.Object,
     capacity: Capacity,
@@ -72,6 +80,10 @@ pub const FrameSlots = struct {
         const edge_bytes = arrayBytes(EdgeModes, capacity.triangles);
         self.edge_modes = try create(device, edge_bytes, "edge_modes", count);
         errdefer self.edge_modes.release();
+        self.customs = try create(device, arrayBytes(Custom, capacity.customs), "customs", count);
+        errdefer self.customs.release();
+        self.params = try create(device, capacity.params_bytes, "shader_params", count);
+        errdefer self.params.release();
         self.staging = try create(device, capacity.staging_bytes, "atlas_staging", count);
         self.command_buffers = @splat(null);
         self.capacity = capacity;
@@ -84,6 +96,8 @@ pub const FrameSlots = struct {
         assert(self.count <= pipelines.frame_count_max);
         for (self.command_buffers[0..self.count]) |*slot| waitAndRelease(slot);
         self.staging.release();
+        self.params.release();
+        self.customs.release();
         self.edge_modes.release();
         self.points.release();
         self.sprites.release();
@@ -112,6 +126,8 @@ pub const FrameSlots = struct {
         copyInto(Sprite, self.sprites.at(index), capacity.sprites, frame.spriteList());
         copyInto(MeshPoint, self.points.at(index), capacity.points, frame.mesh_points);
         copyInto(EdgeModes, self.edge_modes.at(index), capacity.triangles, frame.edgeModeList());
+        copyInto(Custom, self.customs.at(index), capacity.customs, frame.customList());
+        copyInto(u8, self.params.at(index), capacity.params_bytes, frame.params);
     }
 
     pub fn stagingBuffer(self: *const Self) objc.Object {

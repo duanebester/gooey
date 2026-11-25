@@ -80,6 +80,16 @@ pub fn writePacked(
                 writeImage(out, sprite, clip);
             },
             .triangles, .strip_expanded, .point_instanced => meshes.add(draw),
+            .custom => {
+                out.print("  custom shader={d} n={d} t={d:.3}", .{
+                    draw.shader,
+                    draw.count,
+                    frame.shader_time_s,
+                });
+                writeClip(out, clip);
+                out.print("\n", .{});
+                for (frame.drawRange(draw, .custom)) |*custom| writeCustom(out, frame, custom);
+            },
         }
     }
     glyphs.flush(out);
@@ -120,6 +130,25 @@ fn writeQuad(out: *TextBuffer, quad: *const packed_mod.Quad, clip: packed_mod.Re
         });
     }
     writeClip(out, clip);
+    out.print("\n", .{});
+}
+
+fn writeCustom(out: *TextBuffer, frame: *const PackedFrame, custom: *const packed_mod.Custom) void {
+    assert(custom.opacity > 0);
+    assert(custom.opacity <= 1);
+    out.print("    fill {f}", .{rect(custom.bounds)});
+    const radii = custom.corners;
+    if (radii[0] + radii[1] + radii[2] + radii[3] > 0) {
+        out.print(" radius={d:.2},{d:.2},{d:.2},{d:.2}", .{
+            radii[0], radii[1], radii[2], radii[3],
+        });
+    }
+    if (custom.opacity < 1) out.print(" opacity={d:.2}", .{custom.opacity});
+    out.print(" params=", .{});
+    const params = frame.customParams(custom);
+    var used = params.len;
+    while (used >= 4 and std.mem.allEqual(u8, params[used - 4 .. used], 0)) used -= 4;
+    for (params[0..used]) |byte| out.print("{x:0>2}", .{byte});
     out.print("\n", .{});
 }
 
