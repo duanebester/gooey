@@ -23,6 +23,18 @@ pub const MAX_POINT_CLOUDS_PER_FRAME: u32 = 4096;
 
 pub const MAX_CLIP_STACK_DEPTH: u32 = 32;
 
+/// Shaders an app may declare. Each one costs a pipeline state at init: on Apple M2 Max,
+/// about 4.5 ms cold (first launch or after a shader changes) and about 0.05 ms once the
+/// Metal cache holds it.
+pub const MAX_SHADERS: u32 = 64;
+
+pub const MAX_CUSTOM_DRAWS_PER_FRAME: u32 = 16_384;
+
+/// One custom draw's Params, and the stride of the per-frame params buffer.
+pub const MAX_SHADER_PARAMS_BYTES: u32 = 64;
+
+pub const shader_params_alignment: u32 = 16;
+
 pub const MAX_FRAMEBUFFER_WIDTH: u32 = 7680;
 
 pub const MAX_FRAMEBUFFER_HEIGHT: u32 = 4320;
@@ -73,6 +85,8 @@ comptime {
     assert(atlas_open_frame_count_max * MAX_SVGS_PER_FRAME <= MAX_SVG_ENTRIES);
     assert(atlas_open_frame_count_max * MAX_IMAGES_PER_FRAME <= MAX_IMAGE_ENTRIES);
     assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 9);
+    assert(MAX_SHADER_PARAMS_BYTES % shader_params_alignment == 0);
+    assert(MAX_SHADERS <= std.math.maxInt(u8));
 }
 
 pub const ResourceLimits = struct {
@@ -256,13 +270,27 @@ pub const ResourceLimits = struct {
             );
         }
         if (self.checkEventRelationships()) |violation| return violation;
-        if (self.records.paint_record_count_frame_max < element_count) {
+        return self.checkPaintRecordRelationships();
+    }
+
+    /// Every custom fill is one paint record, and every element may paint at least one.
+    fn checkPaintRecordRelationships(self: *const ResourceLimits) ?Violation {
+        const record_count = self.records.paint_record_count_frame_max;
+        if (self.paint.custom_draw_count_frame_max > record_count) {
+            return relationship(
+                .paint,
+                "custom_draw_count_frame_max",
+                self.paint.custom_draw_count_frame_max,
+                record_count,
+            );
+        }
+        if (record_count < self.build.element_count_frame_max) {
             return .{
                 .budget = .records,
                 .field = "paint_record_count_frame_max",
                 .rule = .below_relationship,
-                .value = self.records.paint_record_count_frame_max,
-                .bound = element_count,
+                .value = record_count,
+                .bound = self.build.element_count_frame_max,
             };
         }
         return null;
@@ -378,6 +406,13 @@ pub const PaintLimits = struct {
     polyline_point_count_frame_max: u32,
     point_count_frame_max: u32,
     clip_depth_max: u32,
+    /// Shaders the app may declare in `App.shaders`. See MAX_SHADERS for the init cost.
+    shader_count_max: u32,
+    /// Custom-shader fill instances per frame; also the params slots per frame.
+    custom_draw_count_frame_max: u32,
+    /// Params bytes per custom draw, a multiple of 16. Per frame in flight the params
+    /// buffer is custom_draw_count_frame_max * shader_params_bytes_max bytes.
+    shader_params_bytes_max: u32,
 
     pub const nano: PaintLimits = .{
         .quad_count_frame_max = 256,
@@ -392,6 +427,9 @@ pub const PaintLimits = struct {
         .polyline_point_count_frame_max = 1_024,
         .point_count_frame_max = 1_024,
         .clip_depth_max = 8,
+        .shader_count_max = 4,
+        .custom_draw_count_frame_max = 64,
+        .shader_params_bytes_max = 64,
     };
 
     pub const embedded: PaintLimits = .{
@@ -407,6 +445,9 @@ pub const PaintLimits = struct {
         .polyline_point_count_frame_max = 64,
         .point_count_frame_max = 64,
         .clip_depth_max = 8,
+        .shader_count_max = 2,
+        .custom_draw_count_frame_max = 16,
+        .shader_params_bytes_max = 64,
     };
 
     pub const small: PaintLimits = .{
@@ -422,6 +463,9 @@ pub const PaintLimits = struct {
         .polyline_point_count_frame_max = 8_192,
         .point_count_frame_max = 8_192,
         .clip_depth_max = 16,
+        .shader_count_max = 8,
+        .custom_draw_count_frame_max = 256,
+        .shader_params_bytes_max = 64,
     };
 
     pub const standard: PaintLimits = .{
@@ -437,6 +481,9 @@ pub const PaintLimits = struct {
         .polyline_point_count_frame_max = 32_768,
         .point_count_frame_max = 16_384,
         .clip_depth_max = 16,
+        .shader_count_max = 16,
+        .custom_draw_count_frame_max = 1_024,
+        .shader_params_bytes_max = 64,
     };
 
     pub const large: PaintLimits = .{
@@ -452,6 +499,9 @@ pub const PaintLimits = struct {
         .polyline_point_count_frame_max = 524_288,
         .point_count_frame_max = 262_144,
         .clip_depth_max = 32,
+        .shader_count_max = 32,
+        .custom_draw_count_frame_max = 4_096,
+        .shader_params_bytes_max = 64,
     };
 
     pub const ceiling: PaintLimits = .{
@@ -467,6 +517,9 @@ pub const PaintLimits = struct {
         .polyline_point_count_frame_max = 32 * 1024 * 1024,
         .point_count_frame_max = 256 * 1024 * 1024,
         .clip_depth_max = MAX_CLIP_STACK_DEPTH,
+        .shader_count_max = MAX_SHADERS,
+        .custom_draw_count_frame_max = MAX_CUSTOM_DRAWS_PER_FRAME,
+        .shader_params_bytes_max = MAX_SHADER_PARAMS_BYTES,
     };
 
     pub fn check(self: *const PaintLimits) ?Violation {
@@ -501,6 +554,15 @@ pub const PaintLimits = struct {
                 .bound = MAX_GLYPHS_PER_RUN,
             };
         }
+        if (self.shader_params_bytes_max % shader_params_alignment != 0) {
+            return .{
+                .budget = .paint,
+                .field = "shader_params_bytes_max",
+                .rule = .not_multiple,
+                .value = self.shader_params_bytes_max,
+                .bound = shader_params_alignment,
+            };
+        }
         return null;
     }
 
@@ -508,7 +570,10 @@ pub const PaintLimits = struct {
         const packed_bytes = packed_frame.paintBytes(self);
         const point_bytes = @as(u64, packed_frame.meshPointCapacity(self)) *
             @sizeOf(packed_frame.MeshPoint);
-        const bytes = packed_bytes + 2 * point_bytes;
+        // Each of the two record frames holds its own mesh points and params slots.
+        const params_bytes = @as(u64, self.custom_draw_count_frame_max) *
+            self.shader_params_bytes_max;
+        const bytes = packed_bytes + 2 * point_bytes + 2 * params_bytes;
         assert(bytes > packed_bytes);
         return bytes;
     }
@@ -2016,11 +2081,15 @@ test "derived budget quantities" {
         const lower_bytes = @field(PaintLimits, lower_name).paintBytes();
         try std.testing.expect(lower_bytes < @field(PaintLimits, upper_name).paintBytes());
     }
-    const nano_bytes = 272 * 96 + 1_044 * 96 + 24 * 32 + 341 * 4 + 1_537 * 20 + 2 * 3_072 * 8;
+    const nano_custom_bytes = 64 * 48 + 2 * 64 * 64;
+    const nano_bytes = 272 * 96 + 1_044 * 96 + 24 * 32 + 341 * 4 + 1_537 * 20 + 2 * 3_072 * 8 +
+        nano_custom_bytes;
     try std.testing.expectEqual(@as(u64, nano_bytes), PaintLimits.nano.paintBytes());
-    try std.testing.expect(PaintLimits.small.paintBytes() < 1_142 * 1024);
-    try std.testing.expect(paint.paintBytes() < 2_894 * 1024);
-    try std.testing.expect(PaintLimits.large.paintBytes() < 34 * 1024 * 1024);
+    // Custom fills add 48 B per instance and two frames of 64 B params per instance:
+    // 44 KiB on small, 176 KiB on standard and 704 KiB on large.
+    try std.testing.expect(PaintLimits.small.paintBytes() < 1_186 * 1024);
+    try std.testing.expect(paint.paintBytes() < 3_070 * 1024);
+    try std.testing.expect(PaintLimits.large.paintBytes() < 35 * 1024 * 1024);
 
     const run_bytes = 1_024 * @sizeOf(ShapedGlyph);
     const nano_dialog = 2 * 2_048 + 16 * @sizeOf([]const u8);

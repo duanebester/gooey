@@ -24,8 +24,10 @@ pub const debugger = @import("debugger.zig");
 pub const actions = @import("actions.zig");
 pub const keymaps = @import("keymaps.zig");
 pub const keymap = @import("keymap.zig");
+pub const shader = @import("shader.zig");
 
 pub const App = app.App;
+pub const Shader = shader.Shader;
 pub const Config = app.Config;
 pub const Init = app.Init;
 pub const Job = jobs.Job;
@@ -84,6 +86,7 @@ pub const ui = struct {
     pub const Cell = element.Cell;
     pub const Edges = element.Edges;
     pub const Corners = element.Corners;
+    pub const Fill = element.Fill;
     pub const Alignment = element.Alignment;
     pub const Border = element.Border;
     pub const Shadow = element.Shadow;
@@ -123,4 +126,5 @@ test {
     _ = @import("images.zig");
     _ = jobs;
     _ = debugger;
+    _ = shader;
 }

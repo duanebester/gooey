@@ -10,7 +10,10 @@ pub const buffer_points: u32 = 2;
 pub const buffer_edge_modes: u32 = 3;
 pub const buffer_mesh: u32 = 4;
 pub const buffer_viewport: u32 = 5;
+pub const buffer_customs: u32 = 6;
 pub const fragment_buffer_clip: u32 = 0;
+pub const fragment_buffer_params: u32 = 1;
+pub const fragment_buffer_shade_frame: u32 = 2;
 pub const texture_glyph: u32 = 0;
 pub const texture_svg: u32 = 1;
 pub const texture_image: u32 = 2;
@@ -28,7 +31,18 @@ comptime {
     assert(@sizeOf(packed_frame.Mesh) == 32);
     assert(@offsetOf(packed_frame.Mesh, "edge_first") == 28);
     assert(@sizeOf(packed_frame.MeshPoint) == 8);
+    assert(@sizeOf(packed_frame.Custom) == 48);
+    assert(@offsetOf(packed_frame.Custom, "opacity") == 32);
+    assert(@offsetOf(packed_frame.Custom, "params_index") == 36);
+    assert(@sizeOf(ShadeFrame) == 16);
 }
+
+/// Per-frame inputs every custom fill sees (`ShadeFrame` in `custom_prelude`).
+pub const ShadeFrame = extern struct {
+    time_s: f32,
+    scale: f32,
+    _pad: [2]f32 = .{ 0, 0 },
+};
 
 pub const source = common ++ quad ++ sprite_text ++ sprite_svg ++ sprite_image ++
     triangles ++ polyline ++ point_cloud;
@@ -733,6 +747,96 @@ const point_cloud =
     \\    float4 color = in.color;
     \\    color.a *= alpha;
     \\    return float4(color.rgb * color.a, color.a);
+    \\}
+    \\
+;
+
+/// MSL for custom fills, placed after `source` and before the user shaders: the
+/// `ShadeInput` contract, the instance layout, the vertex stage, and the coverage the
+/// wrapped fragment applies after `shade`. custom_library.zig writes the params stride
+/// constant after it and one wrapped fragment per shader.
+pub const custom_prelude =
+    \\// packed_frame.Custom (48 B).
+    \\struct CustomFill {
+    \\    float4 bounds;
+    \\    float4 corners;
+    \\    float opacity;
+    \\    uint params_index;
+    \\    float2 _pad;
+    \\};
+    \\
+    \\// shaders.ShadeFrame (16 B).
+    \\struct ShadeFrame {
+    \\    float time;
+    \\    float scale;
+    \\    float2 _pad;
+    \\};
+    \\
+    \\// What a user `shade` function receives. uv is 0-1 inside the element; size and
+    \\// position are element-local logical pixels; time is seconds, wrapped at 3600;
+    \\// scale is device pixels per logical pixel.
+    \\struct ShadeInput {
+    \\    float2 uv;
+    \\    float2 size;
+    \\    float2 position;
+    \\    float time;
+    \\    float scale;
+    \\};
+    \\
+    \\struct CustomOut {
+    \\    float4 position [[position]];
+    \\    float2 local;
+    \\    float2 screen_pos;
+    \\    float2 size [[flat]];
+    \\    float4 corners [[flat]];
+    \\    float opacity [[flat]];
+    \\    uint params_index [[flat]];
+    \\};
+    \\
+    \\// The same one-pixel fringe as quad_vertex, so partly covered pixels rasterize.
+    \\vertex CustomOut custom_vertex(
+    \\    uint vid [[vertex_id]],
+    \\    uint iid [[instance_id]],
+    \\    device const CustomFill *customs [[buffer(6)]],
+    \\    constant float2 &viewport [[buffer(5)]]
+    \\) {
+    \\    float2 unit = unit_vertices[vid];
+    \\    CustomFill c = customs[iid];
+    \\    float2 origin = c.bounds.xy;
+    \\    float2 size = c.bounds.zw;
+    \\    float fringe = (size.x > 0.0 && size.y > 0.0) ? 1.0 : 0.0;
+    \\    float2 pos = origin - fringe + unit * (size + 2.0 * fringe);
+    \\    CustomOut out;
+    \\    out.position = to_clip_space(pos, viewport);
+    \\    out.local = pos - origin;
+    \\    out.screen_pos = pos;
+    \\    out.size = size;
+    \\    out.corners = c.corners;
+    \\    out.opacity = c.opacity;
+    \\    out.params_index = c.params_index;
+    \\    return out;
+    \\}
+    \\
+    \\// Coverage of the pixel by the element's rounded rectangle, as quad_color computes
+    \\// it for a borderless quad.
+    \\float custom_coverage(CustomOut in, float2 pixel) {
+    \\    float2 half_size = in.size / 2.0;
+    \\    float2 centered = in.local - half_size;
+    \\    float rect_coverage = axis_coverage(in.local.x, in.size.x, pixel.x) *
+    \\        axis_coverage(in.local.y, in.size.y, pixel.y);
+    \\    float radius = pick_corner_radius(centered, in.corners);
+    \\    float dist = rounded_rect_sdf(centered, half_size, radius);
+    \\    return (1.0 - smoothstep(-0.5, 0.5, dist)) * rect_coverage;
+    \\}
+    \\
+    \\ShadeInput custom_shade_input(CustomOut in, constant ShadeFrame &frame) {
+    \\    ShadeInput s;
+    \\    s.position = clamp(in.local, float2(0.0), in.size);
+    \\    s.size = in.size;
+    \\    s.uv = s.position / max(in.size, float2(1e-6));
+    \\    s.time = frame.time;
+    \\    s.scale = frame.scale;
+    \\    return s;
     \\}
     \\
 ;

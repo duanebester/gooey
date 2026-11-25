@@ -118,7 +118,7 @@ pub const NullRenderer = struct {
 
     pub fn capabilities(self: *const Self) core_backend.Capabilities {
         assert(self.lifecycle == .running);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = true };
     }
 
     pub fn deinit(self: *Self) void {

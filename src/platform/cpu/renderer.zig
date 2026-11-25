@@ -178,7 +178,7 @@ pub const Renderer = struct {
     pub fn capabilities(self: *const Renderer) backend.Capabilities {
         assert(self.width_max > 0);
         assert(self.height_max > 0);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = false };
     }
 
     pub fn draw(
@@ -240,6 +240,8 @@ const Walk = struct {
             },
             .sprite => self.drawSprites(packed_draw, clip),
             .mesh => self.drawMeshes(packed_draw, clip),
+            // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
+            .custom => unreachable,
         }
     }
 
@@ -277,7 +279,7 @@ const Walk = struct {
                 for (sprites) |*sprite| drawImage(self.target, sprite, atlas, clip, self.scale);
                 self.stats.images += count;
             },
-            .quad, .triangles, .strip_expanded, .point_instanced => unreachable,
+            .quad, .triangles, .strip_expanded, .point_instanced, .custom => unreachable,
         }
     }
 
@@ -298,7 +300,7 @@ const Walk = struct {
                 for (meshes) |*instance| self.drawPointCloud(instance, clip);
                 self.stats.point_clouds += count;
             },
-            .quad, .glyph, .svg, .image => unreachable,
+            .quad, .glyph, .svg, .image, .custom => unreachable,
         }
     }
 
@@ -521,6 +523,7 @@ const test_limits = backend.RenderLimits{
     .window = .{ .framebuffer_width_max = 16, .framebuffer_height_max = 16 },
     .frame = limits_mod.FrameLimits.nano,
     .atlas = limits_mod.AtlasLimits.nano,
+    .shaders = &.{},
 };
 
 const black = geometry.Color.rgba(0, 0, 0, 1);
@@ -576,7 +579,7 @@ fn appendMesh(
         .triangles => .triangle_meshes,
         .strip_expanded => .polylines,
         .point_instanced => .point_clouds,
-        .quad, .glyph, .svg, .image => unreachable,
+        .quad, .glyph, .svg, .image, .custom => unreachable,
     };
     frame.counts[@backingInt(pool)] += 1;
     frame.meshes[frame.mesh_count] = instance;

@@ -832,6 +832,8 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 1,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     }) catch |err| {
         std.debug.panic("setup: records.Frame.initInPlace failed: {s}", .{@errorName(err)});
     };
@@ -889,6 +891,8 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 2,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     }) catch |err| {
         std.debug.panic("setup: records.Frame.initInPlace failed: {s}", .{@errorName(err)});
     };
@@ -913,7 +917,7 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         .width = 2,
     } });
     internals.pack.pack(frame, target);
-    internals.backend.checkCapabilities(.{ .meshes = false }, target);
+    internals.backend.checkCapabilities(.{ .meshes = false, .custom_shaders = false }, target);
 }
 
 fn chartPoints() void {

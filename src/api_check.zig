@@ -133,7 +133,7 @@ fn pinFields() void {
             _ = @FieldType(Events, name);
         }
         const AppConfig = gooey.Config(struct {});
-        for ([_][]const u8{ "jobs", "on_init", "on_deinit" }) |name| {
+        for ([_][]const u8{ "jobs", "shaders", "on_init", "on_deinit" }) |name| {
             _ = @FieldType(AppConfig, name);
         }
         for ([_][]const u8{ "io", "environ" }) |name| {
@@ -286,7 +286,12 @@ fn pinExact() void {
             "FontLimits",  "FontSource",        "Color",             "animation",
             "input",       "text",              "accessibility",     "log",
             "std_options", "testing",           "internals",         "TitleBar",
-            "actions",     "keymaps",
+            "actions",     "keymaps",           "Shader",            "shaders",
+        });
+        expectDecls(gooey.shaders, "gooey.shaders", &.{
+            "LinearGradient",        "LinearGradientParams", "Gradient",
+            "linearGradient",        "Source",               "time_period_s",
+            "GradientInterpolation",
         });
         expectDecls(gooey.ui, "gooey.ui", &.{
             "box",          "text",          "paint",           "Paint",        "when",
@@ -298,7 +303,7 @@ fn pinExact() void {
             "Orientation",  "HeadingLevel",  "Painter",         "PaintText",    "PaintSvg",
             "PaintImage",   "ObjectFit",     "Rect",            "ScrollAnchor", "ScrollTarget",
             "ScrollOffset", "ScrollChild",   "ScrollAlignment", "Grid",         "Track",
-            "Cell",
+            "Cell",         "Fill",
         });
         expectDecls(gooey.Cx, "gooey.Cx", &.{
             "ScrollPosition", "state",              "theme",              "fontMetrics", "id",

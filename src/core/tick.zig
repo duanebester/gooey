@@ -8,6 +8,7 @@ const router = @import("router.zig");
 const screen_reader = @import("screen_reader.zig");
 const debugger = @import("debugger.zig");
 const frame_trace = @import("frame_trace.zig");
+const shader_mod = @import("shader.zig");
 
 const assert = std.debug.assert;
 
@@ -61,6 +62,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
         .height = window.height,
         .scale_factor = window.scale_factor,
     });
+    window.built().shader_time_s = shader_mod.timeSeconds(window.now_ns);
     window.built().announcements.copyFrom(&window.announcements);
     window.announcements.clear();
     window.clear_color = window.theme.bg;

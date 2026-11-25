@@ -16,6 +16,9 @@ pub fn pack(frame: *const records.Frame, packed_frame: *PackedFrame) void {
     assert(frame.paint_count <= frame.paint.len);
     assert(frame.mesh_point_count <= frame.mesh_points.len);
     packed_frame.reset(frame.frame_number, frame.mesh_points[0..frame.mesh_point_count]);
+    assert(frame.params_stride == packed_frame.params_stride or frame.params_count == 0);
+    packed_frame.params = frame.paramsUsed();
+    packed_frame.shader_time_s = frame.shader_time_s;
     const triangle_points = frame.mesh_point_counts[@backingInt(records.Mesh.Topology.triangles)];
     packed_frame.edge_table.begin(triangle_points);
     var packer = Packer{ .target = packed_frame, .clip_stack = undefined, .clip_depth = 0 };
@@ -39,10 +42,11 @@ const Packer = struct {
             switch (record.*) {
                 .clip_push => |bounds| self.pushClip(bounds),
                 .clip_pop => self.popClip(),
-                .quad, .sprite, .mesh => if (!self.currentClipEmpty()) switch (record.*) {
+                .quad, .sprite, .mesh, .custom => if (!self.currentClipEmpty()) switch (record.*) {
                     .quad => |*quad| self.packQuad(quad),
                     .sprite => |*sprite| self.packSprite(sprite),
                     .mesh => |*mesh| self.packMesh(mesh),
+                    .custom => |*custom| self.packCustom(custom),
                     .clip_push, .clip_pop => unreachable,
                 },
             }
@@ -116,7 +120,7 @@ const Packer = struct {
             .offset = .{ quad.offset_x, quad.offset_y },
             .blur = quad.blur,
         };
-        self.appendDraw(.quad, target.quad_count);
+        self.appendDraw(.quad, 0, target.quad_count);
         target.quad_count += 1;
     }
 
@@ -148,7 +152,7 @@ const Packer = struct {
             .grayscale = sprite.grayscale,
             .opacity = sprite.opacity,
         };
-        self.appendDraw(pipeline, target.sprite_count);
+        self.appendDraw(pipeline, 0, target.sprite_count);
         target.sprite_count += 1;
     }
 
@@ -179,18 +183,42 @@ const Packer = struct {
             .width = mesh.width,
             .edge_first = edge_first,
         };
-        self.appendDraw(pipeline, target.mesh_count);
+        self.appendDraw(pipeline, 0, target.mesh_count);
         target.mesh_count += 1;
     }
 
-    fn appendDraw(self: *Packer, pipeline: Pipeline, first: u32) void {
+    fn packCustom(self: *Packer, custom: *const records.Custom) void {
+        const target = self.target;
+        assert(custom.opacity >= 0);
+        assert(custom.opacity <= 1);
+        assert(custom.shader < target.limits.shader_count_max);
+        assert((@as(u64, custom.params_slot) + 1) * target.params_stride <= target.params.len);
+        if (outside(custom.bounds, target.clips[self.currentClip()])) return;
+        if (custom.opacity == 0) return;
+        claim(target, .customs);
+        const bounds = custom.bounds;
+        const radii = custom.corners;
+        target.customs[target.custom_count] = .{
+            .bounds = .{ bounds.x, bounds.y, bounds.width, bounds.height },
+            .corners = .{ radii.top_left, radii.top_right, radii.bottom_right, radii.bottom_left },
+            .opacity = custom.opacity,
+            .params_index = custom.params_slot,
+        };
+        self.appendDraw(.custom, custom.shader, target.custom_count);
+        target.custom_count += 1;
+    }
+
+    /// Extend the last draw when pipeline, shader, and clip match, so a run of one
+    /// shader under one clip is a single instanced draw.
+    fn appendDraw(self: *Packer, pipeline: Pipeline, shader: u8, first: u32) void {
         const target = self.target;
         const clip = self.currentClip();
         assert(!self.currentClipEmpty());
         assert(target.draw_count <= target.draws.len);
+        if (pipeline != .custom) assert(shader == 0);
         if (target.draw_count > 0) {
             const last = &target.draws[target.draw_count - 1];
-            if (last.pipeline == pipeline and last.clip == clip) {
+            if (last.pipeline == pipeline and last.shader == shader and last.clip == clip) {
                 assert(last.first + last.count == first);
                 last.count += 1;
                 return;
@@ -199,6 +227,7 @@ const Packer = struct {
         if (target.draw_count == target.draws.len) failRecordPool(target, "draws", 0);
         target.draws[target.draw_count] = .{
             .pipeline = pipeline,
+            .shader = shader,
             .clip = clip,
             .first = first,
             .count = 1,
@@ -366,6 +395,8 @@ test "pack resolves clips into draws, culls, and classifies shared triangle edge
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 9,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     });
     defer frame.deinit(testing.allocator);
     frame.reset(1, .{ .width = 200, .height = 200, .scale_factor = 1 });
@@ -527,6 +558,78 @@ test "pack fills its draws and clips exactly at the paint record budget" {
     try testing.expectEqualSlices(f32, &.{ 7, 0, 50, 50 }, &target.clips[record_count_max]);
 }
 
+test "pack merges custom fills by shader and clip, culls, and keeps each params slot" {
+    // Method: the shader sequence 0,0,1,0 under one clip must give three draws (a shader
+    // change splits a run, returning to shader 0 does not rejoin it), a clip change must
+    // split even with the same shader, and a fill outside its clip or fully transparent
+    // must take no instance. Params slots are claimed in a different order from packing.
+    const testing = std.testing;
+    var frame: records.Frame = undefined;
+    var capacity = testFrameCapacity(16, 0);
+    capacity.params_slot_count_max = 8;
+    capacity.params_stride = 16;
+    try frame.initInPlace(testing.allocator, &capacity);
+    defer frame.deinit(testing.allocator);
+    frame.reset(1, .{ .width = 200, .height = 200, .scale_factor = 1 });
+    frame.shader_time_s = 2.5;
+    var slots: [7]u32 = undefined;
+    for (&slots, 0..) |*slot, index| slot.* = frame.claimParams(&.{@intCast(index + 1)});
+    frame.appendPaint(.{ .custom = testCustom(0, 0, slots[6], 1) });
+    frame.appendPaint(.{ .custom = testCustom(10, 0, slots[5], 1) });
+    frame.appendPaint(.{ .custom = testCustom(20, 1, slots[4], 0.5) });
+    frame.appendPaint(.{ .custom = testCustom(30, 0, slots[3], 1) });
+    frame.appendPaint(.{ .custom = testCustom(40, 0, slots[2], 0) });
+    frame.appendPaint(.{ .clip_push = .{ .x = 0, .y = 0, .width = 100, .height = 100 } });
+    frame.appendPaint(.{ .custom = testCustom(50, 0, slots[1], 1) });
+    frame.appendPaint(.{ .custom = testCustom(150, 0, slots[0], 1) });
+    frame.appendPaint(.clip_pop);
+
+    var target: PackedFrame = undefined;
+    var paint = limits_mod.PaintLimits.nano;
+    paint.shader_params_bytes_max = 16;
+    try target.initInPlace(&.{ .paint = paint, .paint_record_count_max = 16 });
+    defer target.deinit();
+    pack(&frame, &target);
+
+    const draws = target.drawList();
+    const expected = [_]struct { shader: u8, clip: u32, first: u32, count: u32 }{
+        .{ .shader = 0, .clip = 0, .first = 0, .count = 2 },
+        .{ .shader = 1, .clip = 0, .first = 2, .count = 1 },
+        .{ .shader = 0, .clip = 0, .first = 3, .count = 1 },
+        .{ .shader = 0, .clip = 1, .first = 4, .count = 1 },
+    };
+    try testing.expectEqual(expected.len, draws.len);
+    for (draws, expected) |draw, want| {
+        try testing.expectEqual(Pipeline.custom, draw.pipeline);
+        try testing.expectEqual(want.shader, draw.shader);
+        try testing.expectEqual(want.clip, draw.clip);
+        try testing.expectEqual(want.first, draw.first);
+        try testing.expectEqual(want.count, draw.count);
+    }
+    const customs = target.customList();
+    try testing.expectEqual(@as(usize, 5), customs.len);
+    try testing.expectEqual(@as(f32, 0.5), customs[2].opacity);
+    try testing.expectEqual(@as(f32, 50), customs[4].bounds[0]);
+    const params_first = [_]u8{ 7, 6, 5, 4, 2 };
+    for (customs, params_first) |*custom, first| {
+        const params = target.customParams(custom);
+        try testing.expectEqual(first, params[0]);
+        for (params[1..]) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    }
+    try testing.expectEqual(@as(f32, 2.5), target.shader_time_s);
+    try testing.expectEqual(@as(u32, 5), target.counts[@backingInt(Pool.customs)]);
+}
+
+fn testCustom(x: f32, shader: u8, slot: u32, opacity: f32) records.Custom {
+    return .{
+        .bounds = .{ .x = x, .y = 10, .width = 8, .height = 8 },
+        .corners = .all(2),
+        .opacity = opacity,
+        .shader = shader,
+        .params_slot = slot,
+    };
+}
+
 fn testFrameCapacity(paint_record_count_max: u32, mesh_point_count_max: u32) records.FrameCapacity {
     return .{
         .paint_record_count_max = paint_record_count_max,
@@ -536,6 +639,8 @@ fn testFrameCapacity(paint_record_count_max: u32, mesh_point_count_max: u32) rec
         .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = mesh_point_count_max,
+        .params_slot_count_max = 0,
+        .params_stride = 0,
     };
 }
 

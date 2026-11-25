@@ -87,6 +87,8 @@ fn pipelineState(pipeline: Pipeline) PipelineState {
         .triangles => .{ .vertex = .triangles, .pixel = .mesh, .premultiplied = true },
         .strip_expanded => .{ .vertex = .strip, .pixel = .mesh, .premultiplied = true },
         .point_instanced => .{ .vertex = .points, .pixel = .mesh, .premultiplied = true },
+        // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
+        .custom => unreachable,
     };
 }
 
@@ -228,7 +230,7 @@ pub const Dx11Renderer = struct {
 
     pub fn capabilities(self: *const Self) backend.Capabilities {
         assert(self.initialized);
-        return .{ .meshes = true };
+        return .{ .meshes = true, .custom_shaders = false };
     }
 
     pub fn swapchainUsable(self: *const Self) bool {
@@ -407,6 +409,8 @@ pub const Dx11Renderer = struct {
                     packed_draw.first,
                 ),
                 .mesh => drawMeshes(context, frame, packed_draw),
+                // checkCapabilities rejects custom fills: Capabilities.custom_shaders is false.
+                .custom => unreachable,
             }
         }
     }
@@ -428,6 +432,7 @@ pub const Dx11Renderer = struct {
             .quad => buffers.quads.view,
             .sprite => buffers.sprites.view,
             .mesh => buffers.meshes.view,
+            .custom => unreachable,
         };
         const views = [_]?*d3d11.ID3D11ShaderResourceView{
             instances,
@@ -440,6 +445,7 @@ pub const Dx11Renderer = struct {
             .svg => self.atlases.svg.view,
             .image => self.atlases.image.view,
             .quad, .triangles, .strip_expanded, .point_instanced => null,
+            .custom => unreachable,
         };
         if (atlas) |view| {
             const atlas_views = [_]?*d3d11.ID3D11ShaderResourceView{view};
@@ -480,7 +486,7 @@ pub fn meshVertexCount(pipeline: Pipeline, point_count: u32) u32 {
         },
         .strip_expanded => (point_count - 1) * quad_vertex_count,
         .point_instanced => point_count * quad_vertex_count,
-        .quad, .glyph, .svg, .image => unreachable,
+        .quad, .glyph, .svg, .image, .custom => unreachable,
     };
 }
 

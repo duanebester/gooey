@@ -42,6 +42,17 @@ pub const Mesh = extern struct {
 
 pub const MeshPoint = geometry.GpuPoint;
 
+/// One custom-shader fill instance. `params_index` selects the instance's slot in the
+/// frame's params bytes (stride `PaintLimits.shader_params_bytes_max`); the draw names
+/// the shader.
+pub const Custom = extern struct {
+    bounds: Rect,
+    corners: [4]f32,
+    opacity: f32,
+    params_index: u32,
+    _pad: [2]f32 = .{ 0, 0 },
+};
+
 pub const EdgeModes = u32;
 
 pub const Pipeline = enum(u8) {
@@ -52,21 +63,49 @@ pub const Pipeline = enum(u8) {
     triangles,
     strip_expanded,
     point_instanced,
+    custom,
 
     pub fn kind(self: Pipeline) Kind {
         return switch (self) {
             .quad => .quad,
             .glyph, .svg, .image => .sprite,
             .triangles, .strip_expanded, .point_instanced => .mesh,
+            .custom => .custom,
         };
     }
 };
 
-pub const Kind = enum { quad, sprite, mesh };
+pub const Kind = enum { quad, sprite, mesh, custom };
 
+/// Pipelines every renderer builds at init. `.custom` is last and per app: a renderer
+/// with Capabilities.custom_shaders builds one pipeline per declared shader instead.
+pub const builtin_pipeline_count: u32 = @typeInfo(Pipeline).@"enum".field_names.len - 1;
+
+/// The pipelines a renderer builds the same way for every app, with Pipeline's values.
+pub const BuiltinPipeline = enum(u8) {
+    quad,
+    glyph,
+    svg,
+    image,
+    triangles,
+    strip_expanded,
+    point_instanced,
+};
+
+comptime {
+    assert(@backingInt(Pipeline.custom) == builtin_pipeline_count);
+    const names = @typeInfo(BuiltinPipeline).@"enum".field_names;
+    assert(names.len == builtin_pipeline_count);
+    for (names, 0..) |name, index| {
+        assert(@backingInt(@field(Pipeline, name)) == index);
+    }
+}
+
+/// `shader` is the ShaderId (index in `App.shaders`) of a `.custom` draw, else 0.
 pub const Draw = extern struct {
     pipeline: Pipeline,
-    _pad: [3]u8 = .{ 0, 0, 0 },
+    shader: u8 = 0,
+    _pad: [2]u8 = .{ 0, 0 },
     clip: u32,
     first: u32,
     count: u32,
@@ -84,6 +123,7 @@ pub const Pool = enum {
     triangle_meshes,
     polylines,
     point_clouds,
+    customs,
 
     pub fn limitName(self: Pool) []const u8 {
         return switch (self) {
@@ -95,6 +135,7 @@ pub const Pool = enum {
             .triangle_meshes => "path_count_frame_max",
             .polylines => "polyline_count_frame_max",
             .point_clouds => "point_cloud_count_frame_max",
+            .customs => "custom_draw_count_frame_max",
         };
     }
 
@@ -128,6 +169,13 @@ pub const PackedFrame = struct {
     edge_modes: []EdgeModes,
     triangle_count: u32,
     mesh_points: []const MeshPoint,
+    customs: []Custom,
+    custom_count: u32,
+    /// The records frame's params bytes, `params_stride` per slot, set by pack.
+    params: []const u8,
+    params_stride: u32,
+    /// `ShadeInput.time`: seconds from the frame clock, wrapped (shader.timeSeconds).
+    shader_time_s: f32,
     clips: []Rect,
     clip_count: u32,
     draws: []Draw,
@@ -143,6 +191,7 @@ pub const PackedFrame = struct {
         sprites: u32 = 0,
         meshes: u32 = 0,
         triangles: u32 = 0,
+        customs: u32 = 0,
         clips: u32 = 0,
         draws: u32 = 0,
     };
@@ -159,6 +208,8 @@ pub const PackedFrame = struct {
         errdefer reservation.release(Mesh, self.meshes, 0);
         self.edge_modes = try reservation.reserve(EdgeModes, triangleCapacity(paint));
         errdefer reservation.release(EdgeModes, self.edge_modes, 0);
+        self.customs = try reservation.reserve(Custom, paint.custom_draw_count_frame_max);
+        errdefer reservation.release(Custom, self.customs, 0);
         self.clips = try reservation.reserve(Rect, capacity.paint_record_count_max + 1);
         errdefer reservation.release(Rect, self.clips, 0);
         self.draws = try reservation.reserve(Draw, capacity.paint_record_count_max);
@@ -171,6 +222,8 @@ pub const PackedFrame = struct {
         self.sprite_count = 0;
         self.mesh_count = 0;
         self.triangle_count = 0;
+        self.custom_count = 0;
+        self.params_stride = paint.shader_params_bytes_max;
         self.clip_count = 0;
         self.draw_count = 0;
         self.frame_number = 0;
@@ -187,6 +240,7 @@ pub const PackedFrame = struct {
         self.edge_table.deinit();
         reservation.release(Draw, self.draws, high.draws);
         reservation.release(Rect, self.clips, high.clips);
+        reservation.release(Custom, self.customs, high.customs);
         reservation.release(EdgeModes, self.edge_modes, high.triangles);
         reservation.release(Mesh, self.meshes, high.meshes);
         reservation.release(Sprite, self.sprites, high.sprites);
@@ -202,9 +256,12 @@ pub const PackedFrame = struct {
         self.sprite_count = 0;
         self.mesh_count = 0;
         self.triangle_count = 0;
+        self.custom_count = 0;
         self.draw_count = 0;
         self.counts = @splat(0);
         self.mesh_points = mesh_points;
+        self.params = &.{};
+        self.shader_time_s = 0;
         self.frame_number = frame_number;
         self.clips[clip_none] = clip_unbounded;
         self.clip_count = 1;
@@ -219,13 +276,15 @@ pub const PackedFrame = struct {
         high.sprites = @max(high.sprites, self.sprite_count);
         high.meshes = @max(high.meshes, self.mesh_count);
         high.triangles = @max(high.triangles, self.triangle_count);
+        high.customs = @max(high.customs, self.custom_count);
         high.clips = @max(high.clips, self.clip_count);
         high.draws = @max(high.draws, self.draw_count);
     }
 
     pub fn drawList(self: *const PackedFrame) []const Draw {
         assert(self.draw_count <= self.draws.len);
-        assert(self.draw_count <= self.quad_count + self.sprite_count + self.mesh_count);
+        assert(self.draw_count <= self.quad_count + self.sprite_count + self.mesh_count +
+            self.custom_count);
         return self.draws[0..self.draw_count];
     }
 
@@ -248,6 +307,21 @@ pub const PackedFrame = struct {
         assert(self.mesh_count == self.counts[@backingInt(Pool.triangle_meshes)] +
             self.counts[@backingInt(Pool.polylines)] + self.counts[@backingInt(Pool.point_clouds)]);
         return self.meshes[0..self.mesh_count];
+    }
+
+    pub fn customList(self: *const PackedFrame) []const Custom {
+        assert(self.custom_count <= self.customs.len);
+        assert(self.custom_count == self.counts[@backingInt(Pool.customs)]);
+        return self.customs[0..self.custom_count];
+    }
+
+    /// The params bytes of one custom instance: a whole slot, zero past the shader's
+    /// Params.
+    pub fn customParams(self: *const PackedFrame, custom: *const Custom) []const u8 {
+        assert(self.params_stride > 0);
+        const offset = @as(u64, custom.params_index) * self.params_stride;
+        assert(offset + self.params_stride <= self.params.len);
+        return self.params[@intCast(offset)..][0..self.params_stride];
     }
 
     pub fn edgeModeList(self: *const PackedFrame) []const EdgeModes {
@@ -279,6 +353,7 @@ pub const PackedFrame = struct {
             .quad => self.quadList(),
             .sprite => self.spriteList(),
             .mesh => self.meshList(),
+            .custom => self.customList(),
         };
         assert(draw.first + draw.count <= items.len);
         return items[draw.first..][0..draw.count];
@@ -290,6 +365,7 @@ fn KindSlice(comptime kind: Kind) type {
         .quad => []const Quad,
         .sprite => []const Sprite,
         .mesh => []const Mesh,
+        .custom => []const Custom,
     };
 }
 
@@ -338,6 +414,7 @@ pub fn paintBytes(paint: *const limits_mod.PaintLimits) u64 {
     bytes += @as(u64, meshCapacity(paint)) * @sizeOf(Mesh);
     bytes += @as(u64, triangleCapacity(paint)) * @sizeOf(EdgeModes);
     bytes += mesh_edges.table_bytes(edgeCapacity(paint));
+    bytes += @as(u64, paint.custom_draw_count_frame_max) * @sizeOf(Custom);
     assert(bytes > 0);
     return bytes;
 }
@@ -355,6 +432,9 @@ comptime {
     assert(@sizeOf(Sprite) == 96);
     assert(@sizeOf(Mesh) == 32);
     assert(@sizeOf(Draw) == 16);
+    assert(@sizeOf(Custom) == 48);
+    assert(@offsetOf(Custom, "params_index") == 36);
+    assert(limits_mod.MAX_SHADERS <= std.math.maxInt(@FieldType(Draw, "shader")) + 1);
     assert(@sizeOf(MeshPoint) == 8);
     assert(@offsetOf(Quad, "offset") == 80);
     assert(@offsetOf(Quad, "offset") % 8 == 0);

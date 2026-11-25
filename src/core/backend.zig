@@ -4,6 +4,7 @@ const geometry = @import("../geometry/geometry.zig");
 const packed_mod = @import("packed_frame.zig");
 const limits_mod = @import("limits.zig");
 const atlas_uploads = @import("../text/atlas_uploads.zig");
+const shader_mod = @import("shader.zig");
 
 const assert = std.debug.assert;
 
@@ -77,6 +78,9 @@ pub const RenderLimits = struct {
     paint: limits_mod.PaintLimits,
     frame: limits_mod.FrameLimits,
     atlas: limits_mod.AtlasLimits,
+    /// The app's declared shaders, at most `paint.shader_count_max`. A renderer that
+    /// draws custom fills compiles one pipeline per entry at init.
+    shaders: []const *const shader_mod.Spec,
 
     pub fn fromResourceLimits(resource_limits: *const limits_mod.ResourceLimits) RenderLimits {
         assert(resource_limits.check() == null);
@@ -85,6 +89,7 @@ pub const RenderLimits = struct {
             .paint = resource_limits.paint,
             .frame = resource_limits.frame,
             .atlas = resource_limits.atlas,
+            .shaders = &.{},
         };
         assert(result.window.framebuffer_width_max > 0);
         return result;
@@ -93,6 +98,8 @@ pub const RenderLimits = struct {
 
 pub const Capabilities = struct {
     meshes: bool,
+    /// Draws `.custom` pipelines with the shaders from `RenderLimits.shaders`.
+    custom_shaders: bool,
 };
 
 pub fn verifyRenderer(comptime Renderer: type) void {
@@ -132,6 +139,13 @@ pub fn checkCapabilities(capabilities: Capabilities, frame: *const PackedFrame) 
         std.debug.panic("Packed frame {d} holds {d} meshes, but its renderer reports " ++
             "Capabilities.meshes = false. Draw paths, polylines, and point clouds only on " ++
             "renderers that support meshes.", .{ frame.frame_number, frame.mesh_count });
+    }
+    if (frame.custom_count > 0 and !capabilities.custom_shaders) {
+        std.debug.panic("Packed frame {d} holds {d} custom-shader fills, but its renderer " ++
+            "reports Capabilities.custom_shaders = false. Custom fills draw on Metal only.", .{
+            frame.frame_number,
+            frame.custom_count,
+        });
     }
 }
 

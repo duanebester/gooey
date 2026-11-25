@@ -5,14 +5,20 @@ const mtl = @import("api.zig");
 const shaders = @import("shaders.zig");
 const limits = @import("../../../core/limits.zig");
 const packed_frame = @import("../../../core/packed_frame.zig");
+const reservation = @import("../../../core/reservation.zig");
+const shader_mod = @import("../../../core/shader.zig");
+const custom_library = @import("custom_library.zig");
 
 const Pipeline = packed_frame.Pipeline;
+const BuiltinPipeline = packed_frame.BuiltinPipeline;
 
 pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
 
 pub const sample_count: u32 = 1;
 
-pub const pipeline_count = @typeInfo(Pipeline).@"enum".field_names.len;
+pub const pipeline_count = packed_frame.builtin_pipeline_count;
+
+pub const custom_count_max = limits.MAX_SHADERS;
 
 const Blend = enum { straight, premultiplied };
 
@@ -22,7 +28,7 @@ const Spec = struct {
     blend: Blend,
 };
 
-const specs = std.EnumArray(Pipeline, Spec).init(.{
+const specs = std.EnumArray(BuiltinPipeline, Spec).init(.{
     .quad = .{ .vertex = "quad_vertex", .fragment = "quad_fragment", .blend = .straight },
     .glyph = .{ .vertex = "text_vertex", .fragment = "text_fragment", .blend = .straight },
     .svg = .{ .vertex = "svg_vertex", .fragment = "svg_fragment", .blend = .premultiplied },
@@ -44,33 +50,64 @@ const specs = std.EnumArray(Pipeline, Spec).init(.{
     },
 });
 
+pub const Options = custom_library.Options;
+
+/// Gooey's pipelines plus one per declared custom shader, from one library compiled at
+/// init. Cold, that costs about 100 ms plus about 4.5 ms per shader on an M2 Max; the
+/// Metal cache brings a relaunch to about 1.5 ms.
 pub const Pipelines = struct {
     states: [pipeline_count]objc.Object,
+    custom_states: [custom_count_max]objc.Object,
+    custom_count: u32,
 
-    pub fn init(device: objc.Object) !Pipelines {
+    pub fn init(device: objc.Object, options: *const Options) !Pipelines {
         assert(device.value != null);
-        const library = try compileLibrary(device);
+        assert(options.shaders.len <= custom_count_max);
+        const library = try compileLibrary(device, options);
         defer library.release();
 
-        var result: Pipelines = .{ .states = undefined };
+        var result: Pipelines = .{
+            .states = undefined,
+            .custom_states = undefined,
+            .custom_count = 0,
+        };
         var created: u32 = 0;
         errdefer for (result.states[0..created]) |pipeline_state| pipeline_state.release();
         while (created < pipeline_count) : (created += 1) {
-            const pipeline: Pipeline = @fromBackingInt(@intCast(created));
+            const pipeline: BuiltinPipeline = @fromBackingInt(@intCast(created));
             result.states[created] = try createState(device, library, specs.get(pipeline));
         }
+        errdefer for (result.custom_states[0..result.custom_count]) |state_| state_.release();
+        for (options.shaders) |spec| {
+            var name_buffer: [64]u8 = undefined;
+            const fragment = custom_library.fragmentName(&name_buffer, spec);
+            result.custom_states[result.custom_count] = try createState(device, library, .{
+                .vertex = "custom_vertex",
+                .fragment = fragment,
+                .blend = .straight,
+            });
+            result.custom_count += 1;
+        }
         assert(created == pipeline_count);
+        assert(result.custom_count == options.shaders.len);
         return result;
     }
 
     pub fn deinit(self: *Pipelines) void {
-        assert(self.states.len == pipeline_count);
+        assert(self.custom_count <= custom_count_max);
         for (self.states) |pipeline_state| pipeline_state.release();
+        for (self.custom_states[0..self.custom_count]) |pipeline_state| pipeline_state.release();
         self.* = undefined;
     }
 
-    pub fn state(self: *const Pipelines, pipeline: Pipeline) objc.Object {
+    /// The state for a draw: a builtin pipeline, or the `.custom` draw's shader.
+    pub fn state(self: *const Pipelines, pipeline: Pipeline, shader: u8) objc.Object {
         const index = @backingInt(pipeline);
+        if (pipeline == .custom) {
+            assert(shader < self.custom_count);
+            return self.custom_states[shader];
+        }
+        assert(shader == 0);
         assert(index < pipeline_count);
         return self.states[index];
     }
@@ -82,23 +119,50 @@ fn nsString(text: [:0]const u8) objc.Object {
     return NSString.msgSend(objc.Object, "stringWithUTF8String:", .{text.ptr});
 }
 
-fn compileLibrary(device: objc.Object) !objc.Object {
+/// Compile Gooey's source with every custom shader as one library. The assembled source
+/// lives in a reservation released before init returns. A failed compile logs Metal's
+/// message, whose `#line` file names point at the shader and its own lines.
+fn compileLibrary(device: objc.Object, options: *const Options) !objc.Object {
     assert(shaders.source.len > 0);
+    const bytes_max: u32 = @intCast(custom_library.sourceBytesMax(options));
+    const buffer = try reservation.reserve(u8, bytes_max);
+    const source = custom_library.write(buffer, options);
+    defer reservation.release(u8, buffer, source.len);
+
+    const pool = objc.AutoreleasePool.init();
+    defer pool.deinit();
+    const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+    const text = NSString.msgSend(objc.Object, "alloc", .{}).msgSend(
+        objc.Object,
+        "initWithBytes:length:encoding:",
+        .{ @as(*const anyopaque, source.ptr), @as(c_ulong, source.len), ns_utf8_encoding },
+    );
+    defer text.release();
     var compile_error: ?*anyopaque = null;
     const library_ptr = device.msgSend(?*anyopaque, "newLibraryWithSource:options:error:", .{
-        nsString(shaders.source).value,
+        text.value,
         @as(?*anyopaque, null),
         &compile_error,
     }) orelse {
-        if (compile_error) |err| {
-            const failure = objc.Object.fromId(err);
-            const description = failure.msgSend(objc.Object, "localizedDescription", .{});
-            const text = description.msgSend([*:0]const u8, "UTF8String", .{});
-            std.log.err("Metal shader library failed to compile: {s}", .{text});
-        }
+        logCompileError(compile_error, options.shaders.len);
         return error.ShaderCompilationFailed;
     };
     return objc.Object.fromId(library_ptr);
+}
+
+const ns_utf8_encoding: c_ulong = 4;
+
+fn logCompileError(compile_error: ?*anyopaque, shader_count: usize) void {
+    assert(shader_count <= custom_count_max);
+    const failure = objc.Object.fromId(compile_error orelse {
+        std.log.err("Metal shader library failed to compile with no NSError.", .{});
+        return;
+    });
+    const description = failure.msgSend(objc.Object, "localizedDescription", .{});
+    const text = description.msgSend([*:0]const u8, "UTF8String", .{});
+    std.log.err("Metal shader library ({d} custom shaders) failed to compile. Errors in " ++
+        "<name>.metal are in that shader's own MSL; <name>.gooey_wrapper.metal is the " ++
+        "fill wrapper calling its shade(): {s}", .{ shader_count, text });
 }
 
 fn createState(device: objc.Object, library: objc.Object, spec: Spec) !objc.Object {
@@ -217,4 +281,19 @@ pub fn frameBufferContents(comptime T: type, buffer: objc.Object) [*]T {
     const contents = buffer.msgSend(*anyopaque, "contents", .{});
     assert(@intFromPtr(contents) % @alignOf(T) == 0);
     return @ptrCast(@alignCast(contents));
+}
+
+test "Pipelines.init compiles Gooey's library with the built-in custom shaders" {
+    // Only a device compile catches MSL errors in a built-in shader; without this, a
+    // broken shader would first fail at app init. Hosts without Metal skip.
+    const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse return error.SkipZigTest;
+    const device = objc.Object.fromId(device_ptr);
+    defer device.release();
+    var pipelines = try Pipelines.init(device, &.{
+        .shaders = &.{&shader_mod.LinearGradient.spec},
+        .params_stride = limits.MAX_SHADER_PARAMS_BYTES,
+    });
+    defer pipelines.deinit();
+    try std.testing.expectEqual(@as(u32, 1), pipelines.custom_count);
+    try std.testing.expect(pipelines.state(.custom, 0).value != null);
 }
