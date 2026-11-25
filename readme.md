@@ -143,11 +143,13 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `.drag` layer, `startDrag`    |
 | `run-background`       | `background.zig`           | `effects.spawn`, streamed results, cancel  |
 | `run-logo`             | `logo.zig`                 | Bouncing image, `.embedded` budget, boards |
+| `run-shaders`          | `shaders.zig`              | Custom fills (macOS/Metal only)            |
 
-`lucide-demo` does not build on Windows; every other example builds on every desktop
-platform. On an EVE panel (`-Dlinux-backend=eve`), `counter` and `logo` are the board demos and
-the only examples it builds: an EVE app needs `.embedded` (or limits as small), whose fullest
-frame fits the chip's 1536-command display list. Other profiles are refused at compile time.
+`lucide-demo` does not build on Windows, and `shaders` requires macOS/Metal. Other examples
+build on every desktop platform. On an EVE panel (`-Dlinux-backend=eve`), `counter` and `logo`
+are the board demos and the only examples it builds: an EVE app needs `.embedded` (or limits
+as small), whose fullest frame fits the chip's 1536-command display list. Other profiles are
+refused at compile time.
 
 ## Building blocks
 
@@ -1174,8 +1176,7 @@ pub const std_options = gooey.std_options;
 - **Known gaps:** the web host has no file dialogs and does not load images yet. The IME
   candidate window is placed at the caret, whatever character range the input method asks
   about. Linux has no screen reader bridge.
-- **Cut:** multi-window (one window per app), liquid glass, custom shaders, and
-  post-processing.
+- **Cut:** multi-window (one window per app), liquid glass, and post-processing.
 - **Deferred:** drag and drop between apps or with the OS, and edge auto-scroll during a
   drag.
 
