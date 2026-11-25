@@ -54,6 +54,7 @@ const Mode = enum {
     @"core-pack-polylines",
     @"core-pack-draws",
     @"core-pack-clips",
+    @"core-shader-params",
     @"core-capabilities-meshes",
     @"chart-points",
     @"chart-categories",
@@ -117,6 +118,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-pack-polylines" => coreTick(init.gpa, init.io, CoreApp.manyPolylines),
         .@"core-pack-draws" => corePackRecords(init.gpa, .draws),
         .@"core-pack-clips" => corePackRecords(init.gpa, .clips),
+        .@"core-shader-params" => coreShaderParams(init.gpa, init.io),
         .@"core-capabilities-meshes" => coreCapabilitiesMeshes(init.gpa),
         .@"chart-points" => chartPoints(),
         .@"chart-categories" => chartCategories(),
@@ -492,6 +494,19 @@ const CoreApp = struct {
         for (0..count) |_| cx.render(gooey.ui.box(.{}, .{}));
     }
 
+    fn manyFills(cx: *gooey.Cx) void {
+        const count = gooey.ResourceLimits.nano.paint.custom_draw_count_frame_max + 1;
+        for (0..count) |_| cx.render(gooey.ui.box(.{ .style = .{
+            .width = .{ .fixed = 1 },
+            .height = .{ .fixed = 1 },
+            .fill = gooey.shaders.linearGradient(.{
+                .start = gooey.ui.Color.white,
+                .end = gooey.ui.Color.black,
+                .angle_degrees = 0,
+            }),
+        } }, .{}));
+    }
+
     fn manyLayers(cx: *gooey.Cx) void {
         const count = gooey.ResourceLimits.nano.build.layer_count_frame_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{
@@ -814,6 +829,21 @@ fn coreDeinitRunning(gpa: std.mem.Allocator, io: std.Io) void {
 
 fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*gooey.Cx) void) void {
     const app = initCoreApp(gooey.App(CoreState, render, core_config), gpa, io);
+    app.tick(1);
+}
+
+// One more gradient fill than nano's params slots: the emit that claims the extra slot
+// must name the pool and its ResourceLimits field instead of dropping the fill.
+fn coreShaderParams(gpa: std.mem.Allocator, io: std.Io) void {
+    const config: gooey.Config(CoreState) = .{
+        .title = "fail-fast",
+        .width = 100,
+        .height = 100,
+        .limits = .nano,
+        .shaders = &.{gooey.shaders.LinearGradient},
+    };
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.manyFills, config), gpa, io);
+    std.debug.assert(gooey.ResourceLimits.nano.paint.custom_draw_count_frame_max > 0);
     app.tick(1);
 }
 

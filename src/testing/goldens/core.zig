@@ -5,6 +5,7 @@ const todo = @import("todo_example");
 const actions = @import("actions_example");
 const grid_layout = @import("grid_layout_example");
 const text_truncation = @import("text_truncation_example");
+const shaders = @import("shaders_example");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
 
@@ -190,6 +191,10 @@ pub fn captureActions(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer
 
 pub fn captureGrid(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
     try capture(allocator, io, grid_layout.App, &traces.grid, out);
+}
+
+pub fn captureShaders(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
+    try capture(allocator, io, shaders.App, &traces.shaders, out);
 }
 
 pub fn captureTruncation(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
