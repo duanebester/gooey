@@ -184,6 +184,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
             .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
+            .{ .name = "shaders", .source = "src/examples/shaders.zig" },
         };
         var todo_exe: ?*std.Build.Step.Compile = null;
         for (native_examples) |example| {
@@ -1102,6 +1103,7 @@ fn addMacosCoreExampleTypecheck(
         "drag_drop",
         "text_area",
         "background",
+        "shaders",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
