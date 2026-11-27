@@ -1205,6 +1205,140 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
+/// Each fail-fast mode of `src/testing/fail_fast_check.zig` and the panic it must print.
+const fail_fast_checks = [_]struct { mode: []const u8, stderr: []const u8 }{
+    .{ .mode = "font-variant", .stderr = "TextSystem: font variant 'light' (font_id 4) " ++
+        "is not loaded; ResourceLimits.text.fonts.variants loads 6 faces: regular, medium, " ++
+        "semibold, bold, italic, bold_italic. Add it there." },
+    .{ .mode = "atlas-item", .stderr = "Atlas pool 'text' cannot hold one item: " ++
+        "capacity 64x64 px, requested 65x6 px (1 px border included), frame 2." },
+    .{ .mode = "atlas-live-set", .stderr = "Atlas pool 'svg' exhausted: capacity 64x64 px, " ++
+        "64 rows held by items in use since frame 2, requested 64x16 px " ++
+        "(1 px border included), frame 2." },
+    .{ .mode = "glyph-cache", .stderr = "text pool 'glyph cache' exhausted: capacity 512, " ++
+        "512 in use, 1 requested, every glyph used since frame 2. " ++
+        "Raise ResourceLimits.text.glyph_cache_count_max." },
+    .{ .mode = "core-allocation", .stderr = "allocation after initialization: alloc of " ++
+        "16 bytes while the lifecycle is running" },
+    .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },
+    .{ .mode = "core-opacity-range", .stderr = "Style.opacity 1.01 is outside 0 to 1" },
+    .{ .mode = "core-grow-weight", .stderr = "Sizing.grow weight 0: a weight must be " ++
+        "finite and greater than 0" },
+    .{ .mode = "core-wrap-column", .stderr = "Style.wrap: only a .row wraps; " ++
+        "a .column cannot" },
+    .{ .mode = "core-aspect-ratio", .stderr = "Style.aspect_ratio 0: a ratio must be " ++
+        "finite and greater than 0" },
+    .{ .mode = "core-aspect-height", .stderr = "Style.aspect_ratio: the height follows " ++
+        "the width, so `height` must be .fit, with no height_min or height_max" },
+    .{ .mode = "core-grid-columns", .stderr = "Grid.columns: 0 columns; a grid has 1 to 32" },
+    .{ .mode = "core-grid-rows", .stderr = "Grid.rows: 33 rows; a grid lists at most 32" },
+    .{ .mode = "core-grid-track", .stderr = "Grid track 0: min 10 and max 5 must satisfy " ++
+        "0 <= min <= max" },
+    .{ .mode = "core-grid-wrap", .stderr = "Style.grid: a grid box does not also wrap" },
+    .{ .mode = "core-grid-alignment", .stderr = "Style.alignment.main .space_between: a " ++
+        "grid places a child in its cell with start, center, or end" },
+    .{ .mode = "core-grid-span", .stderr = "Cell.column_span 0: the grid has 2 columns" },
+    .{ .mode = "core-grid-column", .stderr = "Cell.column 1 with span 2: the grid has " ++
+        "2 columns" },
+    .{ .mode = "core-grid-cell-outside", .stderr = "Style.cell: only a child of a grid " ++
+        "box sits in a cell" },
+    .{ .mode = "core-grid-row-box", .stderr = "Cell.row: a row box spans every column " ++
+        "and holds only cells" },
+    .{ .mode = "core-grid-row-box-cells", .stderr = "Cell.column 2 with span 1: a row box " ++
+        "holds one row of 2 columns" },
+    .{ .mode = "core-grid-count", .stderr = "layout pool 'grids' exhausted: capacity 8, " ++
+        "8 in use, 1 requested. Raise ResourceLimits.build.grid_count_frame_max." },
+    .{ .mode = "core-span-count", .stderr = "build pool 'spans' exhausted: capacity 128, " ++
+        "127 in use, 2 requested, frame " },
+    .{ .mode = "core-span-boundary", .stderr = "Span 1 of \"caf\" starts inside a " ++
+        "UTF-8 sequence; a span starts on a codepoint boundary" },
+    .{ .mode = "core-link-empty", .stderr = "Span 1 of \"Open\" is a link with no " ++
+        "text; a link needs bytes to click and to read" },
+    .{ .mode = "core-link-key-duplicate", .stderr = "duplicate link key \"docs\" in text " },
+    .{ .mode = "core-span-input", .stderr = "Text \"\" has 129 spans; a text has at most " ++
+        "128. Raise ResourceLimits.build.span_count_frame_max." },
+    .{ .mode = "core-rich-label", .stderr = "richLabel: span 1 needs 2 bytes, 1 of 6 are free" },
+    .{ .mode = "core-text-line-count-zero", .stderr = "Text.line_count_max 0 " ++
+        "(\"Quarterly report\"): a text shows 1 to 255 lines" },
+    .{ .mode = "core-text-line-count-none", .stderr = "Text.line_count_max " ++
+        "(\"Quarterly report\"): a .none text is one line; wrap at .words or .newlines" },
+    .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
+        "(contract §5): box at fail_fast_check.zig:" },
+    .{ .mode = "core-drag-unkeyed", .stderr = "Box.draggable needs a key " ++
+        "(contract §5): box at fail_fast_check.zig:" },
+    .{ .mode = "core-drag-both", .stderr = "Box.draggable and Box.on_pointer_drag on one " ++
+        "box; a press starts one gesture (contract §5): box at fail_fast_check.zig:" },
+    .{ .mode = "core-start-drag-target", .stderr = "effects.startDrag: element " },
+    .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
+        "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
+    .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
+        "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
+    .{ .mode = "core-job-posts", .stderr = "job fail_fast_check.Overpost posted more than " ++
+        "its posts_max 1 in one run; without threads a post cannot wait for a drain. " ++
+        "Raise fail_fast_check.Overpost.posts_max (at most " ++
+        "ResourceLimits.events.job_result_count_max 8)." },
+    .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
+        "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
+    .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++
+        "64 in use, 1 requested, frame 1. Raise ResourceLimits.build.box_depth_max." },
+    .{ .mode = "core-layout-elements", .stderr = "build pool 'elements' exhausted: " ++
+        "capacity 512, 512 in use, 1 requested, frame 1. Raise " ++
+        "ResourceLimits.build.element_count_frame_max." },
+    .{ .mode = "core-layer-count", .stderr = "layout pool 'floating roots' exhausted: " ++
+        "capacity 8, 8 in use, 1 requested. Raise " ++
+        "ResourceLimits.build.layer_count_frame_max." },
+    .{ .mode = "core-a11y-elements", .stderr = "a11y pool 'elements' exhausted: " ++
+        "capacity 128, 128 in use, 1 requested, frame 1. Raise " ++
+        "ResourceLimits.a11y.element_count_max." },
+    .{ .mode = "core-a11y-announcement-bytes", .stderr = "a11y announcement of 129 " ++
+        "bytes is longer than its slot: capacity 128 bytes, frame 1. Raise " ++
+        "ResourceLimits.a11y.announcement_message_bytes_max." },
+    .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
+        "family is loaded; set Config.fonts.mono and " ++
+        "ResourceLimits.text.fonts.mono_variants" },
+    .{ .mode = "core-wrap-text", .stderr = "wrapped lines exhausted: capacity 1024 " ++
+        "(paint.glyph_count_frame_max), 1024 in use by one text, 1 requested" },
+    .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
+        "(paint.glyph_count_frame_max), 1000 in use, 25 requested" },
+    .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
+        "call App.stop first, before any teardown frees" },
+    .{ .mode = "core-list-count", .stderr = "List \"rows\" of 65 rows: capacity 64. " ++
+        "Raise fail_fast_check.CoreApp.TallRow.count_max." },
+    .{ .mode = "core-mesh-points", .stderr = "mesh points exhausted: capacity 1024 " ++
+        "(paint.polyline_point_count_frame_max), 0 in use, 1025 requested, frame 1." },
+    .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
+        "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
+        "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
+    .{ .mode = "core-image-path", .stderr = "Painter.image path of 1025 bytes exceeds " ++
+        "ResourceLimits.atlas.image_path_bytes_max 1024, frame 1" },
+    .{ .mode = "svg-cache", .stderr = "SvgAtlas pool 'cache' exhausted: capacity 8, " ++
+        "8 in use, 1 requested, every icon used since frame 2. " ++
+        "Raise ResourceLimits.atlas.svg_entry_count_max." },
+    .{ .mode = "image-cache", .stderr = "ImageAtlas pool 'cache' exhausted: capacity 8, " ++
+        "8 in use, 1 requested, every image used since frame 2. " ++
+        "Raise ResourceLimits.atlas.image_entry_count_max." },
+    .{ .mode = "core-pack-polylines", .stderr = "Packed pool 'polylines' exhausted: " ++
+        "capacity 4 (ResourceLimits.paint.polyline_count_frame_max), 4 in use, " ++
+        "1 requested, frame 1." },
+    .{ .mode = "core-pack-draws", .stderr = "Packed pool 'draws' exhausted: capacity 8 " ++
+        "(ResourceLimits.records.paint_record_count_frame_max + 0), 8 in use, 1 requested, " ++
+        "frame 1." },
+    .{ .mode = "core-pack-clips", .stderr = "Packed pool 'clips' exhausted: capacity 9 " ++
+        "(ResourceLimits.records.paint_record_count_frame_max + 1), 9 in use, 1 requested, " ++
+        "frame 1." },
+    .{ .mode = "core-shader-params", .stderr = "record frame pool 'shader params' " ++
+        "exhausted: capacity 64 (ResourceLimits.paint.custom_draw_count_frame_max), " ++
+        "64 in use, 1 requested, frame 1." },
+    .{ .mode = "core-capabilities-meshes", .stderr = "Packed frame 1 holds 1 meshes, but " ++
+        "its renderer reports Capabilities.meshes = false." },
+    .{ .mode = "chart-points", .stderr = "chart series 'rev' full: capacity 4 points, " ++
+        "1 requested. Raise the chart's point_count_max." },
+    .{ .mode = "chart-categories", .stderr = "chart series 'sales' full: capacity 2 " ++
+        "categories, 3 requested. Raise the chart's category_count_max." },
+    .{ .mode = "chart-slices", .stderr = "pie chart of 3 slices: capacity 2. " ++
+        "Raise the chart's slice_count_max." },
+};
+
 fn addFailFastChecks(
     b: *std.Build,
     gooey_module: *std.Build.Module,
@@ -1228,133 +1362,7 @@ fn addFailFastChecks(
         }),
     });
 
-    const checks = [_]struct { mode: []const u8, stderr: []const u8 }{
-        .{ .mode = "font-variant", .stderr = "TextSystem: font variant 'light' (font_id 4) " ++
-            "is not loaded; ResourceLimits.text.fonts.variants loads 6 faces: regular, medium, " ++
-            "semibold, bold, italic, bold_italic. Add it there." },
-        .{ .mode = "atlas-item", .stderr = "Atlas pool 'text' cannot hold one item: " ++
-            "capacity 64x64 px, requested 65x6 px (1 px border included), frame 2." },
-        .{ .mode = "atlas-live-set", .stderr = "Atlas pool 'svg' exhausted: capacity 64x64 px, " ++
-            "64 rows held by items in use since frame 2, requested 64x16 px " ++
-            "(1 px border included), frame 2." },
-        .{ .mode = "glyph-cache", .stderr = "text pool 'glyph cache' exhausted: capacity 512, " ++
-            "512 in use, 1 requested, every glyph used since frame 2. " ++
-            "Raise ResourceLimits.text.glyph_cache_count_max." },
-        .{ .mode = "core-allocation", .stderr = "allocation after initialization: alloc of " ++
-            "16 bytes while the lifecycle is running" },
-        .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },
-        .{ .mode = "core-opacity-range", .stderr = "Style.opacity 1.01 is outside 0 to 1" },
-        .{ .mode = "core-grow-weight", .stderr = "Sizing.grow weight 0: a weight must be " ++
-            "finite and greater than 0" },
-        .{ .mode = "core-wrap-column", .stderr = "Style.wrap: only a .row wraps; " ++
-            "a .column cannot" },
-        .{ .mode = "core-aspect-ratio", .stderr = "Style.aspect_ratio 0: a ratio must be " ++
-            "finite and greater than 0" },
-        .{ .mode = "core-aspect-height", .stderr = "Style.aspect_ratio: the height follows " ++
-            "the width, so `height` must be .fit, with no height_min or height_max" },
-        .{ .mode = "core-grid-columns", .stderr = "Grid.columns: 0 columns; a grid has 1 to 32" },
-        .{ .mode = "core-grid-rows", .stderr = "Grid.rows: 33 rows; a grid lists at most 32" },
-        .{ .mode = "core-grid-track", .stderr = "Grid track 0: min 10 and max 5 must satisfy " ++
-            "0 <= min <= max" },
-        .{ .mode = "core-grid-wrap", .stderr = "Style.grid: a grid box does not also wrap" },
-        .{ .mode = "core-grid-alignment", .stderr = "Style.alignment.main .space_between: a " ++
-            "grid places a child in its cell with start, center, or end" },
-        .{ .mode = "core-grid-span", .stderr = "Cell.column_span 0: the grid has 2 columns" },
-        .{ .mode = "core-grid-column", .stderr = "Cell.column 1 with span 2: the grid has " ++
-            "2 columns" },
-        .{ .mode = "core-grid-cell-outside", .stderr = "Style.cell: only a child of a grid " ++
-            "box sits in a cell" },
-        .{ .mode = "core-grid-row-box", .stderr = "Cell.row: a row box spans every column " ++
-            "and holds only cells" },
-        .{ .mode = "core-grid-row-box-cells", .stderr = "Cell.column 2 with span 1: a row box " ++
-            "holds one row of 2 columns" },
-        .{ .mode = "core-grid-count", .stderr = "layout pool 'grids' exhausted: capacity 8, " ++
-            "8 in use, 1 requested. Raise ResourceLimits.build.grid_count_frame_max." },
-        .{ .mode = "core-span-count", .stderr = "build pool 'spans' exhausted: capacity 128, " ++
-            "127 in use, 2 requested, frame " },
-        .{ .mode = "core-span-boundary", .stderr = "Span 1 of \"caf\" starts inside a " ++
-            "UTF-8 sequence; a span starts on a codepoint boundary" },
-        .{ .mode = "core-text-line-count-zero", .stderr = "Text.line_count_max 0 " ++
-            "(\"Quarterly report\"): a text shows 1 to 255 lines" },
-        .{ .mode = "core-text-line-count-none", .stderr = "Text.line_count_max " ++
-            "(\"Quarterly report\"): a .none text is one line; wrap at .words or .newlines" },
-        .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
-            "(contract §5): box at fail_fast_check.zig:" },
-        .{ .mode = "core-drag-unkeyed", .stderr = "Box.draggable needs a key " ++
-            "(contract §5): box at fail_fast_check.zig:" },
-        .{ .mode = "core-drag-both", .stderr = "Box.draggable and Box.on_pointer_drag on one " ++
-            "box; a press starts one gesture (contract §5): box at fail_fast_check.zig:" },
-        .{ .mode = "core-start-drag-target", .stderr = "effects.startDrag: element " },
-        .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
-            "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
-        .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
-            "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
-        .{ .mode = "core-job-posts", .stderr = "job fail_fast_check.Overpost posted more than " ++
-            "its posts_max 1 in one run; without threads a post cannot wait for a drain. " ++
-            "Raise fail_fast_check.Overpost.posts_max (at most " ++
-            "ResourceLimits.events.job_result_count_max 8)." },
-        .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
-            "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
-        .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++
-            "64 in use, 1 requested, frame 1. Raise ResourceLimits.build.box_depth_max." },
-        .{ .mode = "core-layout-elements", .stderr = "build pool 'elements' exhausted: " ++
-            "capacity 512, 512 in use, 1 requested, frame 1. Raise " ++
-            "ResourceLimits.build.element_count_frame_max." },
-        .{ .mode = "core-layer-count", .stderr = "layout pool 'floating roots' exhausted: " ++
-            "capacity 8, 8 in use, 1 requested. Raise " ++
-            "ResourceLimits.build.layer_count_frame_max." },
-        .{ .mode = "core-a11y-elements", .stderr = "a11y pool 'elements' exhausted: " ++
-            "capacity 128, 128 in use, 1 requested, frame 1. Raise " ++
-            "ResourceLimits.a11y.element_count_max." },
-        .{ .mode = "core-a11y-announcement-bytes", .stderr = "a11y announcement of 129 " ++
-            "bytes is longer than its slot: capacity 128 bytes, frame 1. Raise " ++
-            "ResourceLimits.a11y.announcement_message_bytes_max." },
-        .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
-            "family is loaded; set Config.fonts.mono and " ++
-            "ResourceLimits.text.fonts.mono_variants" },
-        .{ .mode = "core-wrap-text", .stderr = "wrapped lines exhausted: capacity 1024 " ++
-            "(paint.glyph_count_frame_max), 1024 in use by one text, 1 requested" },
-        .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
-            "(paint.glyph_count_frame_max), 1000 in use, 25 requested" },
-        .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
-            "call App.stop first, before any teardown frees" },
-        .{ .mode = "core-list-count", .stderr = "List \"rows\" of 65 rows: capacity 64. " ++
-            "Raise fail_fast_check.CoreApp.TallRow.count_max." },
-        .{ .mode = "core-mesh-points", .stderr = "mesh points exhausted: capacity 1024 " ++
-            "(paint.polyline_point_count_frame_max), 0 in use, 1025 requested, frame 1." },
-        .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
-            "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
-            "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
-        .{ .mode = "core-image-path", .stderr = "Painter.image path of 1025 bytes exceeds " ++
-            "ResourceLimits.atlas.image_path_bytes_max 1024, frame 1" },
-        .{ .mode = "svg-cache", .stderr = "SvgAtlas pool 'cache' exhausted: capacity 8, " ++
-            "8 in use, 1 requested, every icon used since frame 2. " ++
-            "Raise ResourceLimits.atlas.svg_entry_count_max." },
-        .{ .mode = "image-cache", .stderr = "ImageAtlas pool 'cache' exhausted: capacity 8, " ++
-            "8 in use, 1 requested, every image used since frame 2. " ++
-            "Raise ResourceLimits.atlas.image_entry_count_max." },
-        .{ .mode = "core-pack-polylines", .stderr = "Packed pool 'polylines' exhausted: " ++
-            "capacity 4 (ResourceLimits.paint.polyline_count_frame_max), 4 in use, " ++
-            "1 requested, frame 1." },
-        .{ .mode = "core-pack-draws", .stderr = "Packed pool 'draws' exhausted: capacity 8 " ++
-            "(ResourceLimits.records.paint_record_count_frame_max + 0), 8 in use, 1 requested, " ++
-            "frame 1." },
-        .{ .mode = "core-pack-clips", .stderr = "Packed pool 'clips' exhausted: capacity 9 " ++
-            "(ResourceLimits.records.paint_record_count_frame_max + 1), 9 in use, 1 requested, " ++
-            "frame 1." },
-        .{ .mode = "core-shader-params", .stderr = "record frame pool 'shader params' " ++
-            "exhausted: capacity 64 (ResourceLimits.paint.custom_draw_count_frame_max), " ++
-            "64 in use, 1 requested, frame 1." },
-        .{ .mode = "core-capabilities-meshes", .stderr = "Packed frame 1 holds 1 meshes, but " ++
-            "its renderer reports Capabilities.meshes = false." },
-        .{ .mode = "chart-points", .stderr = "chart series 'rev' full: capacity 4 points, " ++
-            "1 requested. Raise the chart's point_count_max." },
-        .{ .mode = "chart-categories", .stderr = "chart series 'sales' full: capacity 2 " ++
-            "categories, 3 requested. Raise the chart's category_count_max." },
-        .{ .mode = "chart-slices", .stderr = "pie chart of 3 slices: capacity 2. " ++
-            "Raise the chart's slice_count_max." },
-    };
-    for (checks) |check| {
+    for (fail_fast_checks) |check| {
         const run = b.addRunArtifact(exe);
         run.addArg(check.mode);
         run.addCheck(.{ .expect_stderr_match = check.stderr });

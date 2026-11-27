@@ -2,11 +2,10 @@
 
 ## Status
 
-Proposed on 2026-11-26 against origin/main e085c4c. Phase 1 (styled spans without links) is
-implemented; links are not. It depends on nothing
-unmerged. Selectable text (`docs/selectable-text.md`) is out of scope; "Later" notes what
-this design keeps open for it. The estimate is under "Effort", and the recommended first
-step under "First step".
+Proposed on 2026-11-26 against origin/main e085c4c. Phase 1 (styled spans) and phase 2
+(links) are implemented. It depends on nothing unmerged. Selectable text
+(`docs/selectable-text.md`) is out of scope; "Later" notes what this design keeps open for
+it. The estimate is under "Effort", and the recommended first step under "First step".
 
 ## Why
 
@@ -130,9 +129,9 @@ Decisions:
 - **Spans are copied at build.** Each span's bytes go into the frame's text bytes back to
   back, so the slice may point at a buffer local to the render function, as `a11y` strings
   may. A markdown view parses into its own fixed buffer, reserved at init.
-- **Link defaults.** A link span with no `color` is `.primary` and with no `decoration`
-  is underlined, so links look like links without per-app styling. The cursor over a link
-  is `.pointer`.
+- **Link defaults.** A link span with no `color` takes the theme's `link` color and with no
+  `decoration` is underlined, so links look like links without per-app styling. The cursor
+  over a link is `.pointer`.
 - **No per-span size** in the first phases (see "Size").
 
 ## Semantics
@@ -173,7 +172,7 @@ measures the same pieces, one per span even where adjacent spans share a font, s
 widths it wraps by are the widths emit draws.
 
 Per segment, in this order: a background quad (the segment's advance by the line's pitch),
-then the glyphs, then a decoration quad from the segment font's `underline_position` and
+then the glyphs, then a decoration quad from the base font's `underline_position` and
 `underline_thickness` (strikethrough at half the x-height). A background or decoration
 over a wrapped span is drawn once per line it covers. Alignment is unchanged: a line's
 width is the sum of its segments, computed during wrapping.
@@ -205,10 +204,19 @@ A link span becomes interactive without a node of its own:
 - **Focus.** The router needs no change: Tab reaches the first segment, Return, Enter, or
   Space runs `on_click` (`activates`), and a click focuses it like any focusable record.
   Emit draws the focus ring around each segment of the focused link.
-- **Culled lines.** A link on a line outside its scroll box's view still gets its records,
-  with the line's whole box (clipped to nothing, so the pointer never finds them). Tab can
-  reach it, and the focus reveal scrolls its line into view; the next frame draws exact
-  segments.
+- **Shown bytes.** A link exists this frame only if a line shows one of its bytes: all of
+  a whole line, or the kept prefix of a cut line, measured as emit draws the cut. A link
+  wholly hidden by a cut, on any line, gets no record and no accessibility node. The
+  accessibility and hit passes share this test (`linkLine`), so they agree.
+- **Culled lines.** A shown link whose first shown line is outside its scroll box's view
+  still gets one record, with that line's box and no pointer, so the pointer never finds
+  it. Tab can reach it, and the focus reveal scrolls its line into view; the next frame
+  draws exact segments. Records stay in byte order, which is Tab order. A link's first
+  record, drawn or culled, is its one Tab stop (`SpanLink.hit`).
+- **Drag previews and tooltips.** A fragment that takes no pointer gets no link records,
+  so a dragged copy of a link cannot be focused or activated, even past a modal.
+- **Focus ring.** One ring per drawn segment, at most 8 (`link_ring_count_max`); a link
+  wrapping further rings its remaining lines as one box.
 - **Identity.** A link's id is `text_id.child(key)` with a `key`, otherwise
   `text_id.auto(span_index)`. A text has no children, so these cannot collide with a node.
   Every segment of a link shares the id, so the router's `findRecord` lands on the first.
@@ -216,10 +224,17 @@ A link span becomes interactive without a node of its own:
 ### Accessibility
 
 `ui.text` and `ui.rich` still add no node for the text: the text is read through a box's
-`a11y.label`, as today. Each link adds one node with role `.link`, its span's text as the
-name, `href`, `focused` when held, and as bounds the union of its drawn segments. It nests
-under the nearest accessible ancestor, as a box does. A screen reader can therefore reach
-and activate every link a sighted user can click.
+`a11y.label`, as today. Each shown link adds one node with role `.link`, its span's text as
+the name, `focused` when held, and as bounds the union of its drawn segments inside the
+clip. A shown link with no visible segment, scrolled away, has its first shown line's box
+instead. The node nests under the nearest accessible ancestor, as a box does.
+
+What reaches assistive technology is what a box's node reaches today: role, name, state,
+and bounds. The node records `href`, as `A11y.href` does for a box, but the platform
+bridge does not yet publish `href` for either, and no platform action routes to a
+handler. A screen reader user activates a link as a keyboard user does: Tab to it, then
+Return. Publishing `href` and accessibility actions is a bridge change for boxes and links
+together.
 
 `emitAccessibility` runs before `emitFragment`, which is where segment positions are
 known. The accessibility pass appends each link's node with the text's bounds and stores
@@ -283,13 +298,17 @@ same walk; no extra measurement or shaping happens.
 
 One new field in `BuildLimits`, frame-scoped like `element_count_frame_max`:
 
-| Profile    | `span_count_frame_max` | Reserved (48 B per span) |
+| Profile    | `span_count_frame_max` | Reserved (80 B per span) |
 | ---------- | ---------------------: | -----------------------: |
-| `nano`     | 128                    | 6 KB                     |
-| `small`    | 1,024                  | 48 KB                    |
-| `standard` | 4,096                  | 192 KB                   |
-| `large`    | 16,384                 | 768 KB                   |
-| `ceiling`  | 65,535                 | 3 MB                     |
+| `nano`     | 128                    | 10 KB                    |
+| `small`    | 1,024                  | 80 KB                    |
+| `standard` | 4,096                  | 320 KB                   |
+| `large`    | 16,384                 | 1.25 MB                  |
+| `ceiling`  | 65,535                 | 5 MB                     |
+
+Each span reserves an 8 B layout run, a 40 B paint, and a 32 B link (`SpanLink`: id,
+handler index, href, accessibility node index, first hit record, and whether a segment
+was visible). The link is written only for link spans.
 
 The arrays live on the build side, so one copy exists per window, not one per frame. They
 are taken from fresh pages, so only the spans an app uses become resident.
@@ -298,7 +317,7 @@ Relationships, checked with the other limits: `span_count_frame_max <=
 text_bytes_frame_max` (every slot holds at least one byte). `nano` keeps rich text because a
 colored or bold word costs little. The limit must be at least 1: `check()` rejects 0 as it
 does every other build pool, so an app that never uses spans keeps the smallest profile's
-128 slots (6 KB of address space, none of it resident until used).
+128 slots (10 KB of address space, none of it resident until used).
 
 Fixed costs that do not scale with `span_count_frame_max`:
 
@@ -308,13 +327,23 @@ Fixed costs that do not scale with `span_count_frame_max`:
   (`runs_start`, `runs_count`), on every text element.
 - **Build nodes**: `Node.spans` adds 8 B per node.
 
-Everything else spans add comes from existing budgets, so no other limit moves:
+Everything else spans add comes from existing budgets. Links add to pools that were bound
+by the element count, so their relationships widen by the span budget, letting an app raise
+just the pool its links use:
 
 - **Paint records** (`records.paint_record_count_frame_max`): at most one background and
   one decoration quad per segment. Glyph quads do not change: the same glyphs are drawn.
-- **Hit records** (`records.hit_record_count_frame_max`): one per link segment.
-- **Handlers** (`records.handler_count_frame_max`): one per link.
-- **Accessibility nodes** (`a11y.element_count_max`): one per link.
+- **Hit records** (`records.hit_record_count_frame_max`): one per drawn link segment, or
+  one per culled link. A link's segments are at most one plus the lines it continues onto,
+  so the bound is `element_count_frame_max + span_count_frame_max +
+  paint.glyph_count_frame_max` (layout's wrapped lines share the glyph budget).
+- **Handlers** (`records.handler_count_frame_max`): one per link; the bound grows by
+  `span_count_frame_max`.
+- **Accessibility nodes** (`a11y.element_count_max`): one per shown link; the bound is
+  `element_count_frame_max + span_count_frame_max`, under the 16,384 tree ceiling.
+- **Keys** (`build.key_count_frame_max`): one per keyed link; the bound is
+  `element_count_frame_max + span_count_frame_max`.
+- **Text bytes** (`build.text_bytes_frame_max`): each link's `href` is copied once.
 - **Wrapped lines** (`paint.glyph_count_frame_max`): unchanged; spans do not add lines.
 
 Exhaustion fails fast as every pool does: `build pool 'spans' exhausted: capacity {d}
@@ -326,8 +355,8 @@ Per frame, with no allocation:
 
 - **No spans.** One null check per text in build, layout, and emit. Target: within 0.5 %
   instructions in the Cachegrind gate, with `ui.text` output identical byte for byte.
-- **Build.** Per span one boundary check, one `copyText`, and 48 bytes written. At
-  `standard`, at most 4,096 spans, 192 KB written sequentially.
+- **Build.** Per span one boundary check, one `copyText`, and 48 bytes written, plus 24
+  for a link. At `standard`, at most 4,096 spans, 288 KB written sequentially.
 - **Layout.** Per span boundary at most three extra measure calls (the word's piece, a
   space, and a tab in the new font), served by the text system's measure cache
   (`text.measure_slot_count_max`). At most 12,288 extra calls at `standard`, and most hit.
@@ -337,6 +366,12 @@ Per frame, with no allocation:
   more, shorter runs per line. A markdown view with many short spans therefore puts more
   pressure on `text.shaped_run_count_max` (256 at `standard`); a miss reshapes into the
   cache's fixed slots and does not allocate. The benchmark below measures this.
+- **Links.** Texts without links skip every step here. Per shown link one `linkLine`
+  walk: a binary search for its start line (at most 32 steps) and one step per line it
+  covers. A cut line it covers costs one `measureCut`, served by the shaped-run cache; at
+  most two walks per link per frame (accessibility, then hits or the offscreen box). Per
+  link at most one culled record, one record per drawn segment, and up to 8 ring quads
+  for the focused one.
 - **Pointer.** Link records are ordinary hit records; nothing new per event.
 
 ## Tests
@@ -416,9 +451,8 @@ styling, and both later phases build on the same run table.
    `.paragraph` node so its words are read without a box label?
 2. **Ellipsis style.** The "…" takes the element's style. When the cut lands in a link or
    a colored span, should it take that span's color instead?
-3. **Link colors.** Should the theme gain a `link` token, separate from `primary`?
-4. **Underline placement.** The underline uses each segment's font metrics, so a `.mono`
-   word inside a link may sit at a different height. Should a line use one underline
-   position (the base font's) for every segment, as most browsers do?
+3. **Link colors.** Decided: the theme has a `link` color, separate from `primary`.
+4. **Underline placement.** Decided: every segment's underline and strikethrough use the
+   text's base font metrics, so a `.mono` word inside a link sits at the same height.
 5. **Per-text span bound.** Spans are bounded per frame, not per text. Should one text
    also be capped, so one runaway message cannot use the whole frame's budget?

@@ -5,12 +5,18 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = ui.Color;
 
-pub const State = struct {};
+pub const State = struct {
+    opened: u32 = 0,
+
+    pub fn open(self: *State) void {
+        self.opened += 1;
+    }
+};
 
 pub const App = gooey.App(State, render, .{
     .title = "Rich text",
     .width = 640,
-    .height = 420,
+    .height = 520,
     .limits = limits,
     .fonts = .{ .mono = .{ .system = .monospace } },
 });
@@ -48,6 +54,7 @@ pub fn render(cx: *Cx) void {
         Panel{ .heading = "Chat message", .body = &chat },
         Panel{ .heading = "Markdown paragraph", .body = &markdown },
         Panel{ .heading = "Log line", .body = &log },
+        Panel{ .heading = "Links", .body = &links(cx) },
         Panel{ .heading = "Truncated cell", .body = &cell, .width = 260 },
     }));
 }
@@ -82,6 +89,27 @@ const log = [_]ui.Span{
     .{ .text = "12:04:13 ", .family = .mono, .color = .{ .rgba = muted } },
     .{ .text = "OK", .family = .mono, .weight = .bold, .color = .{ .rgba = success } },
 };
+
+// Links take the theme's link color and an underline unless the span sets its own; Tab
+// reaches each one, and Return or a click runs its handler.
+fn links(cx: *Cx) [5]ui.Span {
+    const open = cx.on(State.open, .{});
+    return .{
+        .{ .text = "See " },
+        .{
+            .text = "the rich text design",
+            .link = .{ .on_click = open, .href = "docs/rich-text.md" },
+        },
+        .{ .text = " or run " },
+        .{
+            .text = "zig build run-rich_text",
+            .family = .mono,
+            .background = .{ .rgba = code_fill },
+            .link = .{ .on_click = open, .key = .{ .name = "run" } },
+        },
+        .{ .text = "; a link that wraps stays one Tab stop." },
+    };
+}
 
 const cell = [_]ui.Span{
     .{ .text = "invoice-2026-11.pdf", .weight = .semibold },

@@ -798,6 +798,141 @@ fn benchPack(
     };
 }
 
+const ui = gooey.ui;
+
+/// Text cards per frame in the emit benchmarks: enough that most sit below the 600 px
+/// view, so emit's culling and the culled-link walk both run.
+const emit_card_count: u32 = 100;
+const emit_span_count: u32 = 8;
+
+/// The card text: 8 phrases of about 48 bytes, so a styled run every eight words as in
+/// the `text_rich` layout benchmark. `ui.text` draws them joined; `ui.rich` as spans.
+const emit_phrases = [emit_span_count][]const u8{
+    "Spans are byte ranges over one string, so that ",
+    "a bold phrase wraps across lines like any word, ",
+    "inline code keeps its background on every line, ",
+    "and links stay one Tab stop however they wrap. ",
+    "Each card is one text of eight styled pieces, ",
+    "measured, wrapped, and drawn as one paragraph, ",
+    "with every other piece bold or a link to open, ",
+    "so the three cases differ only in their spans.",
+};
+
+const emit_joined: []const u8 = blk: {
+    var joined: []const u8 = "";
+    for (emit_phrases) |phrase| joined = joined ++ phrase;
+    break :blk joined;
+};
+
+const EmitCase = enum { plain, rich, links };
+
+const EmitState = struct {
+    case: EmitCase = .plain,
+
+    pub fn open(_: *EmitState) void {}
+};
+
+const EmitApp = gooey.App(EmitState, emitRender, .{
+    .title = "emit-bench",
+    .width = 800,
+    .height = 600,
+    .limits = .standard,
+});
+
+fn emitRender(cx: *gooey.Cx) void {
+    cx.render(ui.box(.{ .key = .{ .name = "cards" }, .style = .{
+        .width = .{ .fixed = 800 },
+        .height = .{ .fixed = 600 },
+        .scroll = .{},
+        .direction = .column,
+        .gap = 8,
+    } }, .{EmitCards{ .case = cx.state(EmitState).case }}));
+}
+
+const EmitCards = struct {
+    case: EmitCase,
+
+    pub fn render(self: EmitCards, cx: *gooey.Cx) void {
+        const style: ui.Text = .{ .size = 14, .wrap = .words };
+        var spans: [emit_span_count]ui.Span = undefined;
+        for (&spans, emit_phrases, 0..) |*span, phrase, index| {
+            const styled = index % 2 == 1;
+            span.* = .{ .text = phrase, .weight = if (styled) .bold else null };
+            if (styled and self.case == .links) {
+                span.link = .{ .on_click = cx.on(EmitState.open, .{}) };
+            }
+        }
+        var card: u32 = 0;
+        while (card < emit_card_count) : (card += 1) {
+            const box_style: ui.Style = .{ .width = .{ .fixed = 300 }, .padding = .all(8) };
+            if (self.case == .plain) {
+                cx.render(ui.box(.{ .style = box_style }, .{ui.text(emit_joined, style)}));
+            } else {
+                cx.render(ui.box(.{ .style = box_style }, .{ui.rich(&spans, style)}));
+            }
+        }
+        assert(card == emit_card_count);
+    }
+};
+
+fn emitFrame(app: *EmitApp, now: *u64) void {
+    app.window.render_requested = true;
+    now.* += 1;
+    app.tick(now.*);
+    assert(app.window.rendered().paint_count > 0);
+}
+
+/// One full frame (build, layout, emit) of `emit_card_count` cards per iteration. The
+/// cases differ only in their spans, so differences between them are the spans' cost.
+fn benchEmit(comptime name: []const u8, app: *EmitApp, case: EmitCase, now: *u64) BenchmarkResult {
+    app.state.case = case;
+    for (0..getWarmupIterations(emit_card_count)) |_| emitFrame(app, now);
+    const min_iterations = getMinSampleIterations(emit_card_count);
+    var sampler: bench.Sampler = .{};
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
+        const start = time.Instant.now();
+        emitFrame(app, now);
+        const end = time.Instant.now();
+        sampler.record(end.since(start));
+    }
+    return .{
+        .name = name,
+        .operation_count = emit_card_count,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
+    };
+}
+
+fn runEmitBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator, io: std.Io) !void {
+    std.debug.print("\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("Gooey Core Benchmarks — Text frames (build, layout, emit)\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+    printHeader();
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
+
+    reporter.pauseBenchmark();
+    const app = try gpa.create(EmitApp);
+    defer gpa.destroy(app);
+    try app.initHeadless(gpa, io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    // Prime every case so each measures warm caches: otherwise the first case to use the
+    // bold runs pays their cold shaping and the next case does not.
+    for ([_]EmitCase{ .plain, .rich, .links }) |case| {
+        app.state.case = case;
+        emitFrame(app, &now);
+    }
+
+    reporter.beginBenchmark();
+    collect(reporter, benchEmit("frame_text_plain_100", app, .plain, &now));
+    collect(reporter, benchEmit("frame_text_rich_100", app, .rich, &now));
+    collect(reporter, benchEmit("frame_text_links_100", app, .links, &now));
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+}
+
 fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -1336,6 +1471,9 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTriangulate("scaling_star_100", buildStar100));
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+
+    // Last: a whole app's heap and caches would otherwise shift the benchmarks after it.
+    try runEmitBenchmarks(&reporter, init.gpa, init.io);
 
     std.debug.print(
         \\
