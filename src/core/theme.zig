@@ -23,6 +23,9 @@ pub const Theme = struct {
 
     border: Color,
     border_focus: Color,
+    /// Link text in `ui.rich` spans, separate from `primary` so a theme whose accent is not
+    /// blue can keep links recognisable.
+    link: Color,
 
     radius_sm: f32 = 4,
     radius_md: f32 = 8,
@@ -49,6 +52,7 @@ pub const Theme = struct {
 
         .border = Color.rgba(0.608, 0.620, 0.694, 0.3),
         .border_focus = Color.rgb(0.118, 0.400, 0.961),
+        .link = Color.rgb(0.118, 0.400, 0.961),
 
         .radius_sm = 4,
         .radius_md = 8,
@@ -76,6 +80,7 @@ pub const Theme = struct {
 
         .border = Color.rgba(0.545, 0.584, 0.729, 0.3),
         .border_focus = Color.rgb(0.541, 0.678, 0.957),
+        .link = Color.rgb(0.541, 0.678, 0.957),
 
         .radius_sm = 4,
         .radius_md = 8,
@@ -222,6 +227,7 @@ pub const Theme = struct {
             .muted = Color.hex(palette.overlay0),
             .border = Color.hex(palette.surface2),
             .border_focus = Color.hex(palette.lavender),
+            .link = Color.hex(palette.blue),
         };
     }
 

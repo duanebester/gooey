@@ -115,6 +115,7 @@ pub const ColorToken = union(enum) {
     muted,
     border,
     border_focus,
+    link,
     rgba: Color,
 
     pub fn literal(color: Color) ColorToken {
@@ -336,6 +337,20 @@ pub const Span = struct {
     /// A fill behind the span's glyphs on every line it covers, such as inline code.
     background: ?ColorToken = null,
     decoration: TextDecoration = .none,
+    /// Makes the span a link: clickable, a Tab stop, and an accessibility `.link` node. A
+    /// link with no `color` takes the theme's `link` color, and with no `decoration` is
+    /// underlined.
+    link: ?Link = null,
+};
+
+pub const Link = struct {
+    on_click: Handler,
+    /// A stable identity for focus across frames. Without it the link's id is the text's
+    /// id and the span's index, so inserting a span before it moves focus.
+    key: ?Key = null,
+    /// The link's URL, kept on its accessibility node as `A11y.href` is for a box. As for a
+    /// box, the platform bridge does not publish it yet; Gooey never opens it.
+    href: ?[]const u8 = null,
 };
 
 pub const ElementKind = enum { box, text, paint, when };
@@ -355,6 +370,29 @@ pub fn text(content: []const u8, style: Text) Text.Element {
 /// `ResourceLimits.build.span_count_frame_max`.
 pub fn rich(spans: []const Span, style: Text) Text.Rich {
     return .{ .spans = spans, .style = style };
+}
+
+/// Joins the spans' bytes into `buffer`, such as for the `a11y.label` of the box around a
+/// `ui.rich` text, which is read by screen readers in place of the text. The buffer is the
+/// app's: size it for the longest text it labels.
+pub fn richLabel(spans: []const Span, buffer: []u8) []const u8 {
+    var length: usize = 0;
+    for (spans, 0..) |span, index| {
+        assert(length <= buffer.len);
+        if (span.text.len > buffer.len - length) {
+            std.debug.panic("richLabel: span {d} needs {d} bytes, {d} of {d} are free", .{
+                index,
+                span.text.len,
+                buffer.len - length,
+                buffer.len,
+            });
+        }
+        assert(span.text.len <= buffer.len - length);
+        @memcpy(buffer[length..][0..span.text.len], span.text);
+        length += span.text.len;
+    }
+    assert(length <= buffer.len);
+    return buffer[0..length];
 }
 
 pub fn Paint(comptime Data: type) type {

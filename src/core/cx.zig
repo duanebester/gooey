@@ -394,6 +394,7 @@ pub const Cx = opaque {
         window.span_count += copied.spans.len;
         assert(node.spans.len <= spans.len);
         assert(node.spans.offset + node.spans.len == window.span_count);
+        claimLinks(window, node, spans);
         const joined = window.built().text(node.text) orelse "";
         const runs = window.span_runs[node.spans.offset..][0..node.spans.len];
         const config = textConfig(window, style);
@@ -565,9 +566,21 @@ pub const Cx = opaque {
     fn checkSpans(window: *const Window, spans: []const element.Span, name: []const u8) void {
         assert(name.len <= text_name_bytes_max);
         assert(spans.len <= std.math.maxInt(u32));
+        // Empty spans take no slot, but the walk over them is still bounded by the budget.
+        const capacity: u32 = @intCast(window.span_runs.len);
+        if (spans.len > capacity) {
+            std.debug.panic("Text \"{s}\" has {d} spans; a text has at most {d}. Raise " ++
+                "ResourceLimits.build.span_count_frame_max.", .{ name, spans.len, capacity });
+        }
         var count: u32 = 0;
         for (spans, 0..) |span, span_index| {
-            if (span.text.len == 0) continue;
+            if (span.text.len == 0) {
+                if (span.link != null) {
+                    std.debug.panic("Span {d} of \"{s}\" is a link with no text; a link " ++
+                        "needs bytes to click and to read", .{ span_index, name });
+                }
+                continue;
+            }
             if (span.text[0] & 0xC0 == 0x80) {
                 std.debug.panic("Span {d} of \"{s}\" starts inside a UTF-8 sequence; " ++
                     "a span starts on a codepoint boundary", .{ span_index, name });
@@ -575,7 +588,6 @@ pub const Cx = opaque {
             count += 1;
         }
         assert(count <= spans.len);
-        const capacity: u32 = @intCast(window.span_runs.len);
         assert(window.span_count <= capacity);
         if (count > capacity - window.span_count) {
             std.debug.panic("build pool 'spans' exhausted: capacity {d}, {d} in use, {d} " ++
@@ -627,6 +639,53 @@ pub const Cx = opaque {
         return copied;
     }
 
+    /// Gives each link span of a built text its id, handler, and href. Only `buildRich`
+    /// calls this: `measureRich` stages spans it never claims, so it registers nothing.
+    fn claimLinks(window: *Window, node: *const Node, spans: []const element.Span) void {
+        assert(node.kind == .text);
+        assert(node.spans.offset + node.spans.len <= window.span_count);
+        const frame = window.built();
+        var slot = node.spans.offset;
+        for (spans, 0..) |*span, span_index| {
+            if (span.text.len == 0) continue;
+            assert(slot < node.spans.offset + node.spans.len);
+            assert(window.span_paints[slot].link == (span.link != null));
+            if (span.link) |*link| {
+                window.span_links[slot] = .{
+                    .id = linkId(window, node.id, link.key, @intCast(span_index)),
+                    .on_click = frame.appendHandler(link.on_click),
+                    .href = if (link.href) |href| frame.copyText(href) else .empty,
+                    .a11y = index_none,
+                    .hit = index_none,
+                    .visible = false,
+                };
+            }
+            slot += 1;
+        }
+        assert(slot == node.spans.offset + node.spans.len);
+    }
+
+    /// A link's id derives from its text's: a text has no children, so a link id cannot
+    /// collide with a node's. A keyed link claims its key as a keyed box does.
+    fn linkId(window: *Window, text_id: ElementId, key: ?Key, span_index: u32) ElementId {
+        const given = key orelse return text_id.auto(span_index);
+        const link_id = text_id.child(given);
+        if (!window.keys.insert(link_id, window.frame_number)) {
+            switch (given) {
+                .name => |name| std.debug.panic("duplicate link key \"{s}\" in text {x}", .{
+                    name,
+                    @backingInt(text_id),
+                }),
+                .index => |value| std.debug.panic("duplicate link key {d} in text {x}", .{
+                    value,
+                    @backingInt(text_id),
+                }),
+            }
+        }
+        assert(link_id.isKeyed());
+        return link_id;
+    }
+
     fn spanFontId(span: *const element.Span, style: *const element.Text) u16 {
         assert(span.text.len > 0);
         const weight = span.weight orelse style.weight;
@@ -643,15 +702,19 @@ pub const Cx = opaque {
         style: *const element.Text,
     ) window_mod.SpanPaint {
         assert(span.text.len > 0);
-        const color: element.ColorToken = span.color orelse style.color orelse .text;
+        const linked = span.link != null;
+        const text_color: element.ColorToken = style.color orelse .text;
+        const color: element.ColorToken = span.color orelse if (linked) .link else text_color;
         const background: ?records.Color = if (span.background) |token|
             token.resolve(app_theme)
         else
             null;
+        const underlined = linked and !span.decoration.hasAny();
         const paint: window_mod.SpanPaint = .{
             .color = color.resolve(app_theme),
             .background = background,
-            .decoration = span.decoration,
+            .decoration = if (underlined) .underlined else span.decoration,
+            .link = linked,
         };
         assert(paint.color.a >= 0);
         return paint;

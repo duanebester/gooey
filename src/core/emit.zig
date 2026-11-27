@@ -262,14 +262,68 @@ fn emitAccessibility(window: *Window) void {
                 continue;
             }
         }
-        if (node.kind == .text) continue;
         const depth = node.depth;
         assert(depth <= window.limits.build.box_depth_max);
         const box = elements[index].computed.bounding_box;
         const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
         const parent_level: u8 = if (depth == 0) 0 else a11y_level[depth - 1];
+        if (node.kind == .text) {
+            const data = &elements[index].text_data.?;
+            if (node.spans.len > 0) emitLinkA11y(window, node, data, bounds, parent_level);
+            continue;
+        }
         a11y_level[depth] = parent_level + emitA11y(window, node, bounds, parent_level);
     }
+}
+
+/// Appends one `.link` node per shown link span of a text, in byte order, nested under the
+/// nearest accessible ancestor as a box is. A text itself adds no node: a box's
+/// `a11y.label` reads it. A link wholly hidden by a cut adds none (`linkLine`). The
+/// fragment pass, where segment positions are known, sets each node's bounds.
+fn emitLinkA11y(
+    window: *Window,
+    node: *const Node,
+    data: *const TextData,
+    bounds: Rect,
+    level: u8,
+) void {
+    assert(node.kind == .text);
+    assert(node.spans.len > 0);
+    assert(node.spans.offset + node.spans.len <= window.span_count);
+    var links: LinkEmit = .{ .hit = undefined, .clip = null };
+    var plain: PlainRun = undefined;
+    const text = textRuns(window, node, data, &plain, &links);
+    var whole: [1]WrappedLine = undefined;
+    const view = textView(data, bounds, &whole);
+    const frame = window.built();
+    var start: u32 = 0;
+    for (text.runs, 0..) |run, run_index| {
+        assert(run.end > start);
+        defer start = run.end;
+        if (!text.paints[run_index].link) continue;
+        const link = text.link(window, @intCast(run_index));
+        assert(link.a11y == index_none);
+        if (linkLine(window, &text, &view, @intCast(run_index)) == null) continue;
+        link.a11y = frame.a11y_count;
+        frame.appendA11y(.{
+            .id = link.id,
+            .role = .link,
+            .bounds = .{ .x = bounds.x, .y = bounds.y, .width = 0, .height = 0 },
+            .depth = level,
+            .name = .{ .offset = node.text.offset + start, .len = run.end - start },
+            .value = .empty,
+            .href = link.href,
+            .description = .empty,
+            .state = .{ .focused = window.isFocused(link.id) },
+            .heading_level = .none,
+            .live = .off,
+            .pos_in_set = null,
+            .set_size = null,
+            .range = null,
+            .selection = null,
+        });
+    }
+    assert(start == node.text.len);
 }
 
 fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoot) void {
@@ -304,18 +358,18 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
         }
         clips.extend(depth, bounds);
         const clip = clips.current();
+        const hit: HitPlace = .{
+            .parent = parent_hit,
+            .fragment = root.fragment,
+            .takes_pointer = takes_pointer,
+        };
         switch (node.kind) {
             .box, .paint => {
                 emitAppearance(window, node, bounds, clip);
-                const hit_bounds = clips.clipped(bounds);
-                hit_scope[depth] = emitHit(window, node, hit_bounds, .{
-                    .parent = parent_hit,
-                    .fragment = root.fragment,
-                    .takes_pointer = takes_pointer,
-                });
+                hit_scope[depth] = emitHit(window, node, clips.clipped(bounds), hit);
                 const takes_focus = node.focusable or window.isKeyboardDropTarget(node.id);
                 if (window.focus_visible and takes_focus and window.isFocused(node.id)) {
-                    ring = focusRing(window, &clips, node, bounds);
+                    ring = focusRing(window, &clips, bounds, node.corners);
                 }
                 if (node.kind == .paint) {
                     const culled = if (clip) |rect| !bounds.overlaps(rect) else false;
@@ -326,28 +380,45 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                 }
                 if (node.clip) clips.open(window, node, index, bounds);
             },
-            .text => emitText(window, node, bounds, .{
-                .data = &elements[index].text_data.?,
-                .clip = clip,
-            }),
+            .text => {
+                const data = &elements[index].text_data.?;
+                const place: TextPlace = .{ .data = data, .clip = clip, .hit = hit };
+                const focus = emitText(window, node, bounds, place);
+                if (focus.count > 0) ring = linkFocusRing(window, &clips, &focus);
+            },
         }
         index += 1;
     }
     clips.close(window, 0);
     assert(clips.len == 0);
     window.built().paint_opacity = 1;
-    if (ring) |focused| {
-        const shifted = focusShifted(window, &focused);
-        if (window.focus_reveal or shifted) revealFocus(window, &focused);
-        const content = focusPlaceContent(window, &focused, shifted);
-        window.focus_place = .{
-            .id = window.focus,
-            .frame_number = window.frame_number,
-            .content = content,
-        };
-        emitFocusRing(window, &focused, clips.paintDepth());
-    }
+    if (ring) |*focused| placeFocus(window, focused, clips.paintDepth());
     if (root.clip != null) window.built().appendPaint(.clip_pop);
+}
+
+/// Reveals and records the fragment's focused element, then draws its ring above the
+/// fragment's content.
+fn placeFocus(window: *Window, ring: *const FocusRing, paint_depth: u32) void {
+    assert(window.focus != .root);
+    assert(window.focus_visible);
+    const shifted = focusShifted(window, ring);
+    if (window.focus_reveal or shifted) revealFocus(window, ring);
+    const content = focusPlaceContent(window, ring, shifted);
+    window.focus_place = .{
+        .id = window.focus,
+        .frame_number = window.frame_number,
+        .content = content,
+    };
+    emitFocusRing(window, ring, paint_depth);
+}
+
+fn linkFocusRing(window: *Window, clips: *const Clips, focus: *const LinkFocus) FocusRing {
+    assert(focus.count > 0);
+    assert(focus.count <= link_ring_count_max);
+    var ring = focusRing(window, clips, focus.bounds, .zero);
+    ring.segments = focus.segments;
+    ring.segment_count = focus.count;
+    return ring;
 }
 
 const focus_ring_width: f32 = 2;
@@ -361,16 +432,28 @@ const FocusRing = struct {
     clip: ?Rect,
     scroll: ?ScrollHandle,
     content: Rect,
+    /// A focused link's drawn segments, one ring each; 0 rings `bounds` as one box.
+    segments: [link_ring_count_max]Rect = undefined,
+    segment_count: u8 = 0,
 };
+
+/// A focused link wrapping more lines than this rings its last lines as one box: bounded
+/// ring storage, and a link that long is rare in running text.
+const link_ring_count_max: u8 = 8;
 
 const ScrollHandle = retained_mod.Handle(window_mod.ScrollState);
 
-fn focusRing(window: *Window, clips: *const Clips, node: *const Node, bounds: Rect) FocusRing {
-    assert(window.isFocused(node.id));
+fn focusRing(
+    window: *Window,
+    clips: *const Clips,
+    bounds: Rect,
+    corners: records.Corners,
+) FocusRing {
+    assert(window.focus != .root);
     assert(window.focus_visible);
     var ring = FocusRing{
         .bounds = bounds,
-        .corners = node.corners,
+        .corners = corners,
         .clip = clips.current(),
         .scroll = null,
         .content = bounds,
@@ -441,22 +524,36 @@ fn revealDelta(view_start: f32, view_size: f32, start: f32, size: f32) f32 {
 fn emitFocusRing(window: *Window, ring: *const FocusRing, paint_depth: u32) void {
     assert(ring.bounds.width >= 0);
     assert(ring.bounds.height >= 0);
-    const spread = focus_ring_offset + focus_ring_width;
-    const corners = ring.corners;
+    assert(ring.segment_count <= link_ring_count_max);
     const frame = window.built();
     if (ring.clip) |clip| {
         checkClipDepth(window, paint_depth);
         frame.appendPaint(.{ .clip_push = clip });
     }
+    const color = window.theme.border_focus;
+    if (ring.segment_count == 0) {
+        appendRing(frame, ring.bounds, ring.corners, color);
+    } else {
+        for (ring.segments[0..ring.segment_count]) |segment| {
+            appendRing(frame, segment, .zero, color);
+        }
+    }
+    if (ring.clip != null) frame.appendPaint(.clip_pop);
+}
+
+fn appendRing(frame: *records.Frame, bounds: Rect, corners: records.Corners, color: Color) void {
+    assert(bounds.width >= 0);
+    assert(bounds.height >= 0);
+    const spread = focus_ring_offset + focus_ring_width;
     frame.appendPaint(.{ .quad = .{
         .bounds = .{
-            .x = ring.bounds.x - spread,
-            .y = ring.bounds.y - spread,
-            .width = ring.bounds.width + spread * 2,
-            .height = ring.bounds.height + spread * 2,
+            .x = bounds.x - spread,
+            .y = bounds.y - spread,
+            .width = bounds.width + spread * 2,
+            .height = bounds.height + spread * 2,
         },
         .fill = Color.transparent,
-        .border = .{ .width = focus_ring_width, .color = window.theme.border_focus },
+        .border = .{ .width = focus_ring_width, .color = color },
         .corners = .{
             .top_left = corners.top_left + spread,
             .top_right = corners.top_right + spread,
@@ -465,7 +562,6 @@ fn emitFocusRing(window: *Window, ring: *const FocusRing, paint_depth: u32) void
         },
         .blur = 0,
     } });
-    if (ring.clip != null) frame.appendPaint(.clip_pop);
 }
 
 fn blockEarlierHits(frame: *records.Frame) void {
@@ -854,55 +950,311 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace
     }
 }
 
-const TextPlace = struct { data: *const TextData, clip: ?Rect };
+const TextPlace = struct { data: *const TextData, clip: ?Rect, hit: HitPlace };
+
+const WrappedLine = layout_mod.types.WrappedLine;
 
 /// Draws a text's lines in view. Each line is split at its runs' boundaries into segments,
 /// shaped in their run's font and painted in their run's color, on the base font's baseline
 /// so every line keeps the text's pitch. A plain text is one run (`textRuns`), so plain and
-/// rich texts share every path here.
-fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) void {
+/// rich texts share every path here. Returns the rings of the text's focused link, if any.
+fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) LinkFocus {
     const data = place.data;
-    const content = window.built().text(node.text) orelse return;
+    var links: LinkEmit = .{ .hit = place.hit, .clip = place.clip };
+    const content = window.built().text(node.text) orelse return links.focus;
     assert(content.len == data.text.len);
     var plain: PlainRun = undefined;
-    const text = textRuns(window, node, data, &plain);
-    const span = lineSpan(data, bounds);
-    const alignment = data.config.alignment;
-    const lines = data.wrapped_lines orelse {
-        const x = span.x + alignOffset(alignment, span.width, data.measured_width);
+    const text = textRuns(window, node, data, &plain, &links);
+    var whole: [1]WrappedLine = undefined;
+    const view = textView(data, bounds, &whole);
+    if (data.wrapped_lines == null) {
+        const x = view.lineX(&text, &whole[0]);
         const box = lineBox(x, bounds.y, data.measured_width, @max(text.pitch, bounds.height));
-        if (place.clip) |rect| {
-            if (!box.overlaps(rect)) return;
-        }
-        const whole: layout_mod.types.WrappedLine = .{
-            .start_offset = 0,
-            .extent = .{ .length = @intCast(content.len) },
-            .width = data.measured_width,
-        };
-        emitLine(window, &text, content, whole, .{ .x = x, .y = bounds.y });
-        return;
+        const culled = if (place.clip) |rect| !box.overlaps(rect) else false;
+        if (!culled) emitLine(window, &text, content, whole[0], .{ .x = x, .y = bounds.y });
+    } else {
+        emitWrappedLines(window, &text, content, &view);
+    }
+    if (node.spans.len > 0) {
+        recordCulledLinks(window, &text, &view, @intCast(view.lines.len));
+        placeOffscreenLinks(window, &text, &view);
+    }
+    assert(links.next_run <= text.runs.len);
+    return links.focus;
+}
+
+/// A text's laid-out lines; a text that does not wrap is one whole line in `whole`.
+fn textView(data: *const TextData, bounds: Rect, whole: *[1]WrappedLine) TextView {
+    assert(data.measured_width >= 0);
+    whole.* = .{.{
+        .start_offset = 0,
+        .extent = .{ .length = @intCast(data.text.len) },
+        .width = data.measured_width,
+    }};
+    const view: TextView = .{
+        .lines = data.wrapped_lines orelse whole,
+        .span = lineSpan(data, bounds),
+        .top = bounds.y,
     };
+    assert(view.lines.len > 0);
+    return view;
+}
+
+fn emitWrappedLines(
+    window: *Window,
+    text: *const TextRuns,
+    content: []const u8,
+    view: *const TextView,
+) void {
+    const lines = view.lines;
     assert(lines.len <= window.layout.line_scratch.len);
-    const shown = linesInView(bounds.y, text.pitch, @intCast(lines.len), place.clip);
+    const clip = text.links.clip;
+    const shown = linesInView(view.top, text.pitch, @intCast(lines.len), clip);
     assert(shown.start <= shown.end);
     assert(shown.end <= lines.len);
-    for (lines[shown.start..shown.end], shown.start..) |line, line_index| {
+    for (lines[shown.start..shown.end], shown.start..) |*line, line_index| {
         assert(line.start_offset <= content.len);
         assert(line.extent.length <= content.len - line.start_offset);
         // An empty line draws nothing unless it was cut: a line count that ends on a
         // blank line still draws its "…".
         if (line.extent.length == 0 and line.extent.end == .whole) continue;
-        const x = span.x + alignOffset(alignment, span.width, line.width);
-        const y = bounds.y + @as(f32, @floatFromInt(line_index)) * text.pitch;
-        if (place.clip) |rect| {
+        const x = view.lineX(text, line);
+        const y = view.lineY(text, @intCast(line_index));
+        if (clip) |rect| {
             if (!lineBox(x, y, line.width, text.pitch).overlaps(rect)) continue;
         }
+        if (text.node.spans.len > 0) recordCulledLinks(window, text, view, @intCast(line_index));
         if (line.extent.end == .whole) {
-            emitLine(window, &text, content, line, .{ .x = x, .y = y });
+            emitLine(window, text, content, line.*, .{ .x = x, .y = y });
         } else {
-            emitCutLine(window, &text, content, line, .{ .span = span, .y = y });
+            emitCutLine(window, text, content, line.*, .{ .span = view.span, .y = y });
         }
     }
+}
+
+/// Where a text's lines sit: its laid-out lines (one whole line for a text that does not
+/// wrap) and their span and top.
+const TextView = struct {
+    lines: []const WrappedLine,
+    span: LineSpan,
+    top: f32,
+
+    fn lineX(self: *const TextView, text: *const TextRuns, line: *const WrappedLine) f32 {
+        assert(line.width >= 0);
+        const alignment = text.data.config.alignment;
+        return self.span.x + alignOffset(alignment, self.span.width, line.width);
+    }
+
+    fn lineY(self: *const TextView, text: *const TextRuns, line_index: u32) f32 {
+        assert(line_index < self.lines.len);
+        return self.top + @as(f32, @floatFromInt(line_index)) * text.pitch;
+    }
+
+    /// The whole box of line `line_index`: where a link with no drawn segment is placed.
+    fn lineRect(self: *const TextView, text: *const TextRuns, line_index: u32) Rect {
+        const line = &self.lines[line_index];
+        const box: Rect = .{
+            .x = self.lineX(text, line),
+            .y = self.lineY(text, line_index),
+            .width = line.width,
+            .height = text.pitch,
+        };
+        assert(box.height > 0);
+        return box;
+    }
+};
+
+/// The bytes of a line that are shown: all of a whole line, the kept prefix of a cut one.
+/// A cut is measured as `emitCutLine` draws it, so the two agree byte for byte.
+fn keptLength(window: *Window, text: *const TextRuns, line: *const WrappedLine) u32 {
+    if (line.extent.end == .whole) return line.extent.length;
+    const cut = measureLineCut(window, text, line);
+    if (cut.cut.whole) return line.extent.length;
+    if (cut.widths.kept_max < 0) return 0;
+    assert(cut.cut.length <= line.extent.length);
+    return cut.cut.length;
+}
+
+/// The first line that shows any byte of `[start, end)`, or null when every byte is
+/// hidden: past the last laid-out line, or in the cut part of a line. Both the
+/// accessibility and the hit passes classify links with it, so they agree on which exist.
+fn linkLine(window: *Window, text: *const TextRuns, view: *const TextView, run_index: u32) ?u32 {
+    assert(run_index < text.runs.len);
+    const start: u32 = if (run_index == 0) 0 else text.runs[run_index - 1].end;
+    const end = text.runs[run_index].end;
+    assert(start < end);
+    const lines = view.lines;
+    var index = lineAt(lines, start);
+    while (index < lines.len) : (index += 1) {
+        const line = &lines[index];
+        if (line.start_offset >= end) break;
+        const kept = keptLength(window, text, line);
+        if (@max(start, line.start_offset) < @min(end, line.start_offset + kept)) return index;
+    }
+    assert(index <= lines.len);
+    return null;
+}
+
+/// Records, in byte order, each link before line `upto` with no record yet whose first
+/// shown line was culled: a pointerless Tab stop on that line's box, so focusing it
+/// reveals the line and the next frame draws its exact segments. A link wholly hidden
+/// by a cut gets nothing. A link first shown at or after `upto` stops the walk: it is
+/// drawn there, or recorded by a later walk, and every later link starts after it.
+fn recordCulledLinks(
+    window: *Window,
+    text: *const TextRuns,
+    view: *const TextView,
+    upto: u32,
+) void {
+    assert(text.node.spans.len > 0);
+    assert(upto <= view.lines.len);
+    const links = text.links;
+    if (!links.hit.takes_pointer) return;
+    const text_end: u32 = @intCast(text.data.text.len);
+    const upto_byte = if (upto < view.lines.len) view.lines[upto].start_offset else text_end;
+    var index = links.next_run;
+    while (index < text.runs.len) : (index += 1) {
+        const start: u32 = if (index == 0) 0 else text.runs[index - 1].end;
+        if (start >= upto_byte) break;
+        if (!text.paints[index].link) continue;
+        if (text.link(window, index).hit != index_none) continue;
+        const first = linkLine(window, text, view, index) orelse continue;
+        if (first >= upto) break;
+        recordLink(window, text, index, view.lineRect(text, first), .culled);
+    }
+    assert(index <= text.runs.len);
+    links.next_run = index;
+}
+
+/// Gives each shown link with no visible segment its offscreen box: the whole first line
+/// that shows it. Accessibility then reads every link at a real place, in view or not.
+fn placeOffscreenLinks(window: *Window, text: *const TextRuns, view: *const TextView) void {
+    assert(text.node.spans.len > 0);
+    const frame = window.built();
+    for (text.paints, 0..) |*paint, run_index| {
+        if (!paint.link) continue;
+        const link = text.link(window, @intCast(run_index));
+        if (link.a11y == index_none or link.visible) continue;
+        assert(link.a11y < frame.a11y_count);
+        const first = linkLine(window, text, view, @intCast(run_index)).?;
+        frame.a11y[link.a11y].bounds = view.lineRect(text, first);
+    }
+}
+
+/// The line holding byte `offset`: the last line starting at or before it.
+fn lineAt(lines: []const WrappedLine, offset: u32) u32 {
+    assert(lines.len > 0);
+    assert(lines[0].start_offset <= offset);
+    var low: u32 = 0;
+    var high: u32 = @intCast(lines.len - 1);
+    var step_count: u32 = 0;
+    while (low < high) : (step_count += 1) {
+        assert(step_count < 32);
+        const middle = low + @divFloor(high - low + 1, 2);
+        if (lines[middle].start_offset <= offset) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    assert(lines[low].start_offset <= offset);
+    return low;
+}
+
+/// The link state of one text's emit: where its records go, how far the culled-link walk
+/// has reached, and the rings of its focused link.
+const LinkEmit = struct {
+    hit: HitPlace,
+    clip: ?Rect,
+    /// The first run `recordCulledLinks` has not yet passed.
+    next_run: u32 = 0,
+    focus: LinkFocus = .{},
+};
+
+/// The focused link's boxes in one text: one ring per drawn line, the union for reveal.
+const LinkFocus = struct {
+    bounds: Rect = undefined,
+    segments: [link_ring_count_max]Rect = undefined,
+    count: u8 = 0,
+
+    fn add(self: *LinkFocus, box: Rect) void {
+        assert(self.count <= link_ring_count_max);
+        assert(box.width >= 0);
+        self.bounds = if (self.count == 0) box else rectUnion(self.bounds, box);
+        if (self.count < link_ring_count_max) {
+            self.segments[self.count] = box;
+            self.count += 1;
+        } else {
+            const last = link_ring_count_max - 1;
+            self.segments[last] = rectUnion(self.segments[last], box);
+        }
+        assert(self.count > 0);
+    }
+};
+
+fn rectUnion(a: Rect, b: Rect) Rect {
+    assert(a.width >= 0);
+    assert(b.width >= 0);
+    const left = @min(a.x, b.x);
+    const top = @min(a.y, b.y);
+    const right = @max(a.x + a.width, b.x + b.width);
+    const bottom = @max(a.y + a.height, b.y + b.height);
+    return .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+}
+
+const LinkPlace = enum { drawn, culled };
+
+/// Records one box of a link. A drawn segment grows the link's accessibility bounds by its
+/// part inside the clip. In a fragment that takes the pointer, the box is also a hit
+/// record: `on_click` runs on a click, or on Return, Enter, or Space while focused. A drag
+/// preview or tooltip gets no records, so its links cannot be clicked or focused.
+fn recordLink(
+    window: *Window,
+    text: *const TextRuns,
+    run_index: u32,
+    box: Rect,
+    place: LinkPlace,
+) void {
+    assert(text.paints[run_index].link);
+    assert(box.width >= 0);
+    const links = text.links;
+    const link = text.link(window, run_index);
+    const frame = window.built();
+    const shown = if (links.clip) |rect| box.intersect(rect) else box;
+    if (place == .drawn and shown.width > 0 and shown.height > 0 and link.a11y != index_none) {
+        assert(link.a11y < frame.a11y_count);
+        const node = &frame.a11y[link.a11y];
+        assert(node.id == link.id);
+        node.bounds = if (link.visible) rectUnion(node.bounds, shown) else shown;
+        link.visible = true;
+    }
+    if (!links.hit.takes_pointer) return;
+    assert(link.on_click < frame.handler_count);
+    const hit = frame.appendHit(.{
+        .id = link.id,
+        .bounds = shown,
+        .fragment = links.hit.fragment,
+        .parent = links.hit.parent,
+        .pointer = place == .drawn,
+        .focusable = true,
+        .tab_stop = link.hit == index_none,
+        .scroll = false,
+        .cursor = .pointer,
+        .on_click = link.on_click,
+        .on_click_outside = index_none,
+        .on_context_menu = index_none,
+        .on_key = index_none,
+        .on_pointer_drag = index_none,
+        .drag_type = 0,
+        .drag_payload = 0,
+        .drop_type = 0,
+        .on_drop = index_none,
+        .key_context = 0,
+        .actions_start = 0,
+        .actions_len = 0,
+    });
+    if (link.hit == index_none) link.hit = hit;
+    if (window.focus_visible and window.isFocused(link.id)) links.focus.add(box);
 }
 
 /// The one implicit run of a plain text, held on `emitText`'s stack.
@@ -916,6 +1268,7 @@ fn textRuns(
     node: *const Node,
     data: *const TextData,
     plain: *PlainRun,
+    links: *LinkEmit,
 ) TextRuns {
     const pitch = data.config.lineHeightPx();
     assert(pitch > 0);
@@ -930,6 +1283,7 @@ fn textRuns(
             .runs = runs,
             .paints = window.span_paints[node.spans.offset..][0..node.spans.len],
             .pitch = pitch,
+            .links = links,
         };
     }
     assert(data.runs_count == 0);
@@ -938,7 +1292,12 @@ fn textRuns(
             .end = @intCast(data.text.len),
             .font_id = node.family.fontId(node.variant),
         }},
-        .paints = .{.{ .color = node.text_color, .background = null, .decoration = .none }},
+        .paints = .{.{
+            .color = node.text_color,
+            .background = null,
+            .decoration = .none,
+            .link = false,
+        }},
     };
     return .{
         .node = node,
@@ -946,6 +1305,7 @@ fn textRuns(
         .runs = &plain.runs,
         .paints = &plain.paints,
         .pitch = pitch,
+        .links = links,
     };
 }
 
@@ -955,6 +1315,16 @@ const TextRuns = struct {
     runs: []const layout_mod.TextRun,
     paints: []const window_mod.SpanPaint,
     pitch: f32,
+    links: *LinkEmit,
+
+    /// The link of run `run_index`, a link span of this rich text.
+    fn link(self: *const TextRuns, window: *Window, run_index: u32) *window_mod.SpanLink {
+        assert(run_index < self.runs.len);
+        assert(self.paints[run_index].link);
+        const slot = self.node.spans.offset + run_index;
+        assert(slot < window.span_count);
+        return &window.span_links[slot];
+    }
 
     fn fontsAt(self: *const TextRuns, start: u32) text_render.LineFonts {
         assert(start < self.data.text.len);
@@ -1010,17 +1380,11 @@ fn emitCutLine(
     const data = text.data;
     const run = content[line.start_offset..][0..line.extent.length];
     const fonts = text.fontsAt(line.start_offset);
-    const size: f32 = @floatFromInt(node.font_size);
+    const measured = measureLineCut(window, text, &line);
+    const cut = measured.cut;
+    const widths = measured.widths;
     const marked = data.config.overflow == .ellipsis;
-    if (marked) assert(data.ellipsis_width > 0);
-    const mark_width = if (marked) data.ellipsis_width else 0;
-    const widths: text_render.CutWidths = .{
-        .kept_max = line.width - mark_width,
-        .whole_max = if (line.extent.end == .cut_if_wide) line.width else -1,
-    };
-    const text_system = window.resources.text_system;
-    const cut = text_render.measureCut(text_system, run, fonts, size, widths) catch |err|
-        window_mod.textFailed(window, run, err);
+    const mark_width = measured.mark_width;
     const alignment = data.config.alignment;
     const baseline = text.baseline(window, place.y);
     const drawn = if (cut.whole) cut.width else cut.width + mark_width;
@@ -1059,6 +1423,34 @@ fn emitCutLine(
     }
 }
 
+const LineCut = struct { cut: text_render.Cut, widths: text_render.CutWidths, mark_width: f32 };
+
+/// Where a line laid out as cut is cut: by walking its segments in their fonts, leaving
+/// room for the "…" of an ellipsis text.
+fn measureLineCut(window: *Window, text: *const TextRuns, line: *const WrappedLine) LineCut {
+    assert(line.extent.end != .whole);
+    assert(line.width >= 0);
+    const data = text.data;
+    const content = data.text;
+    assert(line.start_offset <= content.len);
+    assert(line.extent.length <= content.len - line.start_offset);
+    const run = content[line.start_offset..][0..line.extent.length];
+    const size: f32 = @floatFromInt(text.node.font_size);
+    const marked = data.config.overflow == .ellipsis;
+    if (marked) assert(data.ellipsis_width > 0);
+    const mark_width = if (marked) data.ellipsis_width else 0;
+    const widths: text_render.CutWidths = .{
+        .kept_max = line.width - mark_width,
+        .whole_max = if (line.extent.end == .cut_if_wide) line.width else -1,
+    };
+    const fonts = text.fontsAt(line.start_offset);
+    const text_system = window.resources.text_system;
+    const cut = text_render.measureCut(text_system, run, fonts, size, widths) catch |err|
+        window_mod.textFailed(window, run, err);
+    assert(cut.length <= run.len);
+    return .{ .cut = cut, .widths = widths, .mark_width = mark_width };
+}
+
 const SegmentOrigin = struct { x: f32, top: f32, baseline: f32, kept: u32 };
 
 /// Draws the first `origin.kept` bytes of a line, one segment per span it crosses, and
@@ -1088,12 +1480,17 @@ fn emitSegments(
             .font_id = run.font_id,
             .paint = &text.paints[index],
         };
-        pen += emitSegment(window, text, &segment, .{
+        const width = emitSegment(window, text, &segment, .{
             .x = pen,
             .top = origin.top,
             .baseline = origin.baseline,
             .kept = kept,
         });
+        if (segment.paint.link) {
+            const box: Rect = .{ .x = pen, .y = origin.top, .width = width, .height = text.pitch };
+            recordLink(window, text, index, box, .drawn);
+        }
+        pen += width;
         offset = end;
     }
     assert(offset >= origin.kept);
@@ -1149,7 +1546,9 @@ fn emitSegment(
     }
     const decoration = segment.paint.decoration;
     if (decoration.hasAny()) {
-        const metrics = text_system.getMetricsFor(family);
+        // The base font's metrics, so every segment's line on a text line sits at one
+        // height: a `.mono` word inside an underlined link does not step.
+        const metrics = text_system.getMetricsFor(text.node.family);
         const scale = size / metrics.point_size;
         // At least 1 px: the font's thickness is clamped at its loaded size, and scaling
         // it to a smaller text would draw a line too faint to read.

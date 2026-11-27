@@ -36,6 +36,10 @@ const Mode = enum {
     @"core-grid-count",
     @"core-span-count",
     @"core-span-boundary",
+    @"core-link-empty",
+    @"core-link-key-duplicate",
+    @"core-span-input",
+    @"core-rich-label",
     @"core-text-line-count-zero",
     @"core-text-line-count-none",
     @"core-pointer-drag-unkeyed",
@@ -102,6 +106,10 @@ pub fn main(init: std.process.Init) !void {
         .@"core-grid-count" => coreTick(init.gpa, init.io, CoreApp.manyGrids),
         .@"core-span-count" => coreTick(init.gpa, init.io, CoreApp.manySpans),
         .@"core-span-boundary" => coreTick(init.gpa, init.io, CoreApp.spanBoundary),
+        .@"core-link-empty" => coreTick(init.gpa, init.io, CoreApp.emptyLink),
+        .@"core-link-key-duplicate" => coreTick(init.gpa, init.io, CoreApp.duplicateLinkKey),
+        .@"core-span-input" => coreTick(init.gpa, init.io, CoreApp.tooManySpans),
+        .@"core-rich-label" => richLabelFull(),
         .@"core-text-line-count-zero" => coreTick(init.gpa, init.io, CoreApp.textLineCountZero),
         .@"core-text-line-count-none" => coreTick(init.gpa, init.io, CoreApp.textLineCountNone),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
@@ -338,6 +346,15 @@ const core_config: gooey.Config(CoreState) = .{
     .limits = .nano,
 };
 
+/// Fills a label buffer exactly, which succeeds, then asks for one byte past it.
+fn richLabelFull() void {
+    var buffer: [6]u8 = undefined;
+    const exact = [_]gooey.ui.Span{ .{ .text = "Open " }, .{ .text = "a" } };
+    std.debug.assert(gooey.ui.richLabel(&exact, &buffer).len == buffer.len);
+    const over = [_]gooey.ui.Span{ .{ .text = "Open " }, .{ .text = "ab" } };
+    _ = gooey.ui.richLabel(&over, &buffer);
+}
+
 const CoreApp = struct {
     fn empty(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{}, .{}));
@@ -492,6 +509,28 @@ const CoreApp = struct {
     fn spanBoundary(cx: *gooey.Cx) void {
         const word = "caf\u{e9}";
         cx.render(gooey.ui.rich(&.{ .{ .text = word[0..3] }, .{ .text = word[4..] } }, .{}));
+    }
+
+    fn emptyLink(cx: *gooey.Cx) void {
+        const link: gooey.ui.Link = .{ .on_click = cx.on(CoreState.picked, .{}) };
+        cx.render(gooey.ui.rich(&.{ .{ .text = "Open" }, .{ .text = "", .link = link } }, .{}));
+    }
+
+    fn duplicateLinkKey(cx: *gooey.Cx) void {
+        const link: gooey.ui.Link = .{
+            .on_click = cx.on(CoreState.picked, .{}),
+            .key = .{ .name = "docs" },
+        };
+        cx.render(gooey.ui.rich(&.{
+            .{ .text = "a", .link = link },
+            .{ .text = "b", .link = link },
+        }, .{}));
+    }
+
+    // Empty spans take no slot, so only the text's span count can reach the bound.
+    fn tooManySpans(cx: *gooey.Cx) void {
+        const blanks: [129]gooey.ui.Span = @splat(.{ .text = "" });
+        cx.render(gooey.ui.rich(&blanks, .{}));
     }
 
     const Nest = struct {

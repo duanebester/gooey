@@ -7738,3 +7738,401 @@ test "a line count that ends on a blank line still draws its ellipsis" {
         try testing.expect(sprites[1].bounds.y > sprites[0].bounds.y);
     }
 }
+
+const LinkState = struct {
+    case: u32 = 0,
+    opened: u32 = 0,
+
+    pub fn open(self: *LinkState) void {
+        self.opened += 1;
+    }
+};
+
+const LinkApp = gooey.App(LinkState, linkRender, .{
+    .title = "Links",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+// Case 0 puts the link on one line; case 1 narrows the box so the link wraps to a second.
+fn linkRender(cx: *Cx) void {
+    const state = cx.state(LinkState);
+    const link: ui.Link = .{ .on_click = cx.on(LinkState.open, .{}), .href = "https://a.b" };
+    const spans = [_]ui.Span{
+        .{ .text = "aaaa " },
+        .{ .text = "bbbb bbbb", .link = link },
+        .{ .text = " cc" },
+    };
+    const width: f32 = if (state.case == 0) 200 else 45;
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = width } } }, .{
+        ui.rich(&spans, .{ .size = 10, .wrap = .words }),
+    }));
+}
+
+fn linkApp(app: *LinkApp, case: u32, now: *u64) !void {
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    app.state.case = case;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+/// The link's hit records in order, and how many are Tab stops.
+fn linkHits(app: *LinkApp, out: []internals.records.Rect) struct { count: u32, tab_stops: u32 } {
+    const frame = app.window.rendered();
+    var count: u32 = 0;
+    var tab_stops: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.cursor != .pointer) continue;
+        assert(count < out.len);
+        out[count] = record.bounds;
+        count += 1;
+        if (record.tab_stop) tab_stops += 1;
+    }
+    return .{ .count = count, .tab_stops = tab_stops };
+}
+
+test "a link span is clicked on its own glyphs, not on the text around it" {
+    // The synthetic font advances 'a' and 'b' 5 px and a space 2.5 px at size 10, so the
+    // link starts at x 22.5 and is 42.5 px wide on a 12 px line.
+    const app = try testing.allocator.create(LinkApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try linkApp(app, 0, &now);
+    defer app.deinitHeadless();
+    var boxes: [4]internals.records.Rect = undefined;
+    const hits = linkHits(app, &boxes);
+    try testing.expectEqual(@as(u32, 1), hits.count);
+    try testing.expectApproxEqAbs(@as(f32, 22.5), boxes[0].x, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 42.5), boxes[0].width, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 12), boxes[0].height, 0.01);
+    clickOnce(app, &now, 10, 6);
+    try testing.expectEqual(@as(u32, 0), app.state.opened);
+    clickOnce(app, &now, 72, 6);
+    try testing.expectEqual(@as(u32, 0), app.state.opened);
+    clickOnce(app, &now, 30, 6);
+    try testing.expectEqual(@as(u32, 1), app.state.opened);
+}
+
+test "Tab focuses a link, Return opens it, and accessibility reads it as a link" {
+    const app = try testing.allocator.create(LinkApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try linkApp(app, 0, &now);
+    defer app.deinitHeadless();
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "bbbb bbbb");
+    const node = focusedNode(&app.window).?;
+    const frame = app.window.rendered();
+    try testing.expectEqualStrings("https://a.b", frame.text(node.href) orelse "");
+    try testing.expectApproxEqAbs(@as(f32, 22.5), node.bounds.x, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 42.5), node.bounds.width, 0.01);
+    var ring: internals.records.Rect = undefined;
+    try testing.expectEqual(@as(u32, 1), focusRings(&app.window, &ring));
+    try testing.expectApproxEqAbs(@as(f32, 22.5 - 4), ring.x, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 42.5 + 8), ring.width, 0.01);
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 1), app.state.opened);
+}
+
+test "a wrapped link is one Tab stop with a hit box and a focus ring per line" {
+    // At 45 px "aaaa bbbb" fills the first line, so the link's second word starts the
+    // second line at x 0, 12 px down.
+    const app = try testing.allocator.create(LinkApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try linkApp(app, 1, &now);
+    defer app.deinitHeadless();
+    var boxes: [4]internals.records.Rect = undefined;
+    const hits = linkHits(app, &boxes);
+    try testing.expectEqual(@as(u32, 2), hits.count);
+    try testing.expectEqual(@as(u32, 1), hits.tab_stops);
+    try testing.expectApproxEqAbs(@as(f32, 22.5), boxes[0].x, 0.01);
+    try testing.expectEqual(@as(f32, 0), boxes[1].x);
+    try testing.expectApproxEqAbs(@as(f32, 12), boxes[1].y, 0.01);
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "bbbb bbbb");
+    var ring: internals.records.Rect = undefined;
+    try testing.expectEqual(@as(u32, 2), focusRings(&app.window, &ring));
+    const node = focusedNode(&app.window).?;
+    try testing.expectEqual(@as(f32, 0), node.bounds.x);
+    try testing.expectApproxEqAbs(@as(f32, 24), node.bounds.height, 0.01);
+    clickOnce(app, &now, 5, 18);
+    try testing.expectEqual(@as(u32, 1), app.state.opened);
+}
+
+test "richLabel joins a rich text's spans for its box's label" {
+    var buffer: [16]u8 = undefined;
+    const spans = [_]ui.Span{ .{ .text = "Open " }, .{ .text = "" }, .{ .text = "the log" } };
+    try testing.expectEqualStrings("Open the log", ui.richLabel(&spans, &buffer));
+    try testing.expectEqualStrings("", ui.richLabel(&.{}, &buffer));
+}
+
+/// Counts a frame's link records (pointer cursor) and `.link` accessibility nodes.
+fn linkCounts(app: anytype) struct { hits: u32, pointer: u32, nodes: u32 } {
+    const frame = app.window.rendered();
+    var hits: u32 = 0;
+    var pointer: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.cursor != .pointer) continue;
+        hits += 1;
+        if (record.pointer) pointer += 1;
+    }
+    var nodes: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .link) nodes += 1;
+    }
+    return .{ .hits = hits, .pointer = pointer, .nodes = nodes };
+}
+
+fn linkNode(app: anytype, name: []const u8) ?*const internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != .link) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
+    }
+    return null;
+}
+
+const LinkLogState = struct {
+    opened: u32 = 0,
+
+    pub fn open(self: *LinkLogState) void {
+        self.opened += 1;
+    }
+
+    fn log() gooey.ElementId {
+        return gooey.ElementId.root.child(.{ .name = "log" });
+    }
+};
+
+const LinkLogApp = gooey.App(LinkLogState, linkLogRender, .{
+    .title = "Link log",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+// Links A and B on lines 0 and 1 of a 40 px scroll box with 12 px lines; link C on line 12,
+// at y 144, far below the view.
+fn linkLogRender(cx: *Cx) void {
+    const link: ui.Link = .{ .on_click = cx.on(LinkLogState.open, .{}) };
+    const spans = [_]ui.Span{
+        .{ .text = "aa", .link = link },
+        .{ .text = "\n" },
+        .{ .text = "bb", .link = link },
+        .{ .text = "\n\n\n\n\n\n\n\n\n\n\n" },
+        .{ .text = "cc", .link = link },
+    };
+    cx.render(ui.box(.{ .key = .{ .name = "log" }, .style = .{
+        .width = .{ .fixed = 100 },
+        .height = .{ .fixed = 40 },
+        .scroll = .{},
+    } }, .{ui.rich(&spans, .{ .size = 10, .wrap = .newlines })}));
+}
+
+test "a link below a scroll box's view is a Tab stop in byte order and Tab reveals it" {
+    // Link C's line is culled, so it gets one record with no pointer at its line's box, and
+    // its accessibility node is placed there too rather than at an empty rectangle.
+    const app = try testing.allocator.create(LinkLogApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const counts = linkCounts(app);
+    try testing.expectEqual(@as(u32, 3), counts.hits);
+    try testing.expectEqual(@as(u32, 2), counts.pointer);
+    try testing.expectEqual(@as(u32, 3), counts.nodes);
+    const offscreen = linkNode(app, "cc").?;
+    try testing.expectApproxEqAbs(@as(f32, 144), offscreen.bounds.y, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 12), offscreen.bounds.height, 0.01);
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "aa");
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "bb");
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "cc");
+    const State = internals.window.ScrollState;
+    const offset = app.window.retained.find(State, LinkLogState.log()).?.offset_y;
+    try testing.expect(offset > 100);
+    var ring: internals.records.Rect = undefined;
+    try testing.expectEqual(@as(u32, 1), focusRings(&app.window, &ring));
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .link, "bb");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 1), app.state.opened);
+}
+
+const LinkCutApp = gooey.App(LinkLogState, linkCutRender, .{
+    .title = "Link cut",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+// Three texts in a 30 px scroll box. The first cuts link "bb" off its only line; the second
+// cuts link "dd", the tail of a word too wide for its line, on a line that is not the last;
+// the third, below the view, keeps link "go" in the prefix of its cut line.
+fn linkCutRender(cx: *Cx) void {
+    const link: ui.Link = .{ .on_click = cx.on(LinkLogState.open, .{}) };
+    const one_line = [_]ui.Span{ .{ .text = "aaaaaaaaaa" }, .{ .text = "bb", .link = link } };
+    const wide_word = [_]ui.Span{
+        .{ .text = "aa cccccccccc" },
+        .{ .text = "dd", .link = link },
+        .{ .text = " ee" },
+    };
+    const kept = [_]ui.Span{ .{ .text = "go", .link = link }, .{ .text = " and a long tail" } };
+    const cut: ui.Text = .{ .size = 10, .overflow = .ellipsis };
+    var wrapped = cut;
+    wrapped.wrap = .words;
+    cx.render(ui.box(.{ .key = .{ .name = "log" }, .style = .{
+        .width = .{ .fixed = 40 },
+        .height = .{ .fixed = 30 },
+        .scroll = .{},
+        .direction = .column,
+    } }, .{
+        ui.rich(&one_line, cut),
+        ui.rich(&wide_word, wrapped),
+        ui.box(.{ .style = .{ .height = .{ .fixed = 100 } } }, .{}),
+        ui.rich(&kept, cut),
+    }));
+}
+
+test "a link wholly cut gets no record on any line, and a culled cut line keeps its prefix" {
+    // Before shown bytes were measured per line, the cut "dd" became a Tab stop once the
+    // line after it was visited, and the culled last line's "go" got none.
+    const app = try testing.allocator.create(LinkCutApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const counts = linkCounts(app);
+    try testing.expectEqual(@as(u32, 1), counts.hits);
+    try testing.expectEqual(@as(u32, 0), counts.pointer);
+    try testing.expectEqual(@as(u32, 1), counts.nodes);
+    try testing.expect(linkNode(app, "go") != null);
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "go");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 1), app.state.opened);
+}
+
+const LinkTooltipApp = gooey.App(LinkLogState, linkTooltipRender, .{
+    .title = "Link tooltip",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+fn linkTooltipRender(cx: *Cx) void {
+    const link: ui.Link = .{ .on_click = cx.on(LinkLogState.open, .{}) };
+    const spans = [_]ui.Span{ .{ .text = "see " }, .{ .text = "docs", .link = link } };
+    cx.render(ui.box(.{}, .{
+        ui.box(.{
+            .layer = .{ .kind = .tooltip, .anchor = .{ .window = .{} }, .clip = .escape },
+        }, .{ui.rich(&spans, .{ .size = 10 })}),
+    }));
+}
+
+test "a link in a tooltip is read but cannot be clicked or focused" {
+    // A tooltip, like a drag preview, takes no pointer: its links get no hit records, so
+    // Tab and Return cannot reach their handlers, while accessibility still reads them.
+    const app = try testing.allocator.create(LinkTooltipApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const counts = linkCounts(app);
+    try testing.expectEqual(@as(u32, 0), counts.hits);
+    try testing.expectEqual(@as(u32, 1), counts.nodes);
+    try testing.expectApproxEqAbs(@as(f32, 20), linkNode(app, "docs").?.bounds.width, 0.01);
+    pressKey(app, &now, .tab, .{});
+    try testing.expect(focusedNode(&app.window) == null);
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 0), app.state.opened);
+}
+
+const LinkRingState = struct {
+    words: u32 = 8,
+    second: bool = true,
+
+    pub fn open(_: *LinkRingState) void {}
+};
+
+const LinkRingApp = gooey.App(LinkRingState, linkRingRender, .{
+    .title = "Link rings",
+    .width = 200,
+    .height = 400,
+    .limits = .small,
+});
+
+// One link of `words` words, each 12.5 px with its space in a 14 px box, so one word per
+// line, then a keyed second link that `second` removes.
+fn linkRingRender(cx: *Cx) void {
+    const state = cx.state(LinkRingState);
+    const words = "bb bb bb bb bb bb bb bb bb";
+    assert(state.words >= 1);
+    assert(state.words <= 9);
+    const on_click = cx.on(LinkRingState.open, .{});
+    const spans = [_]ui.Span{
+        .{ .text = words[0 .. state.words * 3 - 1], .link = .{
+            .on_click = on_click,
+            .key = .{ .name = "first" },
+        } },
+        .{ .text = " " },
+        .{ .text = "cc", .link = .{ .on_click = on_click, .key = .{ .name = "second" } } },
+    };
+    const shown: []const ui.Span = if (state.second) &spans else spans[0..1];
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 14 } } }, .{
+        ui.rich(shown, .{ .size = 10, .wrap = .words }),
+    }));
+}
+
+test "a focused link rings each of its first 8 lines and merges the rest into the last" {
+    // Exactly 8 lines give 8 one-line rings; a ninth line joins the eighth ring, which then
+    // spans two lines.
+    inline for (.{ 8, 9 }) |words| {
+        const app = try testing.allocator.create(LinkRingApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.words = words;
+        var now: u64 = 0;
+        app.tick(now);
+        pressKey(app, &now, .tab, .{});
+        var ring: internals.records.Rect = undefined;
+        try testing.expectEqual(@as(u32, 8), focusRings(&app.window, &ring));
+        const lines: f32 = if (words == 8) 1 else 2;
+        try testing.expectApproxEqAbs(lines * 12 + 8, ring.height, 0.01);
+    }
+}
+
+test "focus on a keyed link that disappears moves to the link before it" {
+    const app = try testing.allocator.create(LinkRingApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.words = 1;
+    var now: u64 = 0;
+    app.tick(now);
+    pressKey(app, &now, .tab, .{});
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .link, "cc");
+    app.state.second = false;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try expectFocused(&app.window, .link, "bb");
+}

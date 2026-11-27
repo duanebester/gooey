@@ -203,20 +203,27 @@ pub const ResourceLimits = struct {
 
     fn checkCoreRelationships(self: *const ResourceLimits) ?Violation {
         const element_count = self.build.element_count_frame_max;
-        if (self.records.hit_record_count_frame_max > element_count) {
+        const span_count = self.build.span_count_frame_max;
+        // A link span adds a hit record per line it covers: at most one per span, plus one
+        // per wrapped line it continues onto. Layout's wrapped lines share the glyph budget.
+        const hit_bound = element_count + span_count + self.paint.glyph_count_frame_max;
+        assert(hit_bound > element_count);
+        if (self.records.hit_record_count_frame_max > hit_bound) {
             return relationship(
                 .records,
                 "hit_record_count_frame_max",
                 self.records.hit_record_count_frame_max,
-                element_count,
+                hit_bound,
             );
         }
-        if (self.records.handler_count_frame_max > element_count * handler_count_element_max) {
+        // A link span adds one handler, its `on_click`.
+        const handler_bound = element_count * handler_count_element_max + span_count;
+        if (self.records.handler_count_frame_max > handler_bound) {
             return relationship(
                 .records,
                 "handler_count_frame_max",
                 self.records.handler_count_frame_max,
-                element_count * handler_count_element_max,
+                handler_bound,
             );
         }
         if (self.records.handler_count_frame_max < self.textFieldHandlerCount()) {
@@ -248,13 +255,11 @@ pub const ResourceLimits = struct {
         const element_count = self.build.element_count_frame_max;
         assert(element_count > 0);
         assert(self.build.text_bytes_frame_max > 0);
-        if (self.build.key_count_frame_max > element_count) {
-            return relationship(
-                .build,
-                "key_count_frame_max",
-                self.build.key_count_frame_max,
-                element_count,
-            );
+        // A keyed link claims a key beside the keyed elements.
+        const key_bound = element_count + self.build.span_count_frame_max;
+        if (self.build.key_count_frame_max > key_bound) {
+            const keys = self.build.key_count_frame_max;
+            return relationship(.build, "key_count_frame_max", keys, key_bound);
         }
         if (self.build.layer_count_frame_max > element_count) {
             return relationship(
@@ -366,13 +371,15 @@ pub const ResourceLimits = struct {
     }
 
     fn checkA11yRelationships(self: *const ResourceLimits) ?Violation {
-        const element_count = self.build.element_count_frame_max;
-        if (self.a11y.element_count_max > element_count) {
+        // A link span adds one `.link` node beside the elements' nodes.
+        const node_bound = self.build.element_count_frame_max + self.build.span_count_frame_max;
+        assert(node_bound > self.build.span_count_frame_max);
+        if (self.a11y.element_count_max > node_bound) {
             return relationship(
                 .a11y,
                 "element_count_max",
                 self.a11y.element_count_max,
-                element_count,
+                node_bound,
             );
         }
         if (self.a11y.value_bytes_max > self.build.text_bytes_frame_max) {
@@ -978,8 +985,8 @@ pub const BuildLimits = struct {
     layer_count_frame_max: u32,
     box_depth_max: u32,
     grid_count_frame_max: u32,
-    /// Styled spans of `ui.rich` texts per frame, 48 bytes each on the build side (a
-    /// layout run and its paint), reserved once per window.
+    /// Styled spans of `ui.rich` texts per frame, 80 bytes each on the build side (a
+    /// layout run, its paint, and its link), reserved once per window.
     span_count_frame_max: u32,
 
     pub const nano: BuildLimits = .{
@@ -1459,6 +1466,8 @@ fn relationship(
 }
 
 comptime {
+    // Five profiles' full checks: one is within the default quota, as `gooey.App` needs.
+    @setEvalBranchQuota(4_000);
     for (ResourceLimits.profile_names) |name| {
         assert(@field(ResourceLimits, name).check() == null);
     }
@@ -1840,14 +1849,16 @@ test "check bounds each a11y field by its ceiling and its relationships" {
         try std.testing.expectEqual(field_ceiling, above.bound);
     }
 
+    // Each link span adds one node, so nodes may exceed elements by the span budget.
     var limits = ResourceLimits.nano;
-    limits.a11y.element_count_max = limits.build.element_count_frame_max;
+    const node_bound = limits.build.element_count_frame_max + limits.build.span_count_frame_max;
+    limits.a11y.element_count_max = node_bound;
     try std.testing.expect(limits.check() == null);
     limits.a11y.element_count_max += 1;
     const nodes = limits.check().?;
     try std.testing.expectEqualStrings("element_count_max", nodes.field);
     try std.testing.expectEqual(Violation.Rule.above_relationship, nodes.rule);
-    try std.testing.expectEqual(limits.build.element_count_frame_max, nodes.bound);
+    try std.testing.expectEqual(node_bound, nodes.bound);
 
     limits = ResourceLimits.nano;
     limits.a11y.value_bytes_max = limits.build.text_bytes_frame_max;
@@ -2179,5 +2190,38 @@ test "text.fonts reports each broken face set under its own field" {
         const fonts = @field(ResourceLimits, name).text.fonts;
         try std.testing.expectEqual(@as(usize, 0), fonts.mono_variants.len);
         try std.testing.expectEqual(@field(FontLimits, name).variants.len, fonts.variants.len);
+    }
+}
+
+test "check lets link spans raise hits, handlers, and keys past the element budget" {
+    // A link span adds a hit record per line it covers, one handler, and a key when keyed,
+    // so each pool may exceed its element bound by the span budget and no further.
+    var limits = ResourceLimits.nano;
+    const elements = limits.build.element_count_frame_max;
+    const spans = limits.build.span_count_frame_max;
+    const hits = elements + spans + limits.paint.glyph_count_frame_max;
+    const handlers = elements * handler_count_element_max + spans;
+    const keys = elements + spans;
+    limits.records.hit_record_count_frame_max = hits;
+    limits.records.handler_count_frame_max = handlers;
+    limits.build.key_count_frame_max = keys;
+    try std.testing.expect(limits.check() == null);
+    const Case = struct { field: []const u8, bound: u32 };
+    const cases = [_]Case{
+        .{ .field = "hit_record_count_frame_max", .bound = hits },
+        .{ .field = "handler_count_frame_max", .bound = handlers },
+        .{ .field = "key_count_frame_max", .bound = keys },
+    };
+    for (cases, 0..) |case, index| {
+        var over = limits;
+        switch (index) {
+            0 => over.records.hit_record_count_frame_max += 1,
+            1 => over.records.handler_count_frame_max += 1,
+            else => over.build.key_count_frame_max += 1,
+        }
+        const violation = over.check().?;
+        try std.testing.expectEqualStrings(case.field, violation.field);
+        try std.testing.expectEqual(Violation.Rule.above_relationship, violation.rule);
+        try std.testing.expectEqual(case.bound, violation.bound);
     }
 }

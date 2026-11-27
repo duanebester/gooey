@@ -117,7 +117,8 @@ pub const Node = struct {
 
 pub const NodeFill = struct { shader: u8, params_slot: u32 };
 
-/// A rich text's spans: `offset` and `len` index `Window.span_runs` and `span_paints`.
+/// A rich text's spans: `offset` and `len` index `Window.span_runs`, `span_paints`, and
+/// `span_links`.
 pub const SpanRange = records.TextRange;
 
 /// How emit draws one span of a rich text. `Window.span_paints[i]` styles the bytes of
@@ -126,11 +127,32 @@ pub const SpanPaint = struct {
     color: records.Color,
     background: ?records.Color,
     decoration: text_mod.TextDecoration,
+    /// `Window.span_links[i]` holds the span's link, written by the build only for links.
+    link: bool,
+};
+
+/// A link span's identity and handler, beside its paint. Emit appends a hit record per
+/// segment from it, and the accessibility pass a `.link` node whose index it stores.
+pub const SpanLink = struct {
+    id: ElementId,
+    on_click: u32,
+    href: records.TextRange,
+    /// The link's accessibility node this frame; `index_none` until the pass appends it,
+    /// and for a link it skips (wholly cut, or inside a drag layer).
+    a11y: u32,
+    /// The link's first hit record this frame, its Tab stop; `index_none` until emit
+    /// appends it.
+    hit: u32,
+    /// Whether a drawn segment has set the accessibility node's bounds; otherwise emit
+    /// places the node at the first line that shows the link.
+    visible: bool,
 };
 
 comptime {
-    // The budget's stated 48 bytes per span: this paint and an 8-byte layout run.
-    assert(@sizeOf(SpanPaint) + @sizeOf(layout_mod.TextRun) <= 48);
+    // The budget's stated 80 bytes per span: a paint, a link, and an 8-byte layout run.
+    assert(@sizeOf(SpanPaint) <= 40);
+    assert(@sizeOf(SpanLink) <= 32);
+    assert(@sizeOf(SpanPaint) + @sizeOf(SpanLink) + @sizeOf(layout_mod.TextRun) <= 80);
 }
 
 pub const FocusPlace = struct {
@@ -516,6 +538,7 @@ pub const Window = struct {
     node_count: u32,
     span_runs: []layout_mod.TextRun,
     span_paints: []SpanPaint,
+    span_links: []SpanLink,
     span_count: u32,
     span_count_used_max: u32,
     keys: KeySet,
@@ -840,6 +863,8 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     errdefer reservation.release(layout_mod.TextRun, self.span_runs, 0);
     self.span_paints = try reservation.reserve(SpanPaint, span_count);
     errdefer reservation.release(SpanPaint, self.span_paints, 0);
+    self.span_links = try reservation.reserve(SpanLink, span_count);
+    errdefer reservation.release(SpanLink, self.span_links, 0);
     self.span_count = 0;
     self.span_count_used_max = 0;
 
@@ -876,6 +901,7 @@ fn deinitBuildStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.frames[0].deinit(gpa);
     self.keys.deinit(gpa);
     const span_used = @max(self.span_count_used_max, self.span_count);
+    reservation.release(SpanLink, self.span_links, span_used);
     reservation.release(SpanPaint, self.span_paints, span_used);
     reservation.release(layout_mod.TextRun, self.span_runs, span_used);
     gpa.free(self.nodes);
