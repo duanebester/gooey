@@ -7371,3 +7371,370 @@ test "a Ctrl+press opens a context menu only on macOS, and clicks nothing there"
     const opened = menuNode(app, .menu, title) != null;
     try testing.expectEqual(builtin.os.tag == .macos, opened);
 }
+
+const RichState = struct {
+    case: u32 = 0,
+
+    const red: ui.Color = .{ .r = 1, .g = 0, .b = 0, .a = 1 };
+    const blue: ui.Color = .{ .r = 0, .g = 0, .b = 1, .a = 1 };
+    const green: ui.Color = .{ .r = 0, .g = 1, .b = 0, .a = 1 };
+    const one_line: ui.Text = .{ .size = 10, .color = .{ .rgba = red }, .overflow = .ellipsis };
+
+    const Case = struct { spans: []const ui.Span, style: ui.Text, width: f32 };
+    const cases = [_]Case{
+        .{ .spans = &.{
+            .{ .text = "aa" },
+            .{
+                .text = "aa",
+                .weight = .bold,
+                .color = .{ .rgba = blue },
+                .background = .{ .rgba = green },
+                .decoration = .underlined,
+            },
+        }, .style = .{ .size = 10, .color = .{ .rgba = red } }, .width = 200 },
+        .{ .spans = &.{
+            .{ .text = "aaaa" },
+            .{ .text = "aaaaaa", .weight = .bold, .color = .{ .rgba = blue } },
+        }, .style = one_line, .width = 40 },
+        .{ .spans = &.{
+            .{ .text = "aaaa " },
+            .{ .text = "bbbb bbbb", .background = .{ .rgba = green } },
+        }, .style = .{ .size = 10, .wrap = .words }, .width = 45 },
+        .{ .spans = &.{
+            .{ .text = "aa" },
+            .{ .text = "" },
+            .{
+                .text = "aa",
+                .family = .mono,
+                .color = .{ .rgba = blue },
+                .decoration = .{ .strikethrough = true },
+            },
+        }, .style = .{ .size = 10, .color = .{ .rgba = red } }, .width = 200 },
+    };
+};
+
+const RichApp = gooey.App(RichState, richRender, .{
+    .title = "Rich",
+    .width = 200,
+    .height = 200,
+    .limits = rich_limits,
+    .fonts = .{ .mono = .{ .system = .monospace } },
+});
+
+// The mono case needs a mono family; bold is a regular variant for the other cases.
+const rich_limits = blk: {
+    var value = gooey.ResourceLimits.small;
+    value.text.fonts.mono_variants = &.{.regular};
+    break :blk value;
+};
+
+fn richRender(cx: *Cx) void {
+    const case = RichState.cases[cx.state(RichState).case];
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = case.width } } }, .{
+        ui.rich(case.spans, case.style),
+    }));
+}
+
+/// Builds one rich case headlessly at scale 1 and copies its paint records out.
+fn richRecords(case: u32, out: []internals.records.Record) !u32 {
+    const app = try testing.allocator.create(RichApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.state.case = case;
+    app.tick(0);
+    const frame = app.window.rendered();
+    assert(frame.paint_count <= out.len);
+    @memcpy(out[0..frame.paint_count], frame.paint[0..frame.paint_count]);
+    return frame.paint_count;
+}
+
+test "rich spans draw in their own fonts and colors, with backgrounds behind them" {
+    // The synthetic font advances 'a' 5 px at size 10 and bold 5.5 px; its ascender is
+    // 0.8 em and its underline 0.1 em below the baseline and 1 px thick. So the bold span
+    // starts at x 10, is 11 px wide, and its underline sits at y 8 + 1.
+    var records: [64]internals.records.Record = undefined;
+    const count = try richRecords(0, &records);
+    var glyphs: [4]internals.records.Sprite = undefined;
+    var glyph_count: u32 = 0;
+    var background: ?u32 = null;
+    var underline: ?internals.records.Quad = null;
+    for (records[0..count], 0..) |record, index| {
+        switch (record) {
+            .sprite => |sprite| {
+                try testing.expect(glyph_count < glyphs.len);
+                glyphs[glyph_count] = sprite;
+                glyph_count += 1;
+            },
+            .quad => |quad| {
+                if (quad.fill.g == 1 and quad.fill.r == 0) {
+                    try testing.expect(background == null);
+                    background = @intCast(index);
+                    try testing.expectEqual(@as(f32, 10), quad.bounds.x);
+                    try testing.expectApproxEqAbs(@as(f32, 11), quad.bounds.width, 0.001);
+                    try testing.expectApproxEqAbs(@as(f32, 12), quad.bounds.height, 0.001);
+                    try testing.expectEqual(@as(u32, 2), glyph_count);
+                } else if (quad.fill.b == 1) {
+                    underline = quad;
+                }
+            },
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(u32, 4), glyph_count);
+    try testing.expect(background != null);
+    const expected_x = [_]f32{ 0, 5, 10, 15.5 };
+    for (glyphs, expected_x, 0..) |glyph, x, index| {
+        try testing.expectApproxEqAbs(x, glyph.bounds.x, 1);
+        const bold = index >= 2;
+        try testing.expectEqual(@as(f32, if (bold) 1 else 0), glyph.tint.b);
+        try testing.expectEqual(@as(f32, if (bold) 0 else 1), glyph.tint.r);
+    }
+    const line = underline.?;
+    try testing.expectEqual(@as(f32, 10), line.bounds.x);
+    try testing.expectApproxEqAbs(@as(f32, 11), line.bounds.width, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 9), line.bounds.y, 0.001);
+    try testing.expectEqual(@as(f32, 1), line.bounds.height);
+}
+
+test "an empty span draws nothing and a mono span strikes through its own advance" {
+    // The synthetic font advances 'a' 5 px at size 10 and 0.6 em, 6 px, in mono. Its
+    // ascender is 8 px and x-height 5 px, so a 1 px strike centred at half the x-height
+    // sits at y 8 - 2.5 - 0.5. The empty span between the runs adds no glyph and no gap.
+    var records: [64]internals.records.Record = undefined;
+    const count = try richRecords(3, &records);
+    var glyph_x: [4]f32 = undefined;
+    var glyph_count: u32 = 0;
+    var strike: ?internals.records.Quad = null;
+    for (records[0..count]) |record| {
+        switch (record) {
+            .sprite => |sprite| {
+                try testing.expect(glyph_count < glyph_x.len);
+                const mono = glyph_count >= 2;
+                try testing.expectEqual(@as(f32, if (mono) 1 else 0), sprite.tint.b);
+                glyph_x[glyph_count] = sprite.bounds.x;
+                glyph_count += 1;
+            },
+            .quad => |quad| {
+                try testing.expect(strike == null);
+                strike = quad;
+            },
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(u32, 4), glyph_count);
+    const expected_x = [_]f32{ 0, 5, 10, 16 };
+    for (glyph_x, expected_x) |x, expected| try testing.expectApproxEqAbs(expected, x, 1);
+    const line = strike.?;
+    try testing.expectEqual(@as(f32, 1), line.fill.b);
+    try testing.expectEqual(@as(f32, 10), line.bounds.x);
+    try testing.expectApproxEqAbs(@as(f32, 12), line.bounds.width, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 5), line.bounds.y, 0.001);
+    try testing.expectEqual(@as(f32, 1), line.bounds.height);
+}
+
+test "an ellipsis cuts a rich line inside a bold span and keeps the text's color" {
+    // 40 px less the 7 px "…" leaves 33: four regular 'a' (20) and two bold (11) fit,
+    // a third bold one would reach 36.5. So six glyphs, then the "…" at x 31 in red.
+    var records: [64]internals.records.Record = undefined;
+    const count = try richRecords(1, &records);
+    var sprites: [16]internals.records.Sprite = undefined;
+    var sprite_count: u32 = 0;
+    for (records[0..count]) |record| {
+        if (record != .sprite) continue;
+        try testing.expect(sprite_count < sprites.len);
+        sprites[sprite_count] = record.sprite;
+        sprite_count += 1;
+    }
+    try testing.expectEqual(@as(u32, 7), sprite_count);
+    try testing.expectEqual(@as(f32, 1), sprites[3].tint.r);
+    try testing.expectEqual(@as(f32, 1), sprites[5].tint.b);
+    try testing.expectApproxEqAbs(@as(f32, 25.5), sprites[5].bounds.x, 1);
+    const mark = sprites[6];
+    try testing.expectApproxEqAbs(@as(f32, 31), mark.bounds.x, 1);
+    try testing.expectEqual(@as(f32, 1), mark.tint.r);
+    try testing.expect(mark.bounds.x + mark.bounds.width <= 40);
+}
+
+test "a span background wraps with its span, one quad per line" {
+    // "aaaa " is 22.5 px and "bbbb " 22.5 px, so line 1 holds both at 45 px and the
+    // second "bbbb" (20 px) wraps. The background covers "bbbb " on line 1 and "bbbb"
+    // on line 2, one pitch (12 px) lower.
+    var records: [64]internals.records.Record = undefined;
+    const count = try richRecords(2, &records);
+    var boxes: [2]internals.records.Rect = undefined;
+    var box_count: u32 = 0;
+    for (records[0..count]) |record| {
+        if (record != .quad) continue;
+        try testing.expect(box_count < boxes.len);
+        boxes[box_count] = record.quad.bounds;
+        box_count += 1;
+    }
+    try testing.expectEqual(@as(u32, 2), box_count);
+    try testing.expectApproxEqAbs(@as(f32, 22.5), boxes[0].x, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 22.5), boxes[0].width, 0.001);
+    try testing.expectEqual(@as(f32, 0), boxes[0].y);
+    try testing.expectEqual(@as(f32, 0), boxes[1].x);
+    try testing.expectApproxEqAbs(@as(f32, 20), boxes[1].width, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 12), boxes[1].y, 0.001);
+}
+
+const RichSameState = struct { rich: bool = false };
+
+const RichSameApp = gooey.App(RichSameState, richSameRender, .{
+    .title = "Rich same",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+fn richSameRender(cx: *Cx) void {
+    const style: ui.Text = .{
+        .size = 10,
+        .wrap = .words,
+        .line_count_max = 2,
+        .overflow = .ellipsis,
+    };
+    const content = "one two three four five six seven";
+    const box: ui.Box = .{ .style = .{ .width = .{ .fixed = 60 } } };
+    if (cx.state(RichSameState).rich) {
+        const spans: [2]ui.Span = .{
+            .{ .text = "one two " },
+            .{ .text = "three four five six seven" },
+        };
+        cx.render(ui.box(box, .{ui.rich(&spans, style)}));
+    } else {
+        cx.render(ui.box(box, .{ui.text(content, style)}));
+    }
+}
+
+test "ui.rich with unstyled spans paints exactly what ui.text paints" {
+    // Spans that override nothing must not change a single record, wrapped and cut.
+    var paints: [2][128]internals.records.Record = undefined;
+    var counts: [2]u32 = undefined;
+    for (0..2) |variant| {
+        const app = try testing.allocator.create(RichSameApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.rich = variant == 1;
+        app.tick(0);
+        const frame = app.window.rendered();
+        try testing.expect(frame.paint_count <= paints[variant].len);
+        counts[variant] = frame.paint_count;
+        @memcpy(paints[variant][0..frame.paint_count], frame.paint[0..frame.paint_count]);
+    }
+    try testing.expectEqual(counts[0], counts[1]);
+    try testing.expect(counts[0] > 10);
+    for (paints[0][0..counts[0]], paints[1][0..counts[1]]) |plain, rich| {
+        try testing.expectEqualDeep(plain, rich);
+    }
+}
+
+const RichFullState = struct { measured: [2]Cx.TextSize = undefined };
+
+const rich_full_limits = blk: {
+    var value = gooey.ResourceLimits.small;
+    value.build.span_count_frame_max = 4;
+    break :blk value;
+};
+
+const RichFullApp = gooey.App(RichFullState, richFullRender, .{
+    .title = "Rich full",
+    .width = 200,
+    .height = 200,
+    .limits = rich_full_limits,
+});
+
+const rich_full_blue: ui.Color = .{ .r = 0, .g = 0, .b = 1, .a = 1 };
+const rich_full_spans = [2][2]ui.Span{
+    .{ .{ .text = "aa aa " }, .{ .text = "bb bb bb", .weight = .bold } },
+    .{ .{ .text = "cc " }, .{ .text = "d", .color = .{ .rgba = rich_full_blue } } },
+};
+
+fn richFullRender(cx: *Cx) void {
+    const state = cx.state(RichFullState);
+    const style: ui.Text = .{ .size = 10, .wrap = .words };
+    for (&rich_full_spans, 0..) |*spans, index| {
+        state.measured[index] = cx.measureRich(spans, style, 40);
+        cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 40 } } }, .{ui.rich(spans, style)}));
+    }
+}
+
+test "rich spans fill their budget exactly, and measureRich sizes them as laid out" {
+    // The budget is 4 spans and the two texts use exactly 4: measuring the second stages
+    // 2 more past the 2 claimed, then building claims them. The last span is the only blue
+    // glyph, so it drew. Each measurement matches its text's laid-out bounds, wrapped at 40.
+    const app = try testing.allocator.create(RichFullApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    try testing.expectEqual(@as(u32, 4), app.window.span_count);
+    var index: u32 = 0;
+    for (app.window.layout.elements.items()) |*element| {
+        const data = element.text_data orelse continue;
+        try testing.expect(data.wrapped_lines.?.len > 1 or index == 1);
+        const bounds = element.computed.bounding_box;
+        try testing.expectApproxEqAbs(bounds.width, app.state.measured[index].width, 0.001);
+        try testing.expectApproxEqAbs(bounds.height, app.state.measured[index].height, 0.001);
+        index += 1;
+    }
+    try testing.expectEqual(@as(u32, 2), index);
+    const frame = app.window.rendered();
+    var blue_count: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record == .sprite and record.sprite.tint.b == 1) blue_count += 1;
+    }
+    try testing.expectEqual(@as(u32, 1), blue_count);
+}
+
+const BlankCutState = struct { rich: bool = false };
+
+const BlankCutApp = gooey.App(BlankCutState, blankCutRender, .{
+    .title = "Blank cut",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+fn blankCutRender(cx: *Cx) void {
+    const style: ui.Text = .{
+        .size = 10,
+        .wrap = .newlines,
+        .line_count_max = 2,
+        .overflow = .ellipsis,
+    };
+    const box: ui.Box = .{ .style = .{ .width = .{ .fixed = 100 } } };
+    if (cx.state(BlankCutState).rich) {
+        const spans: [2]ui.Span = .{ .{ .text = "a\n" }, .{ .text = "\nb", .weight = .bold } };
+        cx.render(ui.box(box, .{ui.rich(&spans, style)}));
+    } else {
+        cx.render(ui.box(box, .{ui.text("a\n\nb", style)}));
+    }
+}
+
+test "a line count that ends on a blank line still draws its ellipsis" {
+    // "a\n\nb" kept to 2 lines: line 2 is empty but cut, because "b" follows. It draws
+    // only the "…" (6 px wide in the synthetic font), so the frame holds 'a' and "…".
+    for ([_]bool{ false, true }) |rich| {
+        const app = try testing.allocator.create(BlankCutApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.rich = rich;
+        app.tick(0);
+        const frame = app.window.rendered();
+        var sprites: [4]internals.records.Sprite = undefined;
+        var count: u32 = 0;
+        for (frame.paint[0..frame.paint_count]) |record| {
+            if (record != .sprite) continue;
+            try testing.expect(count < sprites.len);
+            sprites[count] = record.sprite;
+            count += 1;
+        }
+        try testing.expectEqual(@as(u32, 2), count);
+        try testing.expectEqual(@as(f32, 6), sprites[1].bounds.width);
+        try testing.expect(sprites[1].bounds.y > sprites[0].bounds.y);
+    }
+}

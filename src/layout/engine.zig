@@ -91,6 +91,14 @@ pub const WordInfo = struct {
     has_newline: bool,
 };
 
+/// The advances of a space and a tab in one word unit's font, for a rich text only: a unit
+/// never spans a font change inside its spaces, so one pair holds for all of them. Kept
+/// beside `WordInfo` (same index) so plain texts neither write nor copy it.
+pub const BlankAdvances = struct {
+    space: f32,
+    tab: f32,
+};
+
 pub fn BoundedList(comptime T: type) type {
     return struct {
         buffer: []T,
@@ -159,6 +167,11 @@ pub const TextData = struct {
     measured_height: f32 = 0,
     floor_width: f32 = 0,
     ellipsis_width: f32 = 0,
+    /// The style runs of a rich text in the engine's run table (`setTextRuns`); a count of
+    /// 0 is a plain text. The two `u16`s grow `TextData` from 88 to 96 B; a run table
+    /// index keeps them small where a slice would add 16 B.
+    runs_start: u16 = 0,
+    runs_count: u16 = 0,
     wrapped_lines: ?[]const types.WrappedLine = null,
     container_width: f32 = 0,
     container_x: f32 = 0,
@@ -282,11 +295,14 @@ pub const LayoutEngine = struct {
     viewport_height: f32 = 0,
     measure_text_fn: ?MeasureTextFn = null,
     measure_text_user_data: ?*anyopaque = null,
+    /// The caller's table of rich-text runs, borrowed until the next `setTextRuns`.
+    text_runs: []const types.TextRun = &.{},
     floating_roots: BoundedList(u32),
     grid_slots: []grid_mod.GridSlot,
     grid_count: u32 = 0,
     grid_count_used_max: u32 = 0,
     word_scratch: []WordInfo,
+    blank_scratch: []BlankAdvances,
     line_scratch: []types.WrappedLine,
     word_count_used_max: u32 = 0,
     line_count_used_max: u32 = 0,
@@ -314,6 +330,9 @@ pub const LayoutEngine = struct {
         const words = try reservation.reserve(WordInfo, capacity.word_count_text_max);
         errdefer reservation.release(WordInfo, words, 0);
 
+        const blanks = try reservation.reserve(BlankAdvances, capacity.word_count_text_max);
+        errdefer reservation.release(BlankAdvances, blanks, 0);
+
         const line_count = capacity.wrapped_line_count_frame_max;
         const lines = try reservation.reserve(types.WrappedLine, line_count);
         errdefer reservation.release(types.WrappedLine, lines, 0);
@@ -329,6 +348,7 @@ pub const LayoutEngine = struct {
             .open_element_stack = .{ .buffer = open_stack },
             .floating_roots = .{ .buffer = floating },
             .word_scratch = words,
+            .blank_scratch = blanks,
             .line_scratch = lines,
             .grid_slots = grid_slots,
         };
@@ -342,12 +362,29 @@ pub const LayoutEngine = struct {
         reservation.release(grid_mod.GridSlot, self.grid_slots, self.grid_count_used_max);
         reservation.release(types.WrappedLine, self.line_scratch, self.line_count_used_max);
         reservation.release(WordInfo, self.word_scratch, self.word_count_used_max);
+        reservation.release(BlankAdvances, self.blank_scratch, self.word_count_used_max);
         const floating = self.floating_roots.buffer;
         reservation.release(u32, floating, floating.len);
         const open_stack = self.open_element_stack.buffer;
         reservation.release(u32, open_stack, open_stack.len);
         reservation.release(u8, self.arena_buffer, self.arena_used_max);
         self.elements.deinit();
+    }
+
+    /// Lends the engine the table that `richText` runs are slices of.
+    pub fn setTextRuns(self: *Self, table: []const types.TextRun) void {
+        std.debug.assert(table.len <= std.math.maxInt(u16));
+        self.text_runs = table;
+        std.debug.assert(self.text_runs.len == table.len);
+    }
+
+    /// The runs of a text, empty for a plain one.
+    pub fn runsOf(self: *const Self, data: *const TextData) []const types.TextRun {
+        std.debug.assert(data.runs_count <= data.text.len);
+        std.debug.assert(@as(u32, data.runs_start) + data.runs_count <= self.text_runs.len);
+        const runs = self.text_runs[data.runs_start..][0..data.runs_count];
+        types.assertRuns(runs, data.text.len);
+        return runs;
     }
 
     pub fn setMeasureTextFn(self: *Self, func: MeasureTextFn, user_data: ?*anyopaque) void {
@@ -359,11 +396,13 @@ pub const LayoutEngine = struct {
         self: *Self,
         content: []const u8,
         config: types.TextConfig,
+        runs: []const types.TextRun,
         max_width: f32,
     ) TextMeasurement {
         std.debug.assert(self.measure_text_fn != null);
         std.debug.assert(config.font_size > 0);
-        return sizing_pass.measureWrapped(self, content, config, max_width);
+        types.assertRuns(runs, content.len);
+        return sizing_pass.measureWrapped(self, content, config, runs, max_width);
     }
 
     pub fn beginFrame(self: *Self, width: f32, height: f32) void {
@@ -513,9 +552,23 @@ pub const LayoutEngine = struct {
     }
 
     pub fn text(self: *Self, content: []const u8, config: types.TextConfig) !void {
+        return self.richText(content, config, &.{});
+    }
+
+    /// Adds a text whose `runs` (see `types.TextRun`) give each byte range its own font;
+    /// with no runs it is a plain text in `config.font_id`. The runs are a slice of the
+    /// engine's run table (`setTextRuns`). Inline so `text`'s empty, comptime-known runs
+    /// fold the run checks away: a plain text pays nothing for rich text.
+    pub inline fn richText(
+        self: *Self,
+        content: []const u8,
+        config: types.TextConfig,
+        runs: []const types.TextRun,
+    ) !void {
         std.debug.assert(self.open_element_stack.len > 0);
         std.debug.assert(content.len <= types.line_length_max);
         if (config.line_count_max > 0) std.debug.assert(config.wrap_mode != .none);
+        types.assertRuns(runs, content.len);
 
         var decl = ElementDeclaration{};
         decl.layout.sizing = Sizing.fitContent();
@@ -526,19 +579,15 @@ pub const LayoutEngine = struct {
         elem.text_data = TextData{
             .text = text_copy,
             .config = config,
+            .runs_start = self.runsStart(runs),
+            .runs_count = @intCast(runs.len),
         };
-
+        const data = &elem.text_data.?;
         if (self.measure_text_fn) |measure_fn| {
-            const measured = measure_fn(
-                content,
-                config.font_id,
-                config.font_size,
-                null,
-                self.measure_text_user_data,
-            );
-            elem.text_data.?.measured_width = measured.width;
-            elem.text_data.?.measured_height = measured.height;
-            elem.text_data.?.floor_width = measured.width;
+            const measured = sizing_pass.measureLine(self, content, config, runs);
+            data.measured_width = measured.width;
+            data.measured_height = measured.height;
+            data.floor_width = measured.width;
             if (config.overflow == .ellipsis) {
                 const mark = measure_fn(
                     types.ellipsis,
@@ -548,20 +597,31 @@ pub const LayoutEngine = struct {
                     self.measure_text_user_data,
                 );
                 std.debug.assert(mark.width >= 0);
-                elem.text_data.?.ellipsis_width = mark.width;
-                elem.text_data.?.floor_width = @min(measured.width, mark.width);
+                data.ellipsis_width = mark.width;
+                data.floor_width = @min(measured.width, mark.width);
             } else if (config.wrap_mode == .words and content.len > 0) {
-                const widest = sizing_pass.widestWord(self, content, config);
-                elem.text_data.?.floor_width = @min(measured.width, widest);
+                const widest = sizing_pass.widestWord(self, content, config, runs);
+                data.floor_width = @min(measured.width, widest);
             }
         } else {
             const font_size_f: f32 = @floatFromInt(config.font_size);
-            elem.text_data.?.measured_width = @as(f32, @floatFromInt(content.len)) * font_size_f * 0.6;
-            elem.text_data.?.measured_height = font_size_f * 1.2;
-            elem.text_data.?.floor_width = elem.text_data.?.measured_width;
+            data.measured_width = @as(f32, @floatFromInt(content.len)) * font_size_f * 0.6;
+            data.measured_height = font_size_f * 1.2;
+            data.floor_width = data.measured_width;
         }
-        std.debug.assert(elem.text_data.?.floor_width <= elem.text_data.?.measured_width);
-        if (elem.text_data.?.floor_width < elem.text_data.?.measured_width) self.floors_differ = true;
+        std.debug.assert(data.floor_width <= data.measured_width);
+        if (data.floor_width < data.measured_width) self.floors_differ = true;
+    }
+
+    fn runsStart(self: *const Self, runs: []const types.TextRun) u16 {
+        if (runs.len == 0) return 0;
+        std.debug.assert(self.text_runs.len > 0);
+        const base = @intFromPtr(self.text_runs.ptr);
+        const first = @intFromPtr(runs.ptr);
+        std.debug.assert(first >= base);
+        const start = @divExact(first - base, @sizeOf(types.TextRun));
+        std.debug.assert(start + runs.len <= self.text_runs.len);
+        return @intCast(start);
     }
 
     inline fn createElement(

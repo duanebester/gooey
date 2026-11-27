@@ -1043,7 +1043,7 @@ pub const ResourceLimits = struct {
     build: BuildLimits,         // element_count_frame_max, component_depth_max,
                                 // key_count_frame_max, text_bytes_frame_max,
                                 // layer_count_frame_max, box_depth_max,
-                                // grid_count_frame_max
+                                // grid_count_frame_max, span_count_frame_max
     records: RecordLimits,      // paint_record_count_frame_max, hit_record_count_frame_max,
                                 // handler_count_frame_max
     retained: RetainedLimits,   // slots per size class, sweep_delay_frames
@@ -1106,6 +1106,7 @@ text's. Its arena is always the reserved buffer; there is no growing mode.
 such as `hit_record_count_frame_max <= element_count_frame_max`,
 `layer_count_frame_max <= element_count_frame_max`,
 `grid_count_frame_max <= element_count_frame_max`,
+`span_count_frame_max <= text_bytes_frame_max`,
 `box_depth_max <= element_count_frame_max`,
 `a11y.element_count_max <= element_count_frame_max`,
 `a11y.value_bytes_max <= build.text_bytes_frame_max`,

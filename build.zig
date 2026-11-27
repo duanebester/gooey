@@ -184,6 +184,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
             .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
+            .{ .name = "rich-text", .source = "src/examples/rich_text.zig" },
             .{ .name = "shaders", .source = "src/examples/shaders.zig" },
             .{ .name = "shader-button-hover", .source = "src/examples/shader_button_hover.zig" },
         };
@@ -520,6 +521,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
             .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
             .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
+            .{ .name = "rich-text", .source = "src/examples/rich_text.zig" },
         };
         const default_name = if (linux_backend == .eve) "counter" else "todo";
         var default_install: ?*std.Build.Step.InstallArtifact = null;
@@ -830,6 +832,7 @@ fn addWindowsBuilds(
         .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
         .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
         .{ .name = "text-truncation", .source = "src/examples/text_truncation.zig" },
+        .{ .name = "rich-text", .source = "src/examples/rich_text.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1267,6 +1270,10 @@ fn addFailFastChecks(
             "holds one row of 2 columns" },
         .{ .mode = "core-grid-count", .stderr = "layout pool 'grids' exhausted: capacity 8, " ++
             "8 in use, 1 requested. Raise ResourceLimits.build.grid_count_frame_max." },
+        .{ .mode = "core-span-count", .stderr = "build pool 'spans' exhausted: capacity 128, " ++
+            "127 in use, 2 requested, frame " },
+        .{ .mode = "core-span-boundary", .stderr = "Span 1 of \"caf\" starts inside a " ++
+            "UTF-8 sequence; a span starts on a codepoint boundary" },
         .{ .mode = "core-text-line-count-zero", .stderr = "Text.line_count_max 0 " ++
             "(\"Quarterly report\"): a text shows 1 to 255 lines" },
         .{ .mode = "core-text-line-count-none", .stderr = "Text.line_count_max " ++

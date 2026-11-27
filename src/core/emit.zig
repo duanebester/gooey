@@ -856,67 +856,161 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace
 
 const TextPlace = struct { data: *const TextData, clip: ?Rect };
 
+/// Draws a text's lines in view. Each line is split at its runs' boundaries into segments,
+/// shaped in their run's font and painted in their run's color, on the base font's baseline
+/// so every line keeps the text's pitch. A plain text is one run (`textRuns`), so plain and
+/// rich texts share every path here.
 fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) void {
     const data = place.data;
     const content = window.built().text(node.text) orelse return;
     assert(content.len == data.text.len);
-    const style: TextStyle = .{
-        .size = node.font_size,
-        .color = node.text_color,
-        .family = node.family,
-        .variant = node.variant,
-    };
+    var plain: PlainRun = undefined;
+    const text = textRuns(window, node, data, &plain);
     const span = lineSpan(data, bounds);
     const alignment = data.config.alignment;
-    const pitch = data.config.lineHeightPx();
-    assert(pitch > 0);
     const lines = data.wrapped_lines orelse {
         const x = span.x + alignOffset(alignment, span.width, data.measured_width);
-        const box = lineBox(x, bounds.y, data.measured_width, @max(pitch, bounds.height));
+        const box = lineBox(x, bounds.y, data.measured_width, @max(text.pitch, bounds.height));
         if (place.clip) |rect| {
             if (!box.overlaps(rect)) return;
         }
-        _ = emitTextLine(window, content, x, bounds.y, style);
+        const whole: layout_mod.types.WrappedLine = .{
+            .start_offset = 0,
+            .extent = .{ .length = @intCast(content.len) },
+            .width = data.measured_width,
+        };
+        emitLine(window, &text, content, whole, .{ .x = x, .y = bounds.y });
         return;
     };
     assert(lines.len <= window.layout.line_scratch.len);
-    const shown = linesInView(bounds.y, pitch, @intCast(lines.len), place.clip);
+    const shown = linesInView(bounds.y, text.pitch, @intCast(lines.len), place.clip);
     assert(shown.start <= shown.end);
     assert(shown.end <= lines.len);
     for (lines[shown.start..shown.end], shown.start..) |line, line_index| {
         assert(line.start_offset <= content.len);
         assert(line.extent.length <= content.len - line.start_offset);
+        // An empty line draws nothing unless it was cut: a line count that ends on a
+        // blank line still draws its "…".
+        if (line.extent.length == 0 and line.extent.end == .whole) continue;
         const x = span.x + alignOffset(alignment, span.width, line.width);
-        const y = bounds.y + @as(f32, @floatFromInt(line_index)) * pitch;
+        const y = bounds.y + @as(f32, @floatFromInt(line_index)) * text.pitch;
         if (place.clip) |rect| {
-            if (!lineBox(x, y, line.width, pitch).overlaps(rect)) continue;
+            if (!lineBox(x, y, line.width, text.pitch).overlaps(rect)) continue;
         }
-        const run = content[line.start_offset..][0..line.extent.length];
         if (line.extent.end == .whole) {
-            _ = emitTextLine(window, run, x, y, style);
+            emitLine(window, &text, content, line, .{ .x = x, .y = y });
         } else {
-            const cut_place: CutPlace = .{ .span = span, .alignment = alignment, .y = y };
-            emitCutLine(window, run, data, line, cut_place, style);
+            emitCutLine(window, &text, content, line, .{ .span = span, .y = y });
         }
     }
 }
 
-const CutPlace = struct { span: LineSpan, alignment: TextAlignment, y: f32 };
+/// The one implicit run of a plain text, held on `emitText`'s stack.
+const PlainRun = struct {
+    runs: [1]layout_mod.TextRun,
+    paints: [1]window_mod.SpanPaint,
+};
 
+fn textRuns(
+    window: *const Window,
+    node: *const Node,
+    data: *const TextData,
+    plain: *PlainRun,
+) TextRuns {
+    const pitch = data.config.lineHeightPx();
+    assert(pitch > 0);
+    assert(data.text.len > 0);
+    if (node.spans.len > 0) {
+        assert(node.spans.len == data.runs_count);
+        const runs = window.span_runs[node.spans.offset..][0..node.spans.len];
+        layout_mod.types.assertRuns(runs, data.text.len);
+        return .{
+            .node = node,
+            .data = data,
+            .runs = runs,
+            .paints = window.span_paints[node.spans.offset..][0..node.spans.len],
+            .pitch = pitch,
+        };
+    }
+    assert(data.runs_count == 0);
+    plain.* = .{
+        .runs = .{.{
+            .end = @intCast(data.text.len),
+            .font_id = node.family.fontId(node.variant),
+        }},
+        .paints = .{.{ .color = node.text_color, .background = null, .decoration = .none }},
+    };
+    return .{
+        .node = node,
+        .data = data,
+        .runs = &plain.runs,
+        .paints = &plain.paints,
+        .pitch = pitch,
+    };
+}
+
+const TextRuns = struct {
+    node: *const Node,
+    data: *const TextData,
+    runs: []const layout_mod.TextRun,
+    paints: []const window_mod.SpanPaint,
+    pitch: f32,
+
+    fn fontsAt(self: *const TextRuns, start: u32) text_render.LineFonts {
+        assert(start < self.data.text.len);
+        const first = text_render.runAt(self.runs, start);
+        assert(first < self.paints.len);
+        return .{ .runs = self.runs, .start = start, .first = first };
+    }
+
+    fn baseline(self: *const TextRuns, window: *const Window, top: f32) f32 {
+        const metrics = window.resources.text_system.getMetricsFor(self.node.family);
+        const size: f32 = @floatFromInt(self.node.font_size);
+        assert(size > 0);
+        assert(metrics.point_size > 0);
+        return top + metrics.ascender * size / metrics.point_size;
+    }
+};
+
+const LineOrigin = struct { x: f32, y: f32 };
+
+fn emitLine(
+    window: *Window,
+    text: *const TextRuns,
+    content: []const u8,
+    line: layout_mod.types.WrappedLine,
+    origin: LineOrigin,
+) void {
+    assert(line.extent.length > 0);
+    assert(line.start_offset <= content.len);
+    assert(line.extent.length <= content.len - line.start_offset);
+    const run = content[line.start_offset..][0..line.extent.length];
+    _ = emitSegments(window, text, run, text.fontsAt(line.start_offset), .{
+        .x = origin.x,
+        .top = origin.y,
+        .baseline = text.baseline(window, origin.y),
+        .kept = @intCast(run.len),
+    });
+}
+
+const CutPlace = struct { span: LineSpan, y: f32 };
+
+/// Draws a line layout marked as cut: the cut is found by walking the line's segments in
+/// their fonts, the kept segments are drawn, and the "…" takes the text's own style.
 fn emitCutLine(
     window: *Window,
-    run: []const u8,
-    data: *const TextData,
+    text: *const TextRuns,
+    content: []const u8,
     line: layout_mod.types.WrappedLine,
     place: CutPlace,
-    style: TextStyle,
 ) void {
     assert(line.extent.end != .whole);
     assert(line.width >= 0);
-    const text_system = window.resources.text_system;
-    const size: f32 = @floatFromInt(style.size);
-    const metrics = text_system.getMetricsFor(style.family);
-    const ellipsis = layout_mod.types.ellipsis;
+    const node = text.node;
+    const data = text.data;
+    const run = content[line.start_offset..][0..line.extent.length];
+    const fonts = text.fontsAt(line.start_offset);
+    const size: f32 = @floatFromInt(node.font_size);
     const marked = data.config.overflow == .ellipsis;
     if (marked) assert(data.ellipsis_width > 0);
     const mark_width = if (marked) data.ellipsis_width else 0;
@@ -924,40 +1018,174 @@ fn emitCutLine(
         .kept_max = line.width - mark_width,
         .whole_max = if (line.extent.end == .cut_if_wide) line.width else -1,
     };
-    const cut = text_render.measureCut(
-        text_system,
-        run,
-        size,
-        style.family,
-        style.variant,
-        widths,
-    ) catch |err| window_mod.textFailed(window, run, err);
+    const text_system = window.resources.text_system;
+    const cut = text_render.measureCut(text_system, run, fonts, size, widths) catch |err|
+        window_mod.textFailed(window, run, err);
+    const alignment = data.config.alignment;
+    const baseline = text.baseline(window, place.y);
+    const drawn = if (cut.whole) cut.width else cut.width + mark_width;
+    const x = place.span.x + alignOffset(alignment, place.span.width, drawn);
     if (cut.whole) {
-        const x = place.span.x + alignOffset(place.alignment, place.span.width, cut.width);
-        _ = emitTextLine(window, run, x, place.y, style);
+        const origin: SegmentOrigin = .{
+            .x = x,
+            .top = place.y,
+            .baseline = baseline,
+            .kept = @intCast(run.len),
+        };
+        _ = emitSegments(window, text, run, fonts, origin);
         return;
     }
     if (widths.kept_max < 0) return;
     assert(marked or line.extent.end == .cut_if_wide);
     assert(cut.length <= run.len);
-    const drawn = cut.width + mark_width;
-    const x = place.span.x + alignOffset(place.alignment, place.span.width, drawn);
-    const baseline = place.y + metrics.ascender * size / metrics.point_size;
-    var sink = GlyphSink{ .frame = window.built(), .color = style.color };
-    const kept_width = text_render.placeTextPrefix(
+    if (cut.length > 0) {
+        const origin: SegmentOrigin = .{
+            .x = x,
+            .top = place.y,
+            .baseline = baseline,
+            .kept = cut.length,
+        };
+        const kept_width = emitSegments(window, text, run, fonts, origin);
+        assert(@abs(kept_width - cut.width) <= 0.01 * @max(1, cut.width));
+    }
+    if (marked) {
+        const style: TextStyle = .{
+            .size = node.font_size,
+            .color = node.text_color,
+            .family = node.family,
+            .variant = node.variant,
+        };
+        _ = emitTextBaseline(window, layout_mod.types.ellipsis, x + cut.width, baseline, style);
+    }
+}
+
+const SegmentOrigin = struct { x: f32, top: f32, baseline: f32, kept: u32 };
+
+/// Draws the first `origin.kept` bytes of a line, one segment per span it crosses, and
+/// returns their advance. Each segment's glyphs are placed as `placeTextPrefix` places a
+/// cut line, so a kept prefix lands exactly where `measureCut` measured it.
+fn emitSegments(
+    window: *Window,
+    text: *const TextRuns,
+    line_text: []const u8,
+    fonts: text_render.LineFonts,
+    origin: SegmentOrigin,
+) f32 {
+    assert(origin.kept > 0);
+    assert(origin.kept <= line_text.len);
+    var pen = origin.x;
+    var offset: u32 = 0;
+    var index = fonts.first;
+    while (offset < origin.kept) : (index += 1) {
+        assert(index < text.runs.len);
+        const run = text.runs[index];
+        assert(run.end > fonts.start + offset);
+        const end: u32 = @intCast(@min(run.end - fonts.start, line_text.len));
+        const kept = @min(end, origin.kept) - offset;
+        const segment: Segment = .{
+            .text = line_text[offset..end],
+            .kept = kept,
+            .font_id = run.font_id,
+            .paint = &text.paints[index],
+        };
+        pen += emitSegment(window, text, &segment, .{
+            .x = pen,
+            .top = origin.top,
+            .baseline = origin.baseline,
+            .kept = kept,
+        });
+        offset = end;
+    }
+    assert(offset >= origin.kept);
+    assert(pen >= origin.x);
+    return pen - origin.x;
+}
+
+const Segment = struct {
+    text: []const u8,
+    kept: u32,
+    font_id: u16,
+    paint: *const window_mod.SpanPaint,
+};
+
+fn emitSegment(
+    window: *Window,
+    text: *const TextRuns,
+    segment: *const Segment,
+    origin: SegmentOrigin,
+) f32 {
+    assert(segment.kept > 0);
+    assert(segment.kept <= segment.text.len);
+    const frame = window.built();
+    const family = text_mod.FontFamily.fromFontId(segment.font_id);
+    const variant = text_mod.FontFamily.variantFromFontId(segment.font_id);
+    const size: f32 = @floatFromInt(text.node.font_size);
+    assert(size > 0);
+    // The background sits behind the glyphs, but its width is known only once they are
+    // placed: append it first, then write the width the glyphs advanced.
+    const background_index = frame.paint_count;
+    if (segment.paint.background) |color| {
+        const box: Rect = .{ .x = origin.x, .y = origin.top, .width = 0, .height = text.pitch };
+        appendRect(frame, box, color);
+    }
+    var sink = GlyphSink{ .frame = frame, .color = segment.paint.color };
+    const text_system = window.resources.text_system;
+    const width = text_render.placeTextPrefix(
         text_system,
-        run,
-        cut.length,
-        x,
-        baseline,
+        segment.text,
+        segment.kept,
+        origin.x,
+        origin.baseline,
         window.scale_factor,
         size,
-        style.family,
-        style.variant,
+        family,
+        variant,
         &sink,
-    ) catch |err| window_mod.textFailed(window, run, err);
-    assert(@abs(kept_width - cut.width) <= 0.01 * @max(1, cut.width));
-    if (marked) _ = emitTextBaseline(window, ellipsis, x + cut.width, baseline, style);
+    ) catch |err| window_mod.textFailed(window, segment.text, err);
+    assert(width >= 0);
+    if (segment.paint.background != null) {
+        assert(frame.paint[background_index] == .quad);
+        frame.paint[background_index].quad.bounds.width = width;
+    }
+    const decoration = segment.paint.decoration;
+    if (decoration.hasAny()) {
+        const metrics = text_system.getMetricsFor(family);
+        const scale = size / metrics.point_size;
+        // At least 1 px: the font's thickness is clamped at its loaded size, and scaling
+        // it to a smaller text would draw a line too faint to read.
+        const thickness = @max(1, metrics.underline_thickness * scale);
+        assert(thickness >= 1);
+        const color = segment.paint.color;
+        if (decoration.underline) {
+            // Font metrics give the underline's position above the baseline, so it is
+            // negative for an underline below it.
+            const y = origin.baseline - metrics.underline_position * scale;
+            appendRect(frame, decorationBox(origin.x, y, width, thickness), color);
+        }
+        if (decoration.strikethrough) {
+            const y = origin.baseline - metrics.x_height * scale * 0.5 - thickness * 0.5;
+            appendRect(frame, decorationBox(origin.x, y, width, thickness), color);
+        }
+    }
+    return width;
+}
+
+fn decorationBox(x: f32, y: f32, width: f32, thickness: f32) Rect {
+    assert(width >= 0);
+    assert(thickness > 0);
+    return .{ .x = x, .y = y, .width = width, .height = thickness };
+}
+
+fn appendRect(frame: *records.Frame, bounds: Rect, color: Color) void {
+    assert(bounds.width >= 0);
+    assert(bounds.height > 0);
+    frame.appendPaint(.{ .quad = .{
+        .bounds = bounds,
+        .fill = color,
+        .border = .none,
+        .corners = .zero,
+        .blur = 0,
+    } });
 }
 
 fn lineBox(x: f32, y: f32, width: f32, height: f32) Rect {

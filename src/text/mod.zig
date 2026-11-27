@@ -14,6 +14,7 @@ pub const FontFamily = types.FontFamily;
 pub const FontLimits = @import("../core/limits.zig").FontLimits;
 pub const TextLimits = @import("../core/limits.zig").TextLimits;
 pub const TextDecoration = types.TextDecoration;
+pub const FontRun = types.FontRun;
 pub const RasterizedGlyph = types.RasterizedGlyph;
 
 pub const font_face = @import("font_face.zig");

@@ -34,6 +34,8 @@ const Mode = enum {
     @"core-grid-row-box",
     @"core-grid-row-box-cells",
     @"core-grid-count",
+    @"core-span-count",
+    @"core-span-boundary",
     @"core-text-line-count-zero",
     @"core-text-line-count-none",
     @"core-pointer-drag-unkeyed",
@@ -98,6 +100,8 @@ pub fn main(init: std.process.Init) !void {
         .@"core-grid-row-box" => coreTick(init.gpa, init.io, CoreApp.gridRowBox),
         .@"core-grid-row-box-cells" => coreTick(init.gpa, init.io, CoreApp.gridRowBoxCells),
         .@"core-grid-count" => coreTick(init.gpa, init.io, CoreApp.manyGrids),
+        .@"core-span-count" => coreTick(init.gpa, init.io, CoreApp.manySpans),
+        .@"core-span-boundary" => coreTick(init.gpa, init.io, CoreApp.spanBoundary),
         .@"core-text-line-count-zero" => coreTick(init.gpa, init.io, CoreApp.textLineCountZero),
         .@"core-text-line-count-none" => coreTick(init.gpa, init.io, CoreApp.textLineCountNone),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
@@ -472,6 +476,22 @@ const CoreApp = struct {
         for (0..count) |_| cx.render(gooey.ui.box(.{
             .style = .{ .grid = .{ .columns = &two_columns } },
         }, .{}));
+    }
+
+    fn manySpans(cx: *gooey.Cx) void {
+        // Use all but one of the frame's spans (an even count), then a text needs two:
+        // it fails as a whole, before any of it is written.
+        const count = gooey.ResourceLimits.nano.build.span_count_frame_max;
+        comptime std.debug.assert(count % 2 == 0);
+        const spans: [2]gooey.ui.Span = .{ .{ .text = "a" }, .{ .text = "b" } };
+        for (0..count / 2 - 1) |_| cx.render(gooey.ui.rich(&spans, .{}));
+        cx.render(gooey.ui.rich(&.{.{ .text = "c" }}, .{}));
+        cx.render(gooey.ui.rich(&spans, .{}));
+    }
+
+    fn spanBoundary(cx: *gooey.Cx) void {
+        const word = "caf\u{e9}";
+        cx.render(gooey.ui.rich(&.{ .{ .text = word[0..3] }, .{ .text = word[4..] } }, .{}));
     }
 
     const Nest = struct {
