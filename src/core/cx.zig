@@ -307,7 +307,10 @@ pub const Cx = opaque {
         const T = @TypeOf(child);
         switch (T.core_element) {
             .box => self.buildBox(&child.box, child.children),
-            .text => self.buildText(child.content, &child.style),
+            .text => if (comptime @hasField(T, "spans"))
+                self.buildRich(child.spans, &child.style)
+            else
+                self.buildText(child.content, &child.style),
             .paint => self.buildPaint(T.PaintData, child.data, child.paint_fn, &child.style),
             .when => if (child.condition) child.render_fn(self),
         }
@@ -368,23 +371,49 @@ pub const Cx = opaque {
     }
 
     fn buildText(self: *Cx, content: []const u8, style: *const element.Text) void {
-        checkTextStyle(content, style);
         const window = windowOf(self);
+        checkTextStyle(textName(content), style);
+        const node = addTextNode(window, style);
+        node.text = window.built().copyText(content);
+        assert(node.text.len == content.len);
+        assert(node.spans.len == 0);
+        window.layout.text(content, textConfig(window, style)) catch |err| {
+            layoutFailed(window, err);
+        };
+    }
+
+    fn buildRich(self: *Cx, spans: []const element.Span, style: *const element.Text) void {
+        const window = windowOf(self);
+        const name = if (spans.len > 0) textName(spans[0].text) else "";
+        checkTextStyle(name, style);
+        checkSpans(window, spans, name);
+        const node = addTextNode(window, style);
+        const copied = stageSpans(window, spans, style);
+        node.text = copied.text;
+        node.spans = copied.spans;
+        window.span_count += copied.spans.len;
+        assert(node.spans.len <= spans.len);
+        assert(node.spans.offset + node.spans.len == window.span_count);
+        const joined = window.built().text(node.text) orelse "";
+        const runs = window.span_runs[node.spans.offset..][0..node.spans.len];
+        const config = textConfig(window, style);
+        window.layout.richText(joined, config, runs) catch |err| layoutFailed(window, err);
+    }
+
+    /// Adds a text node with its base style; the caller sets its bytes and spans.
+    fn addTextNode(window: *Window, style: *const element.Text) *Node {
         const parent_index = window.open_stack[window.open_depth - 1];
         const size = style.size orelse window.theme.font_size_base;
         assert(size > 0);
-        const variant = text_mod.FontVariant.init(style.weight, style.italic);
         const index = addNode(window, .text, autoId(window, parent_index));
         const node = window.node(index);
-        node.text = window.built().copyText(content);
         const color: element.ColorToken = style.color orelse .text;
         node.text_color = color.resolve(window.theme);
         node.font_size = size;
         node.family = style.family;
-        node.variant = variant;
-        window.layout.text(content, textConfig(window, style)) catch |err| {
-            layoutFailed(window, err);
-        };
+        node.variant = text_mod.FontVariant.init(style.weight, style.italic);
+        assert(node.kind == .text);
+        return node;
     }
 
     pub fn measureText(
@@ -395,29 +424,86 @@ pub const Cx = opaque {
     ) TextSize {
         const window = windowOf(self);
         window.assertPhase(.build);
+        assert(content.len <= std.math.maxInt(u32));
+        assert(std.math.isFinite(max_width));
+        checkTextStyle(textName(content), &style);
+        const text_hash = std.hash.Wyhash.hash(0, content);
+        return measureCached(window, content, &.{}, &style, .{
+            .text_hash = text_hash,
+            .max_width = max_width,
+        });
+    }
+
+    /// Sizes a `ui.rich` text as layout lays it out, for rows sized before they are built.
+    /// Its spans pass through the frame's text bytes and span slots, which it gives back,
+    /// so it needs the same room as building the text and claims none of it.
+    pub fn measureRich(
+        self: *Cx,
+        spans: []const element.Span,
+        style: element.Text,
+        max_width: f32,
+    ) TextSize {
         assert(std.math.isFinite(max_width));
         assert(max_width >= 0);
-        assert(content.len <= std.math.maxInt(u32));
-        checkTextStyle(content, &style);
-        const config = textConfig(window, &style);
+        const window = windowOf(self);
+        window.assertPhase(.build);
+        const name = if (spans.len > 0) textName(spans[0].text) else "";
+        checkTextStyle(name, &style);
+        checkSpans(window, spans, name);
+        const frame = window.built();
+        const text_len = frame.text_len;
+        const staged = stageSpans(window, spans, &style);
+        defer frame.text_len = text_len;
+        const joined = frame.text(staged.text) orelse "";
+        const runs = window.span_runs[staged.spans.offset..][0..staged.spans.len];
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(joined);
+        for (runs) |run| {
+            hasher.update(std.mem.asBytes(&run.end));
+            hasher.update(std.mem.asBytes(&run.font_id));
+        }
+        const size = measureCached(window, joined, runs, &style, .{
+            .text_hash = hasher.final(),
+            .max_width = max_width,
+        });
+        assert(window.span_count == staged.spans.offset);
+        assert(staged.spans.len <= spans.len);
+        return size;
+    }
+
+    const MeasureKey = struct { text_hash: u64, max_width: f32 };
+
+    /// Looks a text's size up in the text-size cache, measuring and storing it on a miss.
+    /// `key.text_hash` covers the bytes and, for a rich text, its runs' fonts, so a restyle
+    /// that changes widths misses and one that changes only colors hits.
+    fn measureCached(
+        window: *Window,
+        content: []const u8,
+        runs: []const layout_mod.TextRun,
+        style: *const element.Text,
+        key: MeasureKey,
+    ) TextSize {
+        assert(std.math.isFinite(key.max_width));
+        assert(key.max_width >= 0);
+        const config = textConfig(window, style);
         const text_system = window.resources.text_system;
-        const key: text_mod.TextSizeKey = .{
-            .text_hash = std.hash.Wyhash.hash(0, content),
+        const cache_key: text_mod.TextSizeKey = .{
+            .text_hash = key.text_hash,
             .text_len = @intCast(content.len),
-            .max_width_bits = @bitCast(max_width),
+            .max_width_bits = @bitCast(key.max_width),
             .style = @as(u64, config.font_id) | @as(u64, config.font_size) << 16 |
                 @as(u64, config.line_height) << 32 |
                 @as(u64, @backingInt(config.wrap_mode)) << 48 |
                 @as(u64, config.line_count_max) << 50 |
                 @as(u64, @backingInt(config.overflow)) << 58,
         };
-        if (text_system.text_size_cache.get(key)) |size| {
+        if (text_system.text_size_cache.get(cache_key)) |size| {
             return .{ .width = size[0], .height = size[1] };
         }
-        const measured = window.layout.measureText(content, config, max_width);
+        const measured = window.layout.measureText(content, config, runs, key.max_width);
         assert(measured.width >= 0);
         assert(measured.height >= 0);
-        text_system.text_size_cache.put(key, measured.width, measured.height);
+        text_system.text_size_cache.put(cache_key, measured.width, measured.height);
         return .{ .width = measured.width, .height = measured.height };
     }
 
@@ -450,9 +536,9 @@ pub const Cx = opaque {
         };
     }
 
-    fn checkTextStyle(content: []const u8, style: *const element.Text) void {
+    fn checkTextStyle(name: []const u8, style: *const element.Text) void {
+        assert(name.len <= text_name_bytes_max);
         const count = style.line_count_max orelse return;
-        const name = content[0..@min(content.len, text_name_bytes_max)];
         if (count == 0) {
             std.debug.panic("Text.line_count_max 0 (\"{s}\"): a text shows 1 to 255 lines", .{
                 name,
@@ -464,6 +550,111 @@ pub const Cx = opaque {
         }
         assert(count > 0);
         assert(style.wrap != .none);
+    }
+
+    fn textName(content: []const u8) []const u8 {
+        const name = content[0..@min(content.len, text_name_bytes_max)];
+        assert(name.len <= text_name_bytes_max);
+        assert(name.len <= content.len);
+        return name;
+    }
+
+    /// Checks a rich text before any of it is written: every span starts on a codepoint
+    /// boundary (one byte per span, not a scan), and the frame has a slot for every
+    /// non-empty span.
+    fn checkSpans(window: *const Window, spans: []const element.Span, name: []const u8) void {
+        assert(name.len <= text_name_bytes_max);
+        assert(spans.len <= std.math.maxInt(u32));
+        var count: u32 = 0;
+        for (spans, 0..) |span, span_index| {
+            if (span.text.len == 0) continue;
+            if (span.text[0] & 0xC0 == 0x80) {
+                std.debug.panic("Span {d} of \"{s}\" starts inside a UTF-8 sequence; " ++
+                    "a span starts on a codepoint boundary", .{ span_index, name });
+            }
+            count += 1;
+        }
+        assert(count <= spans.len);
+        const capacity: u32 = @intCast(window.span_runs.len);
+        assert(window.span_count <= capacity);
+        if (count > capacity - window.span_count) {
+            std.debug.panic("build pool 'spans' exhausted: capacity {d}, {d} in use, {d} " ++
+                "requested, frame {d}. Raise ResourceLimits.build.span_count_frame_max.", .{
+                capacity,
+                window.span_count,
+                count,
+                window.frame_number,
+            });
+        }
+        assert(window.span_count + count <= capacity);
+    }
+
+    const CopiedSpans = struct { text: records.TextRange, spans: window_mod.SpanRange };
+
+    /// Copies the spans' bytes back to back into the frame, so the text is one range, and
+    /// writes one run and one paint per non-empty span past the claimed ones. The caller
+    /// claims them (`buildRich`) or rolls them back (`measureRich`). `checkSpans` proved
+    /// the room.
+    fn stageSpans(
+        window: *Window,
+        spans: []const element.Span,
+        style: *const element.Text,
+    ) CopiedSpans {
+        const frame = window.built();
+        const start = window.span_count;
+        const text_start = frame.text_len;
+        var index = start;
+        var end: u32 = 0;
+        for (spans) |*span| {
+            if (span.text.len == 0) continue;
+            const range = frame.copyText(span.text);
+            assert(range.offset == text_start + end);
+            end += range.len;
+            assert(index < window.span_runs.len);
+            window.span_runs[index] = .{ .end = end, .font_id = spanFontId(span, style) };
+            window.span_paints[index] = spanPaint(window.theme, span, style);
+            index += 1;
+        }
+        const copied: CopiedSpans = .{
+            .text = if (end == 0) .empty else .{ .offset = text_start, .len = end },
+            .spans = .{ .offset = start, .len = index - start },
+        };
+        // `measureRich` writes these slots without claiming them; count them in the
+        // high-water mark so release zeroes them too.
+        window.span_count_used_max = @max(window.span_count_used_max, index);
+        assert(copied.text.len == end);
+        layout_mod.types.assertRuns(window.span_runs[start..index], end);
+        return copied;
+    }
+
+    fn spanFontId(span: *const element.Span, style: *const element.Text) u16 {
+        assert(span.text.len > 0);
+        const weight = span.weight orelse style.weight;
+        const italic = span.italic orelse style.italic;
+        const family = span.family orelse style.family;
+        const font_id = family.fontId(text_mod.FontVariant.init(weight, italic));
+        assert(font_id < text_mod.FontFamily.font_id_count);
+        return font_id;
+    }
+
+    fn spanPaint(
+        app_theme: *const element.Theme,
+        span: *const element.Span,
+        style: *const element.Text,
+    ) window_mod.SpanPaint {
+        assert(span.text.len > 0);
+        const color: element.ColorToken = span.color orelse style.color orelse .text;
+        const background: ?records.Color = if (span.background) |token|
+            token.resolve(app_theme)
+        else
+            null;
+        const paint: window_mod.SpanPaint = .{
+            .color = color.resolve(app_theme),
+            .background = background,
+            .decoration = span.decoration,
+        };
+        assert(paint.color.a >= 0);
+        return paint;
     }
 
     fn lineHeightPercent(metrics: *const text_mod.Metrics, font_percent: u16) u16 {
@@ -498,12 +689,15 @@ pub const Cx = opaque {
 pub fn beginBuild(window: *Window) void {
     window.assertPhase(.build);
     window.node_count = 0;
+    window.span_count_used_max = @max(window.span_count_used_max, window.span_count);
+    window.span_count = 0;
     window.open_depth = 0;
     window.component_depth = 0;
     window.keys.clear();
     window.build_deadline_ns = window_mod.deadline_none;
     window.layout.beginFrame(window.width, window.height);
     window.layout.setMeasureTextFn(measureText, window);
+    window.layout.setTextRuns(window.span_runs);
     const root_style = element.Style{
         .width = .{ .fixed = window.width },
         .height = .{ .fixed = window.height },
@@ -667,6 +861,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .shadow = null,
         .shadow_color = records.Color.transparent,
         .text = .empty,
+        .spans = .empty,
         .text_color = records.Color.transparent,
         .font_size = 0,
         .family = .app,

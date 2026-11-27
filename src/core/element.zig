@@ -295,6 +295,7 @@ pub const DropTarget = struct {
 
 pub const FontWeight = @import("../text/types.zig").FontWeight;
 pub const FontFamily = @import("../text/types.zig").FontFamily;
+pub const TextDecoration = @import("../text/types.zig").TextDecoration;
 
 pub const Text = struct {
     size: ?u16 = null,
@@ -314,6 +315,27 @@ pub const Text = struct {
 
         pub const core_element: ElementKind = .text;
     };
+
+    /// A `ui.rich` text: its spans' bytes are its content.
+    pub const Rich = struct {
+        spans: []const Span,
+        style: Text,
+
+        pub const core_element: ElementKind = .text;
+    };
+};
+
+/// One styled piece of a `ui.rich` text. Each field left null takes the text's own value.
+/// A span starts on a codepoint boundary; its bytes are copied when the text is built.
+pub const Span = struct {
+    text: []const u8,
+    weight: ?FontWeight = null,
+    italic: ?bool = null,
+    family: ?FontFamily = null,
+    color: ?ColorToken = null,
+    /// A fill behind the span's glyphs on every line it covers, such as inline code.
+    background: ?ColorToken = null,
+    decoration: TextDecoration = .none,
 };
 
 pub const ElementKind = enum { box, text, paint, when };
@@ -324,6 +346,15 @@ pub fn box(options: Box, children: anytype) Box.Element(@TypeOf(children)) {
 
 pub fn text(content: []const u8, style: Text) Text.Element {
     return .{ .content = content, .style = style };
+}
+
+/// A text made of styled spans. Their bytes join in order into one text that wraps,
+/// aligns, and truncates as a whole. `style` sets everything a span does not override,
+/// and everything that applies to the whole text: size, wrap, line height, alignment,
+/// line count, and overflow. Each non-empty span takes one slot of
+/// `ResourceLimits.build.span_count_frame_max`.
+pub fn rich(spans: []const Span, style: Text) Text.Rich {
+    return .{ .spans = spans, .style = style };
 }
 
 pub fn Paint(comptime Data: type) type {

@@ -750,6 +750,43 @@ fn buildTextUnclamped(engine: *LayoutEngine) !u32 {
     return buildTextCards(engine, 0);
 }
 
+/// One style run per 48 bytes of `truncation_body`, alternating two fonts: about one
+/// styled phrase per eight words, as a chat message or markdown paragraph has. Every run
+/// boundary switches font, so the scanner measures each run as its own piece.
+const rich_run_bytes: u32 = 48;
+const rich_runs: [@divExact(truncation_body.len, rich_run_bytes)]layout.TextRun = blk: {
+    var runs: [@divExact(truncation_body.len, rich_run_bytes)]layout.TextRun = undefined;
+    for (&runs, 0..) |*run, index| {
+        run.* = .{ .end = @intCast((index + 1) * rich_run_bytes), .font_id = index % 2 };
+    }
+    break :blk runs;
+};
+
+/// `text_unclamped` with every card's text split into `rich_runs`: the same bytes, widths,
+/// and wrapped lines, so the difference between the two is the cost of the runs.
+fn buildTextRich(engine: *LayoutEngine) !u32 {
+    const card_count: u32 = 100;
+    engine.setMeasureTextFn(measureSevenPixelsPerByte, null);
+    engine.setTextRuns(&rich_runs);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+        .child_gap = 8,
+    } });
+    for (0..card_count) |_| {
+        try engine.openElement(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(300), .height = SizingAxis.fit() },
+            .layout_direction = .top_to_bottom,
+            .padding = Padding.all(8),
+        } });
+        const config: layout.TextConfig = .{ .font_size = 14, .wrap_mode = .words };
+        try engine.richText(&truncation_body, config, &rich_runs);
+        engine.closeElement();
+    }
+    engine.closeElement();
+    return 1 + card_count * 2;
+}
+
 fn buildTextEllipsisCells(engine: *LayoutEngine) !u32 {
     const row_count: u32 = 250;
     engine.setMeasureTextFn(measureSevenPixelsPerByte, null);
@@ -779,6 +816,10 @@ test "validate: text_clamp" {
 
 test "validate: text_unclamped" {
     try validateBenchmark(buildTextUnclamped, 201);
+}
+
+test "validate: text_rich" {
+    try validateBenchmark(buildTextRich, 201);
 }
 
 test "validate: text_ellipsis_cells" {
@@ -889,6 +930,7 @@ fn collectLayoutOnly(reporter: *bench.Reporter) void {
     collect(reporter, runBenchmark("grid_cards", buildGridCards));
     collect(reporter, runBenchmark("text_clamp", buildTextClamp));
     collect(reporter, runBenchmark("text_unclamped", buildTextUnclamped));
+    collect(reporter, runBenchmark("text_rich", buildTextRich));
     collect(reporter, runBenchmark("text_ellipsis_cells", buildTextEllipsisCells));
 }
 
@@ -929,5 +971,6 @@ fn collectFullFrame(reporter: *bench.Reporter) void {
     collect(reporter, runFullFrameBenchmark("full_grid_cards", buildGridCards));
     collect(reporter, runFullFrameBenchmark("full_text_clamp", buildTextClamp));
     collect(reporter, runFullFrameBenchmark("full_text_unclamped", buildTextUnclamped));
+    collect(reporter, runFullFrameBenchmark("full_text_rich", buildTextRich));
     collect(reporter, runFullFrameBenchmark("full_text_ellipsis_cells", buildTextEllipsisCells));
 }

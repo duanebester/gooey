@@ -228,6 +228,26 @@ pub const ResourceLimits = struct {
                 .bound = self.textFieldHandlerCount(),
             };
         }
+        if (self.checkBuildRelationships()) |violation| return violation;
+        if (self.checkA11yRelationships()) |violation| return violation;
+        if (self.checkAtlasCacheRelationships()) |violation| return violation;
+        if (self.text.preedit_bytes_max > self.events.text_bytes_max) {
+            return relationship(
+                .text,
+                "preedit_bytes_max",
+                self.text.preedit_bytes_max,
+                self.events.text_bytes_max,
+            );
+        }
+        if (self.checkEventRelationships()) |violation| return violation;
+        return self.checkPaintRecordRelationships();
+    }
+
+    /// Build budgets bounded by the frame's element count or text bytes.
+    fn checkBuildRelationships(self: *const ResourceLimits) ?Violation {
+        const element_count = self.build.element_count_frame_max;
+        assert(element_count > 0);
+        assert(self.build.text_bytes_frame_max > 0);
         if (self.build.key_count_frame_max > element_count) {
             return relationship(
                 .build,
@@ -255,18 +275,15 @@ pub const ResourceLimits = struct {
                 element_count,
             );
         }
-        if (self.checkA11yRelationships()) |violation| return violation;
-        if (self.checkAtlasCacheRelationships()) |violation| return violation;
-        if (self.text.preedit_bytes_max > self.events.text_bytes_max) {
+        if (self.build.span_count_frame_max > self.build.text_bytes_frame_max) {
             return relationship(
-                .text,
-                "preedit_bytes_max",
-                self.text.preedit_bytes_max,
-                self.events.text_bytes_max,
+                .build,
+                "span_count_frame_max",
+                self.build.span_count_frame_max,
+                self.build.text_bytes_frame_max,
             );
         }
-        if (self.checkEventRelationships()) |violation| return violation;
-        return self.checkPaintRecordRelationships();
+        return null;
     }
 
     fn checkPaintRecordRelationships(self: *const ResourceLimits) ?Violation {
@@ -950,6 +967,8 @@ pub const MAX_COMPONENT_DEPTH: u32 = 128;
 
 pub const layer_count_ceiling: u32 = std.math.maxInt(u8);
 pub const grid_count_ceiling: u32 = 1_024;
+/// A layout text addresses its runs with `u16`s (`TextData.runs_start`).
+pub const span_count_ceiling: u32 = std.math.maxInt(u16);
 
 pub const BuildLimits = struct {
     element_count_frame_max: u32,
@@ -959,6 +978,9 @@ pub const BuildLimits = struct {
     layer_count_frame_max: u32,
     box_depth_max: u32,
     grid_count_frame_max: u32,
+    /// Styled spans of `ui.rich` texts per frame, 48 bytes each on the build side (a
+    /// layout run and its paint), reserved once per window.
+    span_count_frame_max: u32,
 
     pub const nano: BuildLimits = .{
         .element_count_frame_max = 512,
@@ -968,6 +990,7 @@ pub const BuildLimits = struct {
         .layer_count_frame_max = 8,
         .box_depth_max = 64,
         .grid_count_frame_max = 8,
+        .span_count_frame_max = 128,
     };
     pub const small: BuildLimits = .{
         .element_count_frame_max = 2_048,
@@ -977,6 +1000,7 @@ pub const BuildLimits = struct {
         .layer_count_frame_max = 16,
         .box_depth_max = 64,
         .grid_count_frame_max = 32,
+        .span_count_frame_max = 1_024,
     };
     pub const standard: BuildLimits = .{
         .element_count_frame_max = 4_096,
@@ -986,6 +1010,7 @@ pub const BuildLimits = struct {
         .layer_count_frame_max = 32,
         .box_depth_max = 64,
         .grid_count_frame_max = 128,
+        .span_count_frame_max = 4_096,
     };
     pub const large: BuildLimits = .{
         .element_count_frame_max = 16_383,
@@ -995,6 +1020,7 @@ pub const BuildLimits = struct {
         .layer_count_frame_max = 64,
         .box_depth_max = 64,
         .grid_count_frame_max = 512,
+        .span_count_frame_max = 16_384,
     };
     pub const ceiling: BuildLimits = .{
         .element_count_frame_max = element_count_frame_ceiling,
@@ -1004,6 +1030,7 @@ pub const BuildLimits = struct {
         .layer_count_frame_max = layer_count_ceiling,
         .box_depth_max = box_depth_ceiling,
         .grid_count_frame_max = grid_count_ceiling,
+        .span_count_frame_max = span_count_ceiling,
     };
 };
 
@@ -1992,6 +2019,24 @@ test "check bounds the job fields by their ceilings and the completion ring" {
     const ring = limits.check().?;
     try std.testing.expectEqualStrings("completion_count_max", ring.field);
     try std.testing.expectEqual(limits.events.completion_count_max + 1, ring.bound);
+}
+
+test "check bounds spans by their ceiling and the frame's text bytes" {
+    // Every span holds at least one byte, so a frame cannot use more spans than text bytes.
+    var limits = ResourceLimits.nano;
+    limits.build.span_count_frame_max = 0;
+    try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+    limits.build.span_count_frame_max = limits.build.text_bytes_frame_max;
+    try std.testing.expect(limits.check() == null);
+    limits.build.span_count_frame_max += 1;
+    const spans = limits.check().?;
+    try std.testing.expectEqualStrings("span_count_frame_max", spans.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, spans.rule);
+    try std.testing.expectEqual(limits.build.text_bytes_frame_max, spans.bound);
+
+    limits = ResourceLimits.ceiling;
+    limits.build.span_count_frame_max = span_count_ceiling + 1;
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
 }
 
 test "check bounds box depth and layers by their ceilings and the element count" {

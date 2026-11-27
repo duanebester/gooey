@@ -224,6 +224,7 @@ fn pinNamespaces() void {
         _ = gooey.text.FontWeight;
         _ = gooey.text.FontFamily;
         _ = gooey.text.FontVariant;
+        _ = gooey.text.TextDecoration;
         _ = gooey.accessibility.Role;
         _ = gooey.accessibility.State;
         _ = gooey.accessibility.Live;
@@ -303,18 +304,18 @@ fn pinExact() void {
             "Orientation",  "HeadingLevel",  "Painter",         "PaintText",    "PaintSvg",
             "PaintImage",   "ObjectFit",     "Rect",            "ScrollAnchor", "ScrollTarget",
             "ScrollOffset", "ScrollChild",   "ScrollAlignment", "Grid",         "Track",
-            "Cell",         "Fill",
+            "Cell",         "Fill",          "rich",            "Span",
         });
         expectDecls(gooey.Cx, "gooey.Cx", &.{
-            "ScrollPosition", "state",              "theme",              "fontMetrics", "id",
-            "hovered",        "focused",            "requestRenderAfter", "now",         "limits",
-            "bounds",         "scroll",             "drag",               "on",          "retain",
-            "get",            "release",            "render",             "measureText", "TextSize",
-            "titleBarInset",  "focusVisibleWithin",
+            "ScrollPosition", "state",         "theme",              "fontMetrics", "id",
+            "hovered",        "focused",       "requestRenderAfter", "now",         "limits",
+            "bounds",         "scroll",        "drag",               "on",          "retain",
+            "get",            "release",       "render",             "measureText", "TextSize",
+            "measureRich",    "titleBarInset", "focusVisibleWithin",
         });
         expectDecls(gooey.text, "gooey.text", &.{
-            "Metrics",     "FontWeight",     "FontFamily",
-            "FontVariant", "codepointCount", "run_codepoint_count_max",
+            "Metrics",        "FontWeight",     "FontFamily",              "FontVariant",
+            "TextDecoration", "codepointCount", "run_codepoint_count_max",
         });
         expectDecls(gooey.accessibility, "gooey.accessibility", &.{
             "Role", "State", "Live", "HeadingLevel", "Orientation",

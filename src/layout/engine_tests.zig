@@ -1542,9 +1542,149 @@ test "a clamped text's parent takes the clamped height, and measureText agrees" 
     try std.testing.expectEqual(@as(f32, 4 + 10 + 30 + 4), boundingBox(&engine, 0).height);
     try std.testing.expectEqual(@as(u32, 3), engine.wrapped_line_count);
 
-    const measured = engine.measureText(body, clamped, 112);
+    const measured = engine.measureText(body, clamped, &.{}, 112);
     try std.testing.expectEqual(boundingBox(&engine, 2).height, measured.height);
     try std.testing.expectEqual(boundingBox(&engine, 2).width, measured.width);
-    const one_line = engine.measureText(repeated("a", 40), truncated, 112);
+    const one_line = engine.measureText(repeated("a", 40), truncated, &.{}, 112);
     try std.testing.expectEqual(@as(f32, 112), one_line.width);
+}
+
+/// Font 0 advances 10 px per byte and every other font 20 px, so a text measured per run
+/// wraps differently from one measured in its base font alone.
+fn measureByFont(
+    text: []const u8,
+    font_id: u16,
+    font_size: u16,
+    _: ?f32,
+    _: ?*anyopaque,
+) TextMeasurement {
+    std.debug.assert(font_size > 0);
+    const advance: f32 = if (font_id == 0) 10 else 20;
+    return .{ .width = @as(f32, @floatFromInt(text.len)) * advance, .height = 10 };
+}
+
+const RichCase = struct {
+    content: []const u8,
+    runs: []const types.TextRun,
+    width: f32,
+};
+
+/// Lays out one wrapped rich text in a fixed-width box and returns its text data.
+fn layOutRich(engine: *LayoutEngine, case: RichCase) !*const engine_mod.TextData {
+    engine.setMeasureTextFn(measureByFont, null);
+    engine.setTextRuns(case.runs);
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(case.width), .height = SizingAxis.fit() },
+    } });
+    const config: TextConfig = .{ .font_size = 10, .line_height = 100, .wrap_mode = .words };
+    try engine.richText(case.content, config, case.runs);
+    engine.closeElement();
+    try engine.endFrame();
+    return &engine.elements.getConst(1).text_data.?;
+}
+
+test "a rich text wraps by the widths of its runs' fonts" {
+    // Widths are summed by hand from measureByFont. In font 0 alone, "aa bbbb cc" is
+    // 20 + 10 + 40 + 10 + 20 = 100 px and fits one 100 px line; with "bbbb" in font 1 it
+    // is 80 px, so "aa " (30), "bbbb " and "cc" each take a line.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    const plain = try layOutRich(&engine, .{
+        .content = "aa bbbb cc",
+        .runs = &.{.{ .end = 10, .font_id = 0 }},
+        .width = 100,
+    });
+    try std.testing.expectEqual(@as(usize, 1), plain.wrapped_lines.?.len);
+    try std.testing.expectEqual(@as(f32, 100), plain.measured_width);
+
+    const rich = try layOutRich(&engine, .{
+        .content = "aa bbbb cc",
+        .runs = &.{
+            .{ .end = 3, .font_id = 0 },
+            .{ .end = 7, .font_id = 1 },
+            .{ .end = 10, .font_id = 0 },
+        },
+        .width = 100,
+    });
+    const lines = rich.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqual(@as(u32, 3), lines[1].start_offset);
+    try std.testing.expectEqual(@as(u32, 8), lines[2].start_offset);
+    try std.testing.expectEqual(@as(f32, 80), lines[1].width - 10);
+}
+
+test "a style change inside a word never breaks it, and the word's floor is its sum" {
+    // "aaBB" is one word of 2 * 10 + 2 * 20 = 60 px; the space after it is font 1's
+    // (20 px) and overflows 70 px, so the packer starts line 2 at that space, as it does
+    // for a plain text, and " cc" is 20 + 40 px. The word itself stays whole.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    const data = try layOutRich(&engine, .{
+        .content = "aaBB cc",
+        .runs = &.{ .{ .end = 2, .font_id = 0 }, .{ .end = 7, .font_id = 1 } },
+        .width = 70,
+    });
+    const lines = data.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    try std.testing.expectEqual(@as(u32, 0), lines[0].start_offset);
+    try std.testing.expectEqual(@as(u32, 4), lines[0].extent.length);
+    try std.testing.expectEqual(@as(u32, 4), lines[1].start_offset);
+    try std.testing.expectEqual(@as(f32, 60), data.floor_width);
+    try std.testing.expectEqual(@as(f32, 60), lines[1].width);
+}
+
+test "runs that share one font lay out exactly as a plain text" {
+    // Adjacent runs in one font merge into one piece, so the run table alone never
+    // changes measurement: these splits land mid-word and mid-space on purpose.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    const split = try layOutRich(&engine, .{
+        .content = "aaaa bb  cccccc",
+        .runs = &.{
+            .{ .end = 2, .font_id = 0 },
+            .{ .end = 8, .font_id = 0 },
+            .{ .end = 15, .font_id = 0 },
+        },
+        .width = 75,
+    });
+    var split_lines: [4]types.WrappedLine = undefined;
+    const count = split.wrapped_lines.?.len;
+    try std.testing.expect(count <= split_lines.len);
+    @memcpy(split_lines[0..count], split.wrapped_lines.?);
+    const split_width = split.measured_width;
+
+    engine.setMeasureTextFn(measureByFont, null);
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(75), .height = SizingAxis.fit() },
+    } });
+    const config: TextConfig = .{ .font_size = 10, .line_height = 100, .wrap_mode = .words };
+    try engine.text("aaaa bb  cccccc", config);
+    engine.closeElement();
+    try engine.endFrame();
+    const plain = engine.elements.getConst(1).text_data.?;
+    try std.testing.expectEqual(plain.measured_width, split_width);
+    try std.testing.expectEqual(plain.wrapped_lines.?.len, count);
+    for (plain.wrapped_lines.?, split_lines[0..count]) |want, got| {
+        try std.testing.expectEqual(want.start_offset, got.start_offset);
+        try std.testing.expectEqual(want.extent.length, got.extent.length);
+        try std.testing.expectEqual(want.width, got.width);
+    }
+}
+
+test "spaces take the width of the run that holds them" {
+    // "a  b" with the two spaces in font 1: 10 + 2 * 20 + 10 = 60 px, not 40.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    const runs = [_]types.TextRun{
+        .{ .end = 1, .font_id = 0 },
+        .{ .end = 3, .font_id = 1 },
+        .{ .end = 4, .font_id = 0 },
+    };
+    const data = try layOutRich(&engine, .{ .content = "a  b", .runs = &runs, .width = 500 });
+    try std.testing.expectEqual(@as(f32, 60), data.measured_width);
+    try std.testing.expectEqual(@as(f32, 60), data.wrapped_lines.?[0].width);
+    const config: TextConfig = .{ .font_size = 10, .wrap_mode = .words };
+    try std.testing.expectEqual(@as(f32, 60), engine.measureText("a  b", config, &runs, 500).width);
 }

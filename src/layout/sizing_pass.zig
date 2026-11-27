@@ -1174,7 +1174,8 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
         const wrap_width = if (shrunk) @min(max_width, elem.computed.sized_width) else max_width;
 
         if (td.config.wrap_mode != .none and wrap_width > 0) {
-            const wrap_result = try wrapText(engine, td.text, td.config, wrap_width);
+            const runs = engine.runsOf(td);
+            const wrap_result = try wrapText(engine, td.text, td.config, runs, wrap_width);
             std.debug.assert(wrap_result.max_line_width <= wrap_width);
             td.wrapped_lines = wrap_result.lines;
 
@@ -1496,6 +1497,7 @@ pub fn wrapText(
     engine: *LayoutEngine,
     text_str: []const u8,
     config: TextConfig,
+    runs: []const types.TextRun,
     max_width: f32,
 ) !WrapResult {
     std.debug.assert(max_width >= 0 or config.wrap_mode == .none);
@@ -1510,7 +1512,7 @@ pub fn wrapText(
     }
 
     var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
-    const max_line_width = wrapLines(engine, text_str, config, max_width, &lines);
+    const max_line_width = wrapLines(engine, text_str, config, runs, max_width, &lines);
     claimWrappedLines(engine, lines.len);
     const result_lines = try engine.arena.allocator().dupe(types.WrappedLine, lines.slice());
     const line_height = config.lineHeightPx();
@@ -1527,17 +1529,16 @@ pub fn measureWrapped(
     engine: *LayoutEngine,
     text_str: []const u8,
     config: TextConfig,
+    runs: []const types.TextRun,
     max_width: f32,
 ) engine_mod.TextMeasurement {
     std.debug.assert(max_width >= 0);
     std.debug.assert(text_str.len <= types.line_length_max);
-    const measure_fn = engine.measure_text_fn.?;
-    const user_data = engine.measure_text_user_data;
-    var one_line = measure_fn(text_str, config.font_id, config.font_size, null, user_data);
+    var one_line = measureLine(engine, text_str, config, runs);
     one_line.width = @min(one_line.width, max_width);
     if (config.wrap_mode == .none or max_width <= 0 or text_str.len == 0) return one_line;
     var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
-    const max_line_width = wrapLines(engine, text_str, config, max_width, &lines);
+    const max_line_width = wrapLines(engine, text_str, config, runs, max_width, &lines);
     const line_count: f32 = @floatFromInt(lines.len);
     const result: engine_mod.TextMeasurement = .{
         .width = max_line_width,
@@ -1552,6 +1553,7 @@ fn wrapLines(
     engine: *LayoutEngine,
     text_str: []const u8,
     config: TextConfig,
+    runs: []const types.TextRun,
     max_width: f32,
     lines: *BoundedList(types.WrappedLine),
 ) f32 {
@@ -1560,7 +1562,8 @@ fn wrapLines(
     const measure_fn = engine.measure_text_fn.?;
     var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
     const user_data = engine.measure_text_user_data;
-    var scan = WordScanState.init(text_str, measure_fn, config, user_data, &words);
+    var scan = WordScanState.init(text_str, measure_fn, config, runs, user_data, &words);
+    scan.blanks = engine.blank_scratch;
     var packer: LinePacker = .{
         .text = text_str,
         .max_width = max_width,
@@ -1577,7 +1580,15 @@ fn wrapLines(
         words.len = 0;
         const done = scanWords(&scan);
         engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
-        for (words.slice()) |*word| packer.pack(word);
+        if (runs.len > 0) {
+            for (words.slice(), engine.blank_scratch[0..words.len]) |*word, blanks| {
+                packer.space_width = blanks.space;
+                packer.tab_width = blanks.tab;
+                packer.pack(word);
+            }
+        } else {
+            for (words.slice()) |*word| packer.pack(word);
+        }
         if (done or packer.clamped) break;
     }
     if (!packer.clamped and packer.line_start < text_str.len) {
@@ -1589,13 +1600,19 @@ fn wrapLines(
     return packer.widest;
 }
 
-pub fn widestWord(engine: *LayoutEngine, text_str: []const u8, config: TextConfig) f32 {
+pub fn widestWord(
+    engine: *LayoutEngine,
+    text_str: []const u8,
+    config: TextConfig,
+    runs: []const types.TextRun,
+) f32 {
     std.debug.assert(text_str.len > 0);
     std.debug.assert(config.wrap_mode == .words);
     const measure_fn = engine.measure_text_fn.?;
     var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
     const user_data = engine.measure_text_user_data;
-    var scan = WordScanState.init(text_str, measure_fn, config, user_data, &words);
+    var scan = WordScanState.init(text_str, measure_fn, config, runs, user_data, &words);
+    scan.blanks = engine.blank_scratch;
     var widest: f32 = 0;
     var batch_count: u32 = 0;
     while (true) : (batch_count += 1) {
@@ -1614,6 +1631,8 @@ const LinePacker = struct {
     text: []const u8,
     max_width: f32,
     wrap_words: bool,
+    /// A space's and a tab's advance in the current unit's font: fixed for a plain text,
+    /// set before each unit of a rich text from its `BlankAdvances`.
     space_width: f32,
     tab_width: f32,
     lines: *BoundedList(types.WrappedLine),
@@ -1762,12 +1781,89 @@ fn appendWord(words: *BoundedList(WordInfo), word: WordInfo) void {
     words.append(word) catch unreachable;
 }
 
+/// Walks a text's runs in byte order, one piece per run. Runs that share a font are not
+/// merged: emit shapes each run on its own, so layout measures them the same way and
+/// kerning across a style change counts in neither. A plain text (no runs) is one piece
+/// in the base font.
+const FontWalk = struct {
+    runs: []const types.TextRun,
+    next: u32,
+    font_id: u16,
+    end: u32,
+
+    fn init(runs: []const types.TextRun, text_len: usize, base_font_id: u16) FontWalk {
+        types.assertRuns(runs, text_len);
+        var walk = FontWalk{
+            .runs = runs,
+            .next = 0,
+            .font_id = base_font_id,
+            .end = @intCast(text_len),
+        };
+        if (runs.len > 0) walk.advance();
+        std.debug.assert(walk.end <= text_len);
+        std.debug.assert((runs.len == 0) == (walk.next == 0));
+        return walk;
+    }
+
+    fn more(self: *const FontWalk) bool {
+        std.debug.assert(self.next <= self.runs.len);
+        return self.next < self.runs.len;
+    }
+
+    fn advance(self: *FontWalk) void {
+        std.debug.assert(self.more());
+        const run = self.runs[self.next];
+        if (self.next > 0) std.debug.assert(run.end > self.end);
+        self.font_id = run.font_id;
+        self.end = run.end;
+        self.next += 1;
+    }
+};
+
+/// Measures `text_str` as one line: one measurement per font piece, summed. The height is
+/// the base font's, so a rich text keeps the line box of a plain text in `config`.
+pub fn measureLine(
+    engine: *const LayoutEngine,
+    text_str: []const u8,
+    config: TextConfig,
+    runs: []const types.TextRun,
+) engine_mod.TextMeasurement {
+    const measure_fn = engine.measure_text_fn.?;
+    const user_data = engine.measure_text_user_data;
+    const size = config.font_size;
+    if (runs.len == 0) return measure_fn(text_str, config.font_id, size, null, user_data);
+    // A piece in the base font gives the base height without a measurement of its own.
+    var height: ?f32 = null;
+    var walk = FontWalk.init(runs, text_str.len, config.font_id);
+    var width: f32 = 0;
+    var start: u32 = 0;
+    var piece_count: u32 = 0;
+    while (true) : (piece_count += 1) {
+        std.debug.assert(piece_count < runs.len);
+        std.debug.assert(start < walk.end);
+        const piece = text_str[start..walk.end];
+        const measured = measure_fn(piece, walk.font_id, size, null, user_data);
+        width += measured.width;
+        if (walk.font_id == config.font_id) height = measured.height;
+        start = walk.end;
+        if (!walk.more()) break;
+        walk.advance();
+    }
+    std.debug.assert(start == text_str.len);
+    std.debug.assert(width >= 0);
+    const line_height = height orelse measure_fn("", config.font_id, size, null, user_data).height;
+    return .{ .width = width, .height = line_height };
+}
+
 const WordScanState = struct {
     text: []const u8,
     measure_fn: MeasureTextFn,
     config: TextConfig,
     user_data: ?*anyopaque,
     words: *BoundedList(WordInfo),
+    /// A rich text's advances per word slot, beside `words`; unused by a plain text.
+    blanks: []engine_mod.BlankAdvances = &.{},
+    fonts: FontWalk,
     space_width: f32,
     tab_width: f32,
     byte_pos: u32 = 0,
@@ -1776,6 +1872,11 @@ const WordScanState = struct {
     word_end: u32 = 0,
     word_width: f32 = 0,
     space_width_sum: f32 = 0,
+    // Rich texts only, declared after the plain fields so a plain scan keeps their layout.
+    /// The current word's bytes from `piece_start` are in the current font; the bytes
+    /// before it, in earlier fonts, measured `piece_width`.
+    piece_start: u32 = 0,
+    piece_width: f32 = 0,
 
     const Phase = enum { idle, word, space };
 
@@ -1783,49 +1884,104 @@ const WordScanState = struct {
         text: []const u8,
         measure_fn: MeasureTextFn,
         config: TextConfig,
+        runs: []const types.TextRun,
         user_data: ?*anyopaque,
         words: *BoundedList(WordInfo),
     ) WordScanState {
         std.debug.assert(text.len > 0);
         std.debug.assert(words.len == 0);
-        const space = measure_fn(" ", config.font_id, config.font_size, null, user_data);
-        const tab = measure_fn("\t", config.font_id, config.font_size, null, user_data);
-        std.debug.assert(space.width >= 0);
-        std.debug.assert(tab.width >= 0);
-        return .{
+        var state: WordScanState = .{
             .text = text,
             .measure_fn = measure_fn,
             .config = config,
             .user_data = user_data,
             .words = words,
-            .space_width = space.width,
-            .tab_width = tab.width,
+            .fonts = FontWalk.init(runs, text.len, config.font_id),
+            .space_width = 0,
+            .tab_width = 0,
         };
+        state.measureBlanks();
+        return state;
     }
 
-    fn endWord(self: *WordScanState) void {
+    fn measure(self: *const WordScanState, bytes: []const u8) f32 {
+        const font_id = self.fonts.font_id;
+        const size = self.measure_fn(bytes, font_id, self.config.font_size, null, self.user_data);
+        std.debug.assert(size.width >= 0);
+        return size.width;
+    }
+
+    fn measureBlanks(self: *WordScanState) void {
+        self.space_width = self.measure(" ");
+        self.tab_width = self.measure("\t");
+        std.debug.assert(self.space_width >= 0);
+        std.debug.assert(self.tab_width >= 0);
+    }
+
+    fn atFontEnd(self: *const WordScanState) bool {
+        std.debug.assert(self.byte_pos <= self.fonts.end);
+        return self.byte_pos == self.fonts.end and self.fonts.more();
+    }
+
+    /// Moves to the next font at a run boundary. A word continues across it, keeping the
+    /// width of its piece so far; a unit's spaces end at it, because `WordInfo` holds one
+    /// font's space and tab advances. Needs one free word slot.
+    fn switchFont(self: *WordScanState) void {
+        std.debug.assert(self.atFontEnd());
+        std.debug.assert(self.words.len < self.words.buffer.len);
+        switch (self.phase) {
+            .idle => {},
+            .word => {
+                std.debug.assert(self.piece_start < self.byte_pos);
+                self.piece_width += self.measure(self.text[self.piece_start..self.byte_pos]);
+                self.piece_start = self.byte_pos;
+            },
+            .space => self.emitUnit(true, false),
+        }
+        self.fonts.advance();
+        self.measureBlanks();
+        std.debug.assert(self.phase != .space);
+        std.debug.assert(self.byte_pos < self.fonts.end);
+    }
+
+    /// Measures the word that ends here. A plain text measures it whole; a rich text adds
+    /// its last piece to the pieces measured in earlier fonts (`switchFont`).
+    fn endWord(self: *WordScanState, comptime rich: bool) void {
         std.debug.assert(self.phase == .word);
         std.debug.assert(self.word_start < self.byte_pos);
-        const word_text = self.text[self.word_start..self.byte_pos];
-        const config = self.config;
-        const size = self.measure_fn(word_text, config.font_id, config.font_size, null, self.user_data);
+        if (rich) {
+            std.debug.assert(self.piece_start <= self.byte_pos);
+            // A word that ended exactly at a run boundary was measured by `switchFont`.
+            const rest = self.text[self.piece_start..self.byte_pos];
+            const piece = if (rest.len > 0) self.measure(rest) else 0;
+            self.word_width = self.piece_width + piece;
+        } else {
+            self.word_width = self.measure(self.text[self.word_start..self.byte_pos]);
+        }
         self.word_end = self.byte_pos;
-        self.word_width = size.width;
         self.space_width_sum = 0;
         self.phase = .space;
     }
 
-    fn startUnit(self: *WordScanState, phase: Phase) void {
+    fn startUnit(self: *WordScanState, comptime rich: bool, phase: Phase) void {
         std.debug.assert(phase != .idle);
         self.word_start = self.byte_pos;
         self.word_end = self.byte_pos;
         self.word_width = 0;
+        if (rich) {
+            self.piece_start = self.byte_pos;
+            self.piece_width = 0;
+        }
         self.space_width_sum = 0;
         self.phase = phase;
     }
 
-    fn emitUnit(self: *WordScanState, has_newline: bool) void {
+    fn emitUnit(self: *WordScanState, comptime rich: bool, has_newline: bool) void {
         std.debug.assert(self.phase == .space);
+        if (rich) {
+            std.debug.assert(self.words.len < self.blanks.len);
+            self.blanks[self.words.len] = .{ .space = self.space_width, .tab = self.tab_width };
+        }
         appendWord(self.words, .{
             .start = self.word_start,
             .end = self.word_end,
@@ -1845,13 +2001,22 @@ pub fn findWordBoundaries(
     user_data: ?*anyopaque,
     words: *BoundedList(WordInfo),
 ) u32 {
-    var state = WordScanState.init(text_str, measure_fn, config, user_data, words);
+    var state = WordScanState.init(text_str, measure_fn, config, &.{}, user_data, words);
     const done = scanWords(&state);
     std.debug.assert(done);
     return words.len;
 }
 
+/// Scans the next batch of words. A plain text takes the loop without run boundaries, so
+/// it pays nothing per codepoint for rich text; the choice is made once per batch.
 fn scanWords(state: *WordScanState) bool {
+    std.debug.assert(state.text.len > 0);
+    std.debug.assert(state.words.len == 0);
+    if (state.fonts.runs.len > 0) return scanWordsOf(true, state);
+    return scanWordsOf(false, state);
+}
+
+fn scanWordsOf(comptime rich: bool, state: *WordScanState) bool {
     const text_str = state.text;
     std.debug.assert(text_str.len > 0);
     std.debug.assert(state.words.len == 0);
@@ -1860,30 +2025,35 @@ fn scanWords(state: *WordScanState) bool {
     var iter = std.unicode.Utf8Iterator{ .bytes = text_str, .i = state.byte_pos };
     while (state.byte_pos < text_str.len) {
         if (state.words.len == state.words.buffer.len) return false;
+        if (rich and state.atFontEnd()) {
+            state.switchFont();
+            if (state.words.len == state.words.buffer.len) return false;
+        }
         const codepoint_slice = iter.nextCodepointSlice().?;
         const codepoint_len: u32 = @intCast(codepoint_slice.len);
         const c = codepoint_slice[0];
         const is_ascii = codepoint_len == 1;
         if (is_ascii and c == '\n') {
-            if (state.phase == .word) state.endWord();
-            if (state.phase == .idle) state.startUnit(.space);
-            state.emitUnit(true);
+            if (state.phase == .word) state.endWord(rich);
+            if (state.phase == .idle) state.startUnit(rich, .space);
+            state.emitUnit(rich, true);
         } else if (is_ascii and (c == ' ' or c == '\t')) {
-            if (state.phase == .word) state.endWord();
-            if (state.phase == .idle) state.startUnit(.space);
+            if (state.phase == .word) state.endWord(rich);
+            if (state.phase == .idle) state.startUnit(rich, .space);
             state.space_width_sum += if (c == '\t') state.tab_width else state.space_width;
         } else {
-            if (state.phase == .space) state.emitUnit(false);
-            if (state.phase == .idle) state.startUnit(.word);
+            if (state.phase == .space) state.emitUnit(rich, false);
+            if (state.phase == .idle) state.startUnit(rich, .word);
         }
         state.byte_pos += codepoint_len;
         std.debug.assert(iter.i == state.byte_pos);
+        if (rich) std.debug.assert(state.byte_pos <= state.fonts.end);
     }
 
     if (state.phase != .idle) {
         if (state.words.len == state.words.buffer.len) return false;
-        if (state.phase == .word) state.endWord();
-        state.emitUnit(false);
+        if (state.phase == .word) state.endWord(rich);
+        state.emitUnit(rich, false);
     }
     return true;
 }

@@ -8,6 +8,7 @@ const ShapedGlyph = types.ShapedGlyph;
 const types = @import("types.zig");
 const FontVariant = types.FontVariant;
 const FontFamily = types.FontFamily;
+const FontRun = types.FontRun;
 
 const is_wasm = platform.is_wasm;
 
@@ -280,32 +281,64 @@ pub const CutWidths = struct {
     whole_max: f32,
 };
 
+/// The fonts of one line of a text: `runs` partition the whole text (`types.FontRun`), the
+/// line starts at byte `start` of it, and `first` is the run holding that byte (`runAt`).
+/// A plain text is one run over the line with `start` 0.
+pub const LineFonts = struct {
+    runs: []const FontRun,
+    start: u32,
+    first: u32,
+};
+
+/// Returns the index of the run holding byte `offset`: the first run whose end is past it.
+/// O(log n) in the number of runs.
+pub fn runAt(runs: []const FontRun, offset: u32) u32 {
+    std.debug.assert(runs.len > 0);
+    std.debug.assert(offset < runs[runs.len - 1].end);
+    var low: u32 = 0;
+    var high: u32 = @intCast(runs.len - 1);
+    var step_count: u32 = 0;
+    while (low < high) : (step_count += 1) {
+        std.debug.assert(step_count < 32);
+        const middle = low + @divFloor(high - low, 2);
+        if (runs[middle].end > offset) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    std.debug.assert(runs[low].end > offset);
+    if (low > 0) std.debug.assert(runs[low - 1].end <= offset);
+    return low;
+}
+
 pub fn measureCut(
     text_system: *TextSystem,
     text: []const u8,
+    fonts: LineFonts,
     font_size: f32,
-    family: FontFamily,
-    variant: FontVariant,
     widths: CutWidths,
 ) !Cut {
     std.debug.assert(font_size > 0);
     std.debug.assert(text.len <= std.math.maxInt(u32));
+    std.debug.assert(fonts.first < fonts.runs.len);
     if (text_system.getMetrics() == null) return error.NoFontLoaded;
-    const size_scale = font_size / text_system.getMetricsFor(family).point_size;
     const stop = @max(widths.kept_max, widths.whole_max);
     var walk: CutWalk = .{ .text = text, .kept_max = widths.kept_max, .stop = stop };
-    var offset: usize = 0;
-    var run_count: usize = 0;
-    while (offset < text.len and !walk.stopped) : (run_count += 1) {
-        std.debug.assert(run_count < text.len);
-        const length = text_system_mod.runLength(text[offset..]);
-        std.debug.assert(length > 0);
-        const run = text[offset..][0..length];
-        var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
-        var shaped = try text_system.shapeTextInto(family, run, variant, null, &glyph_buf);
-        defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
-        walk.run(shaped.glyphs, offset, size_scale);
-        offset += length;
+    var offset: u32 = 0;
+    var index = fonts.first;
+    while (offset < text.len and !walk.stopped) : (index += 1) {
+        std.debug.assert(index < fonts.runs.len);
+        const run = fonts.runs[index];
+        std.debug.assert(run.end > fonts.start + offset);
+        const end: u32 = @intCast(@min(run.end - fonts.start, text.len));
+        try walkCutSegment(text_system, &walk, .{
+            .start = offset,
+            .end = end,
+            .font_size = font_size,
+            .font_id = run.font_id,
+        });
+        offset = end;
     }
     if (!walk.stopped) {
         if (walk.pen <= widths.whole_max) {
@@ -318,6 +351,32 @@ pub fn measureCut(
     }
     std.debug.assert(walk.best.width <= @max(0, widths.kept_max));
     return walk.best;
+}
+
+const CutSegment = struct { start: u32, end: u32, font_size: f32, font_id: u16 };
+
+/// Shapes one segment of a cut line, in the shaping runs `placeTextPrefix` draws it in,
+/// and feeds its clusters to the walk at their offsets in the line.
+fn walkCutSegment(text_system: *TextSystem, walk: *CutWalk, segment: CutSegment) !void {
+    std.debug.assert(segment.start < segment.end);
+    std.debug.assert(segment.end <= walk.text.len);
+    const family = FontFamily.fromFontId(segment.font_id);
+    const variant = FontFamily.variantFromFontId(segment.font_id);
+    const size_scale = segment.font_size / text_system.getMetricsFor(family).point_size;
+    std.debug.assert(size_scale > 0);
+    var offset: usize = segment.start;
+    var run_count: usize = 0;
+    while (offset < segment.end and !walk.stopped) : (run_count += 1) {
+        std.debug.assert(run_count < walk.text.len);
+        const length = text_system_mod.runLength(walk.text[offset..segment.end]);
+        std.debug.assert(length > 0);
+        const run = walk.text[offset..][0..length];
+        var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
+        var shaped = try text_system.shapeTextInto(family, run, variant, null, &glyph_buf);
+        defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
+        walk.run(shaped.glyphs, offset, size_scale);
+        offset += length;
+    }
 }
 
 const CutWalk = struct {
@@ -430,4 +489,20 @@ test "a tab draws no glyph and the next glyph sits at the tab's advance" {
     try testing.expectApproxEqAbs(plain.first_x + tab_advance, tabbed.first_x, 1.0);
     const letter_advance = try text_system.measureText(.app, "A", .regular);
     try testing.expectApproxEqAbs(tab_advance, width - letter_advance, 0.01);
+}
+test "runAt finds the run that holds an offset on both sides of every boundary" {
+    // Runs end at 3, 4, and 9: offset 3 is the first byte of the second run, not the last
+    // of the first, and the one-byte run at 3 is found from either neighbour.
+    const testing = std.testing;
+    const runs = [_]FontRun{
+        .{ .end = 3, .font_id = 0 },
+        .{ .end = 4, .font_id = 1 },
+        .{ .end = 9, .font_id = 0 },
+    };
+    const expected = [_]u32{ 0, 0, 0, 1, 2, 2, 2, 2, 2 };
+    for (expected, 0..) |run_index, offset| {
+        try testing.expectEqual(run_index, runAt(&runs, @intCast(offset)));
+    }
+    const single = [_]FontRun{.{ .end = 1, .font_id = 0 }};
+    try testing.expectEqual(@as(u32, 0), runAt(&single, 0));
 }

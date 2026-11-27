@@ -13,6 +13,7 @@ const element = @import("element.zig");
 const limits_mod = @import("limits.zig");
 const layout_mod = @import("../layout/layout.zig");
 const text_mod = @import("../text/mod.zig");
+const reservation = @import("reservation.zig");
 const app_resources = @import("app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const keymap_mod = @import("keymap.zig");
@@ -100,6 +101,8 @@ pub const Node = struct {
     shadow: ?element.Shadow,
     shadow_color: records.Color,
     text: records.TextRange,
+    /// A rich text's spans in `Window.span_paints` and `Window.span_runs`; empty otherwise.
+    spans: SpanRange,
     text_color: records.Color,
     font_size: u16,
     family: text_mod.FontFamily,
@@ -113,6 +116,22 @@ pub const Node = struct {
 };
 
 pub const NodeFill = struct { shader: u8, params_slot: u32 };
+
+/// A rich text's spans: `offset` and `len` index `Window.span_runs` and `span_paints`.
+pub const SpanRange = records.TextRange;
+
+/// How emit draws one span of a rich text. `Window.span_paints[i]` styles the bytes of
+/// `Window.span_runs[i]`, whose font layout measures.
+pub const SpanPaint = struct {
+    color: records.Color,
+    background: ?records.Color,
+    decoration: text_mod.TextDecoration,
+};
+
+comptime {
+    // The budget's stated 48 bytes per span: this paint and an 8-byte layout run.
+    assert(@sizeOf(SpanPaint) + @sizeOf(layout_mod.TextRun) <= 48);
+}
 
 pub const FocusPlace = struct {
     id: ElementId,
@@ -495,6 +514,10 @@ pub const Window = struct {
     layout: *LayoutEngine,
     nodes: []Node,
     node_count: u32,
+    span_runs: []layout_mod.TextRun,
+    span_paints: []SpanPaint,
+    span_count: u32,
+    span_count_used_max: u32,
     keys: KeySet,
     frames: [2]Frame,
     built_index: u1,
@@ -811,6 +834,15 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     self.nodes = try gpa.alloc(Node, element_count);
     errdefer gpa.free(self.nodes);
     self.node_count = 0;
+
+    const span_count = limits.build.span_count_frame_max;
+    self.span_runs = try reservation.reserve(layout_mod.TextRun, span_count);
+    errdefer reservation.release(layout_mod.TextRun, self.span_runs, 0);
+    self.span_paints = try reservation.reserve(SpanPaint, span_count);
+    errdefer reservation.release(SpanPaint, self.span_paints, 0);
+    self.span_count = 0;
+    self.span_count_used_max = 0;
+
     try self.keys.initInPlace(gpa, limits.build.key_count_frame_max);
     errdefer self.keys.deinit(gpa);
     const reserved = debugger_mod.reservedLimits(limits);
@@ -843,6 +875,9 @@ fn deinitBuildStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.frames[1].deinit(gpa);
     self.frames[0].deinit(gpa);
     self.keys.deinit(gpa);
+    const span_used = @max(self.span_count_used_max, self.span_count);
+    reservation.release(SpanPaint, self.span_paints, span_used);
+    reservation.release(layout_mod.TextRun, self.span_runs, span_used);
     gpa.free(self.nodes);
     deinitPaths(self, gpa);
     self.layout.deinit();

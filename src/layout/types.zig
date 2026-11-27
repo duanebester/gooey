@@ -498,6 +498,23 @@ pub const WrappedLine = struct {
 
 pub const LineEnd = enum(u2) { whole, cut_if_wide, cut };
 
+/// A rich text's style runs. Layout reads only their fonts: a word's width is the sum of
+/// its pieces, each measured in its run's font. See `assertRuns` for the invariants.
+pub const TextRun = @import("../text/types.zig").FontRun;
+
+/// Checks that `runs` partition a text of `text_len` bytes: at least one run, strictly
+/// increasing ends, and the last at the text's end. An empty slice is a plain text.
+pub fn assertRuns(runs: []const TextRun, text_len: usize) void {
+    if (runs.len == 0) return;
+    std.debug.assert(text_len > 0);
+    var previous: u32 = 0;
+    for (runs) |run| {
+        std.debug.assert(run.end > previous);
+        previous = run.end;
+    }
+    std.debug.assert(previous == text_len);
+}
+
 pub const ellipsis = "\u{2026}";
 
 pub const line_length_max: u32 = std.math.maxInt(u30);

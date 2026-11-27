@@ -130,6 +130,15 @@ pub const FontFamily = enum(u1) {
     pub const font_id_count: u16 = @as(u16, count) * FontVariant.count;
 };
 
+/// One style run of a rich text: the bytes before `end`, counted from the start of the
+/// whole text, from the previous run's `end` on, are shaped in `font_id`
+/// (`FontFamily.fontId`). A text's runs have strictly increasing ends, and the last equals
+/// the text's length, so they partition it.
+pub const FontRun = struct {
+    end: u32,
+    font_id: u16,
+};
+
 pub const TextDecoration = packed struct {
     underline: bool = false,
     strikethrough: bool = false,

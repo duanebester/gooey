@@ -27,6 +27,7 @@ pub const ScrollConfig = types.ScrollConfig;
 pub const ScrollTarget = types.ScrollTarget;
 pub const ScrollAlignment = types.ScrollAlignment;
 pub const TextConfig = types.TextConfig;
+pub const TextRun = types.TextRun;
 pub const BoundingBox = types.BoundingBox;
 pub const AttachPoint = types.AttachPoint;
 pub const GridRole = types.GridRole;

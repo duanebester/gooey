@@ -78,6 +78,7 @@ pub const text = struct {
     pub const FontWeight = text_mod.FontWeight;
     pub const FontFamily = text_mod.FontFamily;
     pub const FontVariant = text_mod.FontVariant;
+    pub const TextDecoration = text_mod.TextDecoration;
     pub const codepointCount = text_mod.codepointCount;
     pub const run_codepoint_count_max = text_mod.run_codepoint_count_max;
 };
